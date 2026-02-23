@@ -2,7 +2,7 @@
 //!
 //! This module provides the standard capability definitions used across
 //! all MACINA providers, including their formal argument specifications.
-//! These definitions should match the TOML definitions in capns_dot_org/standard/
+//! These definitions should match the TOML definitions in capns-dot-org/standard/
 
 use crate::{
     Cap, CapRegistry, CapUrn, CapUrnBuilder, MEDIA_DISBOUND_PAGE, MEDIA_DOCUMENT_OUTLINE, MEDIA_FILE_METADATA, RegistryError

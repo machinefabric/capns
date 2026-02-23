@@ -954,6 +954,15 @@ fn extract_effective_payload(
                     .map_err(|e| RuntimeError::Handler(format!("URN matching failed: {}", e)))?;
 
                 if is_file_path {
+                    // Check if this arg has a stdin source - only auto-convert if it does.
+                    // Args without stdin source pass the file path through as-is.
+                    let has_stdin_source = arg_to_stdin.contains_key(urn_str);
+
+                    if !has_stdin_source {
+                        // No stdin source - file path passes through as-is, no conversion
+                        continue;
+                    }
+
                     // Determine if it's scalar or list using specific patterns
                     let is_scalar = file_path_scalar.accepts(&arg_urn)
                         .map_err(|e| RuntimeError::Handler(format!("URN matching failed: {}", e)))?;

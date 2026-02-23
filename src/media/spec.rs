@@ -543,7 +543,7 @@ pub async fn resolve_media_urn(
             // Log and continue to error
             eprintln!(
                 "[WARN] Media URN '{}' not found in registry: {} - \
-                ensure it's defined in capns_dot_org/standard/media/",
+                ensure it's defined in capns-dot-org/standard/media/",
                 media_urn, e
             );
         }

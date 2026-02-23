@@ -430,7 +430,7 @@ impl MediaUrnRegistry {
         index.get(&ext_lower).cloned().ok_or_else(|| {
             MediaRegistryError::ExtensionNotFound(format!(
                 "No media spec registered for extension '{}'. \
-                Ensure the media spec is defined in capns_dot_org/standard/media/ with an 'extension' field.",
+                Ensure the media spec is defined in capns-dot-org/standard/media/ with an 'extension' field.",
                 extension
             ))
         })

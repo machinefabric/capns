@@ -482,11 +482,14 @@ impl ExecutionContext {
         // Prepare argument based on input data type
         let (media_urn, value) = match input_data {
             NodeData::FilePath(path) => {
-                let path_str = path.to_str().ok_or_else(|| ExecutionError::PluginExecutionFailed {
-                    cap_urn: cap_urn.to_string(),
-                    details: "Invalid UTF-8 in file path".to_string(),
+                // Read file content and send with the expected input media URN
+                let content = tokio::fs::read(path).await.map_err(|e| {
+                    ExecutionError::PluginExecutionFailed {
+                        cap_urn: cap_urn.to_string(),
+                        details: format!("Failed to read file '{}': {}", path.display(), e),
+                    }
                 })?;
-                (capns::MEDIA_FILE_PATH.to_string(), path_str.as_bytes().to_vec())
+                (edge.in_media.clone(), content)
             }
             NodeData::Bytes(bytes) => {
                 (edge.in_media.clone(), bytes.clone())
@@ -514,13 +517,22 @@ impl ExecutionContext {
                 writer.write(&start).await
                     .map_err(|e| ExecutionError::HostError(format!("Failed to send STREAM_START: {:?}", e)))?;
 
+                // Each CHUNK must contain a complete CBOR value.
+                // Split data into chunks, encode each as CBOR Bytes, then send.
                 let mut offset = 0;
                 let mut seq = 0u64;
                 while offset < arg.value.len() {
                     let end = (offset + max_chunk).min(arg.value.len());
-                    let payload = arg.value[offset..end].to_vec();
-                    let checksum = Frame::compute_checksum(&payload);
-                    let chunk = Frame::chunk(request_id.clone(), stream_id.clone(), seq, payload, seq, checksum);
+                    let chunk_data = &arg.value[offset..end];
+
+                    // Encode this chunk as CBOR Bytes
+                    let cbor_value = ciborium::Value::Bytes(chunk_data.to_vec());
+                    let mut cbor_payload = Vec::new();
+                    ciborium::into_writer(&cbor_value, &mut cbor_payload)
+                        .map_err(|e| ExecutionError::HostError(format!("Failed to encode CBOR: {}", e)))?;
+
+                    let checksum = Frame::compute_checksum(&cbor_payload);
+                    let chunk = Frame::chunk(request_id.clone(), stream_id.clone(), seq, cbor_payload, seq, checksum);
                     writer.write(&chunk).await
                         .map_err(|e| ExecutionError::HostError(format!("Failed to send CHUNK: {:?}", e)))?;
                     offset = end;
@@ -574,18 +586,22 @@ impl ExecutionContext {
         // Kill plugin
         let _ = child.kill().await;
 
-        // Decode CBOR response
-        let output_value: ciborium::Value = ciborium::from_reader(&collected[..])
-            .map_err(|e| ExecutionError::HostError(format!("Failed to decode CBOR response: {}", e)))?;
-
-        let output_bytes = match output_value {
-            ciborium::Value::Bytes(b) => b,
-            ciborium::Value::Text(t) => t.into_bytes(),
-            _ => return Err(ExecutionError::HostError(format!(
-                "Expected Bytes or Text from cap output, got {:?}",
-                output_value
-            ))),
-        };
+        // Decode CBOR response - chunks contain individual CBOR values
+        // that need to be decoded and concatenated
+        let mut output_bytes = Vec::new();
+        let mut cursor = std::io::Cursor::new(&collected);
+        while (cursor.position() as usize) < collected.len() {
+            let value: ciborium::Value = ciborium::from_reader(&mut cursor)
+                .map_err(|e| ExecutionError::HostError(format!("Failed to decode CBOR chunk: {}", e)))?;
+            match value {
+                ciborium::Value::Bytes(b) => output_bytes.extend(b),
+                ciborium::Value::Text(t) => output_bytes.extend(t.into_bytes()),
+                _ => return Err(ExecutionError::HostError(format!(
+                    "Expected Bytes or Text from cap output, got {:?}",
+                    value
+                ))),
+            }
+        }
 
         Ok(NodeData::Bytes(output_bytes))
     }

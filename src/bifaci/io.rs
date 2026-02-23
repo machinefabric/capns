@@ -1869,6 +1869,10 @@ mod tests {
             let req = reader.read().unwrap().expect("expected REQ");
             let err = Frame::err(req.id, "BROKEN", "identity handler broken");
             writer.write(&err).unwrap();
+            // Flush and wait a bit to ensure host reads the error before connection closes
+            use std::io::Write;
+            writer.inner_mut().flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
         });
 
         host_from_plugin_std.set_nonblocking(true).unwrap();
