@@ -526,6 +526,16 @@ fn dot_edge(from: &str, to: &str, cap_urn: &CapUrn) -> String {
     )
 }
 
+/// Build a DOT node declaration with an explicit media type attribute.
+///
+/// Used for secondary-arg fan-in nodes (e.g., model_spec) where the node's
+/// actual data type differs from the cap's primary in= spec. The executor
+/// uses this declared media type as the stream label, letting the cartridge
+/// handler identify each stream by its exact type.
+fn dot_node(name: &str, media_urn: &str) -> String {
+    format!("        {} [media=\"{}\"];", name, media_urn)
+}
+
 /// Build a complete DOT digraph from a name and edge lines.
 fn dot_graph(name: &str, edges: &[String]) -> String {
     format!(
@@ -593,7 +603,7 @@ async fn ensure_model_downloaded(model_spec: &str, modelcartridge_bin: &PathBuf)
             }
         }
         Err(e) => {
-            eprintln!("[PreDownload] Warning: model download failed: {}", e);
+            panic!("[PreDownload] Model download failed for '{}': {}", model_spec, e);
         }
     }
 }
@@ -1974,7 +1984,7 @@ const MODEL_GGUF_LLM: &str =
 
 /// Small GGUF vision model for image analysis tests (~1.8GB, test skips if not present)
 const MODEL_GGUF_VISION: &str =
-    "hf:vikhyatk/moondream2?include=moondream2-mmproj-f16.gguf,moondream2-text-model-f16.gguf";
+    "hf:moondream/moondream2-gguf?include=moondream2-mmproj-f16.gguf,moondream2-text-model-f16.gguf";
 
 // =============================================================================
 // Additional Test Fixtures
@@ -2773,9 +2783,11 @@ async fn test040_gguf_generate_embeddings() {
 
     // Fan-in: both text_input and model_spec feed into embedding via the same cap.
     // The handler reads both streams: media:textable;form=scalar AND media:model-spec;textable;form=scalar.
+    // model_spec is declared with its actual type so the executor labels its stream correctly.
     let dot = dot_graph(
         "gguf_text_embedding",
         &[
+            dot_node("model_spec", "media:model-spec;textable;form=scalar"),
             dot_edge("text_input", "embedding", &embed_urn),
             dot_edge("model_spec", "embedding", &embed_urn),
         ],
@@ -2846,9 +2858,11 @@ async fn test041_gguf_analyze_image() {
 
     // Fan-in: image_input and model_spec both feed into analysis via the same cap.
     // Handler reads: media:image;png (image bytes) AND media:model-spec;textable;form=scalar.
+    // model_spec is declared with its actual type so the executor labels its stream correctly.
     let dot = dot_graph(
         "gguf_vision",
         &[
+            dot_node("model_spec", "media:model-spec;textable;form=scalar"),
             dot_edge("image_input", "analysis", &vision_urn),
             dot_edge("model_spec", "analysis", &vision_urn),
         ],
@@ -2914,9 +2928,11 @@ async fn test042_pdf_thumbnail_to_gguf_vision() {
 
     // Chain: pdf → thumbnail → vision analysis (fan-in with model_spec)
     // thumbnail outputs media:image;png;thumbnail which conforms to media:image;png (vision in_spec)
+    // model_spec is declared with its actual type so the executor labels its stream correctly.
     let dot = dot_graph(
         "pdf_thumbnail_to_vision",
         &[
+            dot_node("model_spec", "media:model-spec;textable;form=scalar"),
             dot_edge("pdf_input", "thumbnail", &thumbnail_urn),
             dot_edge("thumbnail", "analysis", &vision_urn),
             dot_edge("model_spec", "analysis", &vision_urn),

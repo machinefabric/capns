@@ -4,7 +4,12 @@
 //! 1. Discovering and downloading plugins that provide the required caps
 //! 2. Connecting all plugins to a single PluginHostRuntime
 //! 3. Routing cap requests through a RelaySwitch
-//! 4. Executing edges in topological order, streaming frames between caps
+//! 4. Executing edge groups in topological order, streaming frames between caps
+//!
+//! Fan-in: multiple edges pointing to the same `(to, cap_urn)` are grouped and
+//! executed as ONE cap invocation with multiple input streams. The plugin handler
+//! receives all streams and decides how to handle partial availability — it may
+//! wait for all, use whatever arrives, or fail.
 //!
 //! Architecture:
 //! ```text
@@ -93,6 +98,107 @@ impl NodeData {
             }
         }
     }
+}
+
+// =============================================================================
+// Edge Grouping — fan-in detection
+// =============================================================================
+
+/// A group of edges that share the same `(to, cap_urn)`.
+///
+/// Single-edge groups are standard single-input cap invocations.
+/// Multi-edge groups are fan-in: all edges' inputs are sent as separate streams
+/// in ONE cap invocation so the handler can consume them together.
+pub struct EdgeGroup {
+    /// Destination node (same for all edges in the group)
+    pub to: String,
+    /// Cap URN (same for all edges in the group)
+    pub cap_urn: String,
+    /// All edges in this group (one or more)
+    pub edges: Vec<ResolvedEdge>,
+}
+
+/// Group DAG edges by `(to, cap_urn)`.
+///
+/// Edges that share the same destination node and cap URN form a fan-in group
+/// and will be sent as multiple streams in a single cap invocation.
+fn build_edge_groups(edges: &[ResolvedEdge]) -> Vec<EdgeGroup> {
+    // Preserve insertion order for determinism
+    let mut order: Vec<(String, String)> = Vec::new();
+    let mut map: HashMap<(String, String), Vec<ResolvedEdge>> = HashMap::new();
+
+    for edge in edges {
+        let key = (edge.to.clone(), edge.cap_urn.clone());
+        if !map.contains_key(&key) {
+            order.push(key.clone());
+        }
+        map.entry(key).or_default().push(edge.clone());
+    }
+
+    order
+        .into_iter()
+        .map(|key| {
+            let edges = map.remove(&key).unwrap();
+            EdgeGroup {
+                to: key.0,
+                cap_urn: key.1,
+                edges,
+            }
+        })
+        .collect()
+}
+
+/// Topological sort of edge groups.
+///
+/// A group can execute when all groups that produce its `from` nodes have completed.
+/// Returns group indices in execution order.
+fn topological_sort_groups(groups: &[EdgeGroup]) -> Result<Vec<usize>, ExecutionError> {
+    let n = groups.len();
+
+    // Map each produced node to the group index that produces it
+    let mut produced_by: HashMap<&str, usize> = HashMap::new();
+    for (i, g) in groups.iter().enumerate() {
+        produced_by.insert(g.to.as_str(), i);
+    }
+
+    // Compute in-degree for each group and reverse-dependency map
+    let mut in_degree: Vec<usize> = vec![0; n];
+    // dependents[i] = set of group indices that depend on group i completing first
+    let mut dependents: Vec<HashSet<usize>> = (0..n).map(|_| HashSet::new()).collect();
+
+    for (i, g) in groups.iter().enumerate() {
+        let mut seen: HashSet<usize> = HashSet::new();
+        for edge in &g.edges {
+            if let Some(&dep) = produced_by.get(edge.from.as_str()) {
+                if dep != i && seen.insert(dep) {
+                    in_degree[i] += 1;
+                    dependents[dep].insert(i);
+                }
+            }
+        }
+    }
+
+    let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+    let mut sorted: Vec<usize> = Vec::with_capacity(n);
+
+    while let Some(i) = queue.pop() {
+        sorted.push(i);
+        for &j in &dependents[i] {
+            in_degree[j] -= 1;
+            if in_degree[j] == 0 {
+                queue.push(j);
+            }
+        }
+    }
+
+    if sorted.len() != n {
+        return Err(ExecutionError::PluginExecutionFailed {
+            cap_urn: String::new(),
+            details: "Cycle detected in graph".to_string(),
+        });
+    }
+
+    Ok(sorted)
 }
 
 // =============================================================================
@@ -576,95 +682,124 @@ impl ExecutionContext {
         self.node_data
     }
 
-    /// Execute a single DAG edge: send streaming frames through the RelaySwitch,
-    /// pump responses, store raw output bytes at the destination node.
-    pub fn execute_edge(&mut self, edge: &ResolvedEdge) -> Result<(), ExecutionError> {
-        let input = self
-            .node_data
-            .get(&edge.from)
-            .ok_or_else(|| ExecutionError::NoIncomingData {
-                node: edge.from.clone(),
-            })?
-            .clone();
+    /// Execute an edge group as a single cap invocation with one or more input streams.
+    ///
+    /// All edges in the group share the same `(to, cap_urn)`. Each edge contributes
+    /// one input stream using its `from` node's data and its own `in_media` URN.
+    /// The cap handler receives all streams and decides when/how to process them.
+    ///
+    /// Protocol:
+    ///   REQ(cap_urn)
+    ///   STREAM_START(stream_id_1, in_media_1) + CHUNK... + STREAM_END(stream_id_1)
+    ///   STREAM_START(stream_id_2, in_media_2) + CHUNK... + STREAM_END(stream_id_2)
+    ///   ...
+    ///   END
+    ///   → collect response chunks → decode CBOR → store at `to` node
+    pub fn execute_fanin(&mut self, edges: &[ResolvedEdge]) -> Result<(), ExecutionError> {
+        assert!(!edges.is_empty(), "execute_fanin requires at least one edge");
+
+        let cap_urn = &edges[0].cap_urn;
+        let to = &edges[0].to;
 
         eprintln!(
-            "Executing cap: {} ({} -> {})",
-            edge.cap_urn, edge.from, edge.to
+            "Executing cap: {} ({} input stream(s) -> {})",
+            cap_urn,
+            edges.len(),
+            to
         );
 
-        // Initiate request — returns (request_id, response_channel)
+        // Collect all input data upfront — fail fast if any source is missing
+        let inputs: Vec<(Vec<u8>, String)> = edges
+            .iter()
+            .map(|edge| {
+                let data = self
+                    .node_data
+                    .get(&edge.from)
+                    .ok_or_else(|| ExecutionError::NoIncomingData {
+                        node: edge.from.clone(),
+                    })?
+                    .clone();
+                Ok((data, edge.in_media.clone()))
+            })
+            .collect::<Result<Vec<_>, ExecutionError>>()?;
+
+        // Open ONE cap invocation for all inputs
         let (request_id, rx) = self
             .switch
-            .execute_cap(&edge.cap_urn, vec![], "application/cbor")
+            .execute_cap(cap_urn, vec![], "application/cbor")
             .map_err(|e| ExecutionError::HostError(format!("execute_cap: {}", e)))?;
 
-        // Send streaming input: STREAM_START + CHUNKs + STREAM_END + END
-        let stream_id = uuid::Uuid::new_v4().to_string();
+        // Send each input as a separate named stream
+        for (data, in_media) in &inputs {
+            let stream_id = uuid::Uuid::new_v4().to_string();
 
-        let ss = Frame::stream_start(
-            request_id.clone(),
-            stream_id.clone(),
-            edge.in_media.clone(),
-        );
-        self.switch
-            .send_to_master(ss, None)
-            .map_err(|e| ExecutionError::HostError(format!("STREAM_START: {}", e)))?;
-
-        let mut offset = 0;
-        let mut seq = 0u64;
-        while offset < input.len() {
-            let end = (offset + self.max_chunk).min(input.len());
-            let chunk_data = &input[offset..end];
-
-            // CBOR-encode each chunk as Bytes
-            let cbor_value = ciborium::Value::Bytes(chunk_data.to_vec());
-            let mut cbor_payload = Vec::new();
-            ciborium::into_writer(&cbor_value, &mut cbor_payload)
-                .map_err(|e| ExecutionError::HostError(format!("CBOR encode: {}", e)))?;
-
-            let checksum = Frame::compute_checksum(&cbor_payload);
-            let chunk = Frame::chunk(
+            let ss = Frame::stream_start(
                 request_id.clone(),
                 stream_id.clone(),
-                seq,
-                cbor_payload,
-                seq,
-                checksum,
+                in_media.clone(),
             );
             self.switch
-                .send_to_master(chunk, None)
-                .map_err(|e| ExecutionError::HostError(format!("CHUNK: {}", e)))?;
+                .send_to_master(ss, None)
+                .map_err(|e| ExecutionError::HostError(format!("STREAM_START: {}", e)))?;
 
-            offset = end;
-            seq += 1;
-        }
+            let mut offset = 0;
+            let mut seq = 0u64;
 
-        // Handle empty input — send at least one empty chunk
-        if input.is_empty() {
-            let cbor_value = ciborium::Value::Bytes(vec![]);
-            let mut cbor_payload = Vec::new();
-            ciborium::into_writer(&cbor_value, &mut cbor_payload)
-                .map_err(|e| ExecutionError::HostError(format!("CBOR encode: {}", e)))?;
-            let checksum = Frame::compute_checksum(&cbor_payload);
-            let chunk = Frame::chunk(
-                request_id.clone(),
-                stream_id.clone(),
-                0,
-                cbor_payload,
-                0,
-                checksum,
-            );
+            if data.is_empty() {
+                // Send one empty chunk so the stream is well-formed
+                let cbor_value = ciborium::Value::Bytes(vec![]);
+                let mut cbor_payload = Vec::new();
+                ciborium::into_writer(&cbor_value, &mut cbor_payload)
+                    .map_err(|e| ExecutionError::HostError(format!("CBOR encode: {}", e)))?;
+                let checksum = Frame::compute_checksum(&cbor_payload);
+                let chunk = Frame::chunk(
+                    request_id.clone(),
+                    stream_id.clone(),
+                    0,
+                    cbor_payload,
+                    0,
+                    checksum,
+                );
+                self.switch
+                    .send_to_master(chunk, None)
+                    .map_err(|e| ExecutionError::HostError(format!("CHUNK: {}", e)))?;
+                seq = 1;
+            } else {
+                while offset < data.len() {
+                    let end = (offset + self.max_chunk).min(data.len());
+                    let chunk_data = &data[offset..end];
+
+                    // CBOR-encode each chunk as Bytes
+                    let cbor_value = ciborium::Value::Bytes(chunk_data.to_vec());
+                    let mut cbor_payload = Vec::new();
+                    ciborium::into_writer(&cbor_value, &mut cbor_payload)
+                        .map_err(|e| ExecutionError::HostError(format!("CBOR encode: {}", e)))?;
+
+                    let checksum = Frame::compute_checksum(&cbor_payload);
+                    let chunk = Frame::chunk(
+                        request_id.clone(),
+                        stream_id.clone(),
+                        seq,
+                        cbor_payload,
+                        seq,
+                        checksum,
+                    );
+                    self.switch
+                        .send_to_master(chunk, None)
+                        .map_err(|e| ExecutionError::HostError(format!("CHUNK: {}", e)))?;
+
+                    offset = end;
+                    seq += 1;
+                }
+            }
+
+            let se = Frame::stream_end(request_id.clone(), stream_id, seq);
             self.switch
-                .send_to_master(chunk, None)
-                .map_err(|e| ExecutionError::HostError(format!("CHUNK: {}", e)))?;
-            seq = 1;
+                .send_to_master(se, None)
+                .map_err(|e| ExecutionError::HostError(format!("STREAM_END: {}", e)))?;
         }
 
-        let se = Frame::stream_end(request_id.clone(), stream_id, seq);
-        self.switch
-            .send_to_master(se, None)
-            .map_err(|e| ExecutionError::HostError(format!("STREAM_END: {}", e)))?;
-
+        // END — no more input streams
         let end_frame = Frame::end(request_id.clone(), None);
         self.switch
             .send_to_master(end_frame, None)
@@ -726,7 +861,7 @@ impl ExecutionContext {
                                     .unwrap_or("Unknown plugin error")
                                     .to_string();
                                 return Err(ExecutionError::PluginExecutionFailed {
-                                    cap_urn: edge.cap_urn.clone(),
+                                    cap_urn: cap_urn.clone(),
                                     details: msg,
                                 });
                             }
@@ -756,7 +891,7 @@ impl ExecutionContext {
             return Err(ExecutionError::Timeout {
                 cap_urn: format!(
                     "{} (no activity for {:.0}s)",
-                    edge.cap_urn,
+                    cap_urn,
                     elapsed.as_secs_f64()
                 ),
             });
@@ -781,7 +916,7 @@ impl ExecutionContext {
             }
         }
 
-        self.node_data.insert(edge.to.clone(), output_bytes);
+        self.node_data.insert(to.clone(), output_bytes);
         Ok(())
     }
 }
@@ -790,7 +925,7 @@ impl ExecutionContext {
 // DAG Executor
 // =============================================================================
 
-/// Execute a resolved DAG: discover plugins, set up infrastructure, run edges.
+/// Execute a resolved DAG: discover plugins, set up infrastructure, run edge groups.
 pub async fn execute_dag(
     graph: &ResolvedGraph,
     plugin_dir: PathBuf,
@@ -819,16 +954,23 @@ pub async fn execute_dag(
         ctx.set_node_data(node, bytes);
     }
 
-    // 4. Execute edges in topological order
-    let order = topological_sort(&graph.edges)?;
-    eprintln!("\nExecuting {} edges in topological order\n", order.len());
+    // 4. Group edges by (to, cap_urn) to detect fan-in, then sort groups topologically.
+    //    Fan-in groups are executed as ONE cap invocation with multiple input streams —
+    //    the handler decides how to handle each stream as it arrives.
+    let groups = build_edge_groups(&graph.edges);
+    let group_order = topological_sort_groups(&groups)
+        .map_err(|e| ExecutionError::HostError(format!("Topological sort failed: {}", e)))?;
 
-    // Execute edges synchronously via spawn_blocking since
+    eprintln!(
+        "\nExecuting {} cap group(s) in topological order\n",
+        group_order.len()
+    );
+
+    // Execute groups synchronously via spawn_blocking since
     // RelaySwitch/read_from_masters are blocking operations
-    let edges_owned: Vec<ResolvedEdge> = order.into_iter().cloned().collect();
     tokio::task::spawn_blocking(move || {
-        for edge in &edges_owned {
-            ctx.execute_edge(edge)?;
+        for idx in group_order {
+            ctx.execute_fanin(&groups[idx].edges)?;
         }
 
         eprintln!("\nExecution complete!\n");
@@ -847,48 +989,4 @@ pub async fn execute_dag(
     })
     .await
     .map_err(|e| ExecutionError::HostError(format!("Join error: {}", e)))?
-}
-
-/// Topological sort of edges using Kahn's algorithm.
-fn topological_sort(edges: &[ResolvedEdge]) -> Result<Vec<&ResolvedEdge>, ExecutionError> {
-    let mut in_degree: HashMap<&str, usize> = HashMap::new();
-    let mut adj: HashMap<&str, Vec<&ResolvedEdge>> = HashMap::new();
-
-    for edge in edges {
-        in_degree.entry(edge.from.as_str()).or_insert(0);
-        *in_degree.entry(edge.to.as_str()).or_insert(0) += 1;
-        adj.entry(edge.from.as_str())
-            .or_insert_with(Vec::new)
-            .push(edge);
-    }
-
-    let mut queue: Vec<&str> = in_degree
-        .iter()
-        .filter_map(|(node, &deg)| if deg == 0 { Some(*node) } else { None })
-        .collect();
-
-    let mut sorted = Vec::new();
-
-    while let Some(node) = queue.pop() {
-        if let Some(outgoing) = adj.get(node) {
-            for edge in outgoing {
-                sorted.push(*edge);
-                if let Some(degree) = in_degree.get_mut(edge.to.as_str()) {
-                    *degree -= 1;
-                    if *degree == 0 {
-                        queue.push(edge.to.as_str());
-                    }
-                }
-            }
-        }
-    }
-
-    if sorted.len() != edges.len() {
-        return Err(ExecutionError::PluginExecutionFailed {
-            cap_urn: String::new(),
-            details: "Cycle detected in graph".to_string(),
-        });
-    }
-
-    Ok(sorted)
 }

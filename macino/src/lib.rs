@@ -22,7 +22,7 @@
 use capns::{Cap, CapUrn, MediaUrn};
 use dot_parser::ast::Graph as AstGraph;
 use dot_parser::canonical::Graph as CanonicalGraph;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 // =============================================================================
@@ -197,15 +197,53 @@ pub async fn parse_dot_to_cap_dag(
     let graph_name = ast.name.map(|s| s.to_string());
     let canonical: CanonicalGraph<(&str, &str)> = ast.into();
 
-    // Step 2-5: Process edges and resolve caps
+    // Step 2: Process node attributes first.
+    //
+    // Nodes with an explicit `media="..."` attribute declare their actual data type.
+    // This takes priority over the cap's in= spec when deriving stream labels.
+    // Explicitly-typed nodes are tracked in `attr_nodes` — for these, the edge's
+    // `in_media` stream label uses the node's declared type rather than the cap's
+    // in= spec. This enables fan-in secondary args (e.g., model_spec alongside the
+    // primary image input to a vision cap) to carry the correct stream label.
     let mut node_media: HashMap<String, String> = HashMap::new();
+    let mut attr_nodes: HashSet<String> = HashSet::new();
     let mut resolved_edges = Vec::new();
 
+    for (node_id, node) in &canonical.nodes.set {
+        let node_id = node_id.to_string();
+        if let Some(media_attr_raw) = node
+            .attr
+            .elems
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("media"))
+            .map(|(_, v)| *v)
+        {
+            let media_attr = if media_attr_raw.starts_with('"') && media_attr_raw.ends_with('"') {
+                &media_attr_raw[1..media_attr_raw.len() - 1]
+            } else {
+                media_attr_raw
+            };
+            let media_attr = media_attr.replace("\\\"", "\"");
+            node_media.insert(node_id.clone(), media_attr);
+            attr_nodes.insert(node_id);
+        }
+    }
+
+    // Step 3: Pre-scan edges to identify fan-in groups (multiple edges to same `to` node).
+    // Fan-in secondary args may have types incompatible with the cap's primary in= spec —
+    // that's intentional (e.g., model_spec to a vision cap). We skip the compatibility
+    // check for explicitly-typed nodes that feed fan-in targets.
+    let mut to_edge_count: HashMap<String, usize> = HashMap::new();
+    for edge in &canonical.edges.set {
+        *to_edge_count.entry(edge.to.to_string()).or_insert(0) += 1;
+    }
+
+    // Step 4-5: Process edges and resolve caps
     for edge in &canonical.edges.set {
         let from = edge.from.to_string();
         let to = edge.to.to_string();
 
-        // Step 3: Extract and validate edge label
+        // Extract and validate edge label
         let label = edge
             .attr
             .elems
@@ -238,7 +276,7 @@ pub async fn parse_dot_to_cap_dag(
 
         let cap_urn = label.as_str();
 
-        // Step 4: Resolve Cap URN via registry
+        // Resolve Cap URN via registry
         let cap = registry.lookup(cap_urn).await?;
 
         // Parse the cap URN to extract in/out specs
@@ -249,21 +287,48 @@ pub async fn parse_dot_to_cap_dag(
         let cap_in_media = parsed_cap_urn.in_spec().to_string();
         let cap_out_media = parsed_cap_urn.out_spec().to_string();
 
-        // Step 5: Derive node media URNs from incident caps
-        // Check 'from' node — use semantic accepts() matching instead of string equality
-        if let Some(existing) = node_media.get(&from) {
-            if !media_urns_compatible(existing, &cap_in_media)? {
-                return Err(ParseOrchestrationError::NodeMediaConflict {
+        // Determine the stream label for this edge's input.
+        //
+        // If the `from` node has an explicit media declaration, use that as the
+        // stream label — no compatibility check against cap_in_media. The node
+        // author declares exactly what type they are providing; the cap handler
+        // decides how to consume it. This is needed for fan-in secondary args
+        // (e.g., model_spec node providing media:model-spec;textable;form=scalar
+        // to a cap whose primary in= spec is media:image;png).
+        //
+        // If the `from` node has no explicit declaration, derive it from the cap's
+        // in= spec as before (with compatibility check against any existing type).
+        let edge_in_media = if attr_nodes.contains(&from) {
+            let declared = node_media[&from].clone();
+            // For single-edge targets (not fan-in), validate compatibility.
+            // Fan-in secondary args are allowed to have types incompatible with
+            // the cap's primary in= spec — the handler identifies them by label.
+            let is_fanin = to_edge_count.get(&to).copied().unwrap_or(1) > 1;
+            if !is_fanin && !media_urns_compatible(&declared, &cap_in_media)? {
+                return Err(ParseOrchestrationError::NodeMediaAttrConflict {
                     node: from.clone(),
-                    existing: existing.clone(),
-                    required_by_cap: cap_in_media.clone(),
+                    existing: declared.clone(),
+                    attr_value: cap_in_media.clone(),
                 });
             }
+            declared
         } else {
-            node_media.insert(from.clone(), cap_in_media.clone());
-        }
+            // Implicitly-typed node: use cap's in= spec as stream label.
+            if let Some(existing) = node_media.get(&from) {
+                if !media_urns_compatible(existing, &cap_in_media)? {
+                    return Err(ParseOrchestrationError::NodeMediaConflict {
+                        node: from.clone(),
+                        existing: existing.clone(),
+                        required_by_cap: cap_in_media.clone(),
+                    });
+                }
+            } else {
+                node_media.insert(from.clone(), cap_in_media.clone());
+            }
+            cap_in_media.clone()
+        };
 
-        // Check 'to' node — use semantic accepts() matching instead of string equality
+        // Check 'to' node output type — use semantic accepts() matching
         if let Some(existing) = node_media.get(&to) {
             if !media_urns_compatible(existing, &cap_out_media)? {
                 return Err(ParseOrchestrationError::NodeMediaConflict {
@@ -281,47 +346,12 @@ pub async fn parse_dot_to_cap_dag(
             to: to.clone(),
             cap_urn: cap_urn.to_string(),
             cap,
-            in_media: cap_in_media,
+            in_media: edge_in_media,
             out_media: cap_out_media,
         });
     }
 
-    // Step 6: Optional node attribute validation
-    for (node_id, node) in &canonical.nodes.set {
-        let node_id = node_id.to_string();
-
-        if let Some(media_attr_raw) = node
-            .attr
-            .elems
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("media"))
-            .map(|(_, v)| *v)
-        {
-            // Remove quotes and unescape like we do for edge labels
-            let media_attr = if media_attr_raw.starts_with('"') && media_attr_raw.ends_with('"') {
-                &media_attr_raw[1..media_attr_raw.len() - 1]
-            } else {
-                media_attr_raw
-            };
-            let media_attr = media_attr.replace("\\\"", "\"");
-
-            // Validate media attribute if present — use semantic accepts() matching
-            if let Some(existing) = node_media.get(&node_id) {
-                if !media_urns_compatible(existing, &media_attr)? {
-                    return Err(ParseOrchestrationError::NodeMediaAttrConflict {
-                        node: node_id.clone(),
-                        existing: existing.clone(),
-                        attr_value: media_attr.clone(),
-                    });
-                }
-            } else {
-                // Set the mapping if not already derived from caps
-                node_media.insert(node_id.clone(), media_attr);
-            }
-        }
-    }
-
-    // Step 7: DAG validation (topological sort to detect cycles)
+    // Step 6: DAG validation (topological sort to detect cycles)
     validate_dag(&node_media, &resolved_edges)?;
 
     Ok(ResolvedGraph {
