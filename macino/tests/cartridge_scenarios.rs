@@ -1772,3 +1772,1289 @@ async fn test028_three_cartridge_pipeline() {
         outputs.len()
     );
 }
+
+// =============================================================================
+// Additional Cap URN Builders
+// =============================================================================
+
+// -- txtcartridge txt format (matches txtcartridge's plain-text media type) --
+
+fn txt_generate_thumbnail() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "generate_thumbnail")
+        .in_spec("media:txt;textable")
+        .out_spec("media:image;png;thumbnail")
+        .build()
+        .expect("txt generate_thumbnail URN")
+}
+
+fn txt_extract_metadata() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "extract_metadata")
+        .in_spec("media:txt;textable")
+        .out_spec("media:file-metadata;textable;form=map")
+        .build()
+        .expect("txt extract_metadata URN")
+}
+
+fn txt_extract_outline() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "extract_outline")
+        .in_spec("media:txt;textable")
+        .out_spec("media:document-outline;textable;form=map")
+        .build()
+        .expect("txt extract_outline URN")
+}
+
+// -- txtcartridge rst format --
+
+fn rst_generate_thumbnail() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "generate_thumbnail")
+        .in_spec("media:rst;textable")
+        .out_spec("media:image;png;thumbnail")
+        .build()
+        .expect("rst generate_thumbnail URN")
+}
+
+fn rst_extract_metadata() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "extract_metadata")
+        .in_spec("media:rst;textable")
+        .out_spec("media:file-metadata;textable;form=map")
+        .build()
+        .expect("rst extract_metadata URN")
+}
+
+fn rst_extract_outline() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "extract_outline")
+        .in_spec("media:rst;textable")
+        .out_spec("media:document-outline;textable;form=map")
+        .build()
+        .expect("rst extract_outline URN")
+}
+
+// -- txtcartridge log format --
+
+fn log_generate_thumbnail() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "generate_thumbnail")
+        .in_spec("media:log;textable")
+        .out_spec("media:image;png;thumbnail")
+        .build()
+        .expect("log generate_thumbnail URN")
+}
+
+fn log_extract_metadata() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "extract_metadata")
+        .in_spec("media:log;textable")
+        .out_spec("media:file-metadata;textable;form=map")
+        .build()
+        .expect("log extract_metadata URN")
+}
+
+fn log_extract_outline() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "extract_outline")
+        .in_spec("media:log;textable")
+        .out_spec("media:document-outline;textable;form=map")
+        .build()
+        .expect("log extract_outline URN")
+}
+
+// -- modelcartridge list-models --
+
+fn model_list_models() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "list-models")
+        .in_spec("media:model-repo;textable;form=map")
+        .out_spec("media:model-list;textable;form=map")
+        .build()
+        .expect("model list-models URN")
+}
+
+// -- ggufcartridge caps (mirrors exact builder calls in ggufcartridge/src/main.rs) --
+
+fn gguf_embeddings_dimensions() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "embeddings_dimensions")
+        .solo_tag("ml-model")
+        .solo_tag("gguf")
+        .in_spec("media:model-spec;textable;form=scalar")
+        .out_spec("media:integer;textable;numeric;form=scalar")
+        .build()
+        .expect("gguf embeddings_dimensions URN")
+}
+
+fn gguf_llm_model_info() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "llm_model_info")
+        .solo_tag("llm")
+        .solo_tag("ml-model")
+        .solo_tag("gguf")
+        .in_spec("media:llm-generation-request;json;form=map")
+        .out_spec("media:llm-model-info;json;form=map")
+        .build()
+        .expect("gguf llm_model_info URN")
+}
+
+fn gguf_llm_vocab() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "llm_vocab")
+        .solo_tag("llm")
+        .solo_tag("ml-model")
+        .solo_tag("gguf")
+        .in_spec("media:llm-generation-request;json;form=map")
+        .out_spec("media:llm-vocab-response;json;form=map")
+        .build()
+        .expect("gguf llm_vocab URN")
+}
+
+fn gguf_llm_inference() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "llm_inference")
+        .solo_tag("llm")
+        .solo_tag("ml-model")
+        .solo_tag("gguf")
+        .in_spec("media:llm-generation-request;json;form=map")
+        .out_spec("media:llm-text-stream;ndjson;streaming")
+        .build()
+        .expect("gguf llm_inference URN")
+}
+
+fn gguf_llm_inference_constrained() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "llm_inference_constrained")
+        .solo_tag("constrained")
+        .solo_tag("llm")
+        .solo_tag("ml-model")
+        .solo_tag("gguf")
+        .in_spec("media:llm-generation-request;json;form=map")
+        .out_spec("media:llm-text-stream;ndjson;streaming")
+        .build()
+        .expect("gguf llm_inference_constrained URN")
+}
+
+fn gguf_generate_embeddings() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "generate_embeddings")
+        .solo_tag("ml-model")
+        .solo_tag("gguf")
+        .in_spec("media:textable;form=scalar")
+        .out_spec("media:embedding-vector;textable;form=map")
+        .build()
+        .expect("gguf generate_embeddings URN")
+}
+
+fn gguf_analyze_image() -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "analyze_image")
+        .solo_tag("vision")
+        .solo_tag("ml-model")
+        .solo_tag("gguf")
+        .in_spec("media:image;png")  // bytes tag retired
+        .out_spec("media:llm-text-stream;ndjson;streaming")
+        .build()
+        .expect("gguf analyze_image URN")
+}
+
+// =============================================================================
+// Additional Model Constants (GGUF)
+// =============================================================================
+
+/// Small GGUF embedding model (~250MB) for embedding tests
+const MODEL_GGUF_EMBED: &str =
+    "hf:nomic-ai/nomic-embed-text-v1.5?include=nomic-embed-text-v1.5.Q4_0.gguf";
+
+/// Small 0.5B GGUF LLM for generation tests (~320MB)
+const MODEL_GGUF_LLM: &str =
+    "hf:bartowski/Qwen2.5-0.5B-Instruct-GGUF?include=Qwen2.5-0.5B-Instruct-Q4_K_M.gguf";
+
+/// Small GGUF vision model for image analysis tests (~1.8GB, test skips if not present)
+const MODEL_GGUF_VISION: &str =
+    "hf:vikhyatk/moondream2?include=moondream2-mmproj-f16.gguf,moondream2-text-model-f16.gguf";
+
+// =============================================================================
+// Additional Test Fixtures
+// =============================================================================
+
+/// Generate a simple plain-text document.
+fn generate_test_txt() -> Vec<u8> {
+    b"Hello World\n\nThis is a plain text document.\nIt has multiple lines of content for testing.\n\nAnother paragraph here.".to_vec()
+}
+
+/// Generate a reStructuredText document with headers.
+fn generate_test_rst() -> Vec<u8> {
+    b"Test RST Document\n=================\n\nSection One\n-----------\n\nThis is a reStructuredText document.\nIt has proper RST formatting.\n\nSection Two\n-----------\n\nMore content in section two.\n".to_vec()
+}
+
+/// Generate a log file with timestamped entries.
+fn generate_test_log() -> Vec<u8> {
+    b"2024-01-01 12:00:00 INFO Application started\n2024-01-01 12:00:01 INFO Processing files\n2024-01-01 12:00:02 WARN Low memory warning\n2024-01-01 12:00:03 ERROR File not found: /tmp/test.txt\n2024-01-01 12:00:04 INFO Shutdown complete\n".to_vec()
+}
+
+/// Build a minimal LLM generation request as JSON bytes.
+/// model_spec and prompt are the only required fields for ggufcartridge LLM caps.
+fn build_llm_request(model_spec: &str, prompt: &str) -> Vec<u8> {
+    // Escape special JSON chars in model_spec and prompt (HF specs use ? * / : which are safe)
+    let ms = model_spec.replace('\\', "\\\\").replace('"', "\\\"");
+    let pr = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(r#"{{"model_spec":"{ms}","prompt":"{pr}"}}"#).into_bytes()
+}
+
+/// Build an LLM generation request with a JSON schema constraint.
+fn build_llm_constrained_request(model_spec: &str, prompt: &str) -> Vec<u8> {
+    let ms = model_spec.replace('\\', "\\\\").replace('"', "\\\"");
+    let pr = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+    // Minimal JSON schema: object with a single "result" string field
+    format!(
+        r#"{{"model_spec":"{ms}","prompt":"{pr}","json_schema":{{"type":"object","properties":{{"result":{{"type":"string"}}}},"required":["result"]}}}}"#
+    ).into_bytes()
+}
+
+// =============================================================================
+// Scenario 16: txtcartridge Plain Text Format (3 caps, fan-out)
+// txtcartridge: extract_metadata + extract_outline + generate_thumbnail on .txt
+// =============================================================================
+
+// TEST029: Plain text fan-out produces metadata, outline, and thumbnail from txt input
+#[tokio::test]
+async fn test029_txt_document_intelligence() {
+    let dev_binaries = match require_binaries(&["txtcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let metadata_urn = txt_extract_metadata();
+    let outline_urn = txt_extract_outline();
+    let thumbnail_urn = txt_generate_thumbnail();
+    registry.register(metadata_urn.clone());
+    registry.register(outline_urn.clone());
+    registry.register(thumbnail_urn.clone());
+
+    let dot = dot_graph(
+        "txt_document_intelligence",
+        &[
+            dot_edge("txt_input", "metadata", &metadata_urn),
+            dot_edge("txt_input", "outline", &outline_urn),
+            dot_edge("txt_input", "thumbnail", &thumbnail_urn),
+        ],
+    );
+    eprintln!("[TEST029] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+    assert_eq!(graph.edges.len(), 3);
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert("txt_input".to_string(), NodeData::Bytes(generate_test_txt()));
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let meta = extract_text(&outputs, "metadata");
+    eprintln!("[TEST029] metadata: {}", &meta[..meta.len().min(200)]);
+    assert!(!meta.is_empty(), "txt metadata must not be empty");
+
+    let outline = extract_text(&outputs, "outline");
+    eprintln!("[TEST029] outline: {}", &outline[..outline.len().min(200)]);
+    assert!(!outline.is_empty(), "txt outline must not be empty");
+
+    let thumb = extract_bytes(&outputs, "thumbnail");
+    eprintln!("[TEST029] thumbnail: {} bytes", thumb.len());
+    assert!(
+        thumb.len() >= 8 && thumb[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "txt thumbnail must be valid PNG"
+    );
+}
+
+// =============================================================================
+// Scenario 17: txtcartridge RST Format (3 caps, fan-out)
+// txtcartridge: extract_metadata + extract_outline + generate_thumbnail on .rst
+// =============================================================================
+
+// TEST030: RST document fan-out produces metadata, outline (with headers), and thumbnail
+#[tokio::test]
+async fn test030_rst_document_intelligence() {
+    let dev_binaries = match require_binaries(&["txtcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let metadata_urn = rst_extract_metadata();
+    let outline_urn = rst_extract_outline();
+    let thumbnail_urn = rst_generate_thumbnail();
+    registry.register(metadata_urn.clone());
+    registry.register(outline_urn.clone());
+    registry.register(thumbnail_urn.clone());
+
+    let dot = dot_graph(
+        "rst_document_intelligence",
+        &[
+            dot_edge("rst_input", "metadata", &metadata_urn),
+            dot_edge("rst_input", "outline", &outline_urn),
+            dot_edge("rst_input", "thumbnail", &thumbnail_urn),
+        ],
+    );
+    eprintln!("[TEST030] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+    assert_eq!(graph.edges.len(), 3);
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert("rst_input".to_string(), NodeData::Bytes(generate_test_rst()));
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let meta = extract_text(&outputs, "metadata");
+    eprintln!("[TEST030] metadata: {}", &meta[..meta.len().min(200)]);
+    assert!(!meta.is_empty(), "rst metadata must not be empty");
+
+    // RST has section headers — outline should have content
+    let outline = extract_text(&outputs, "outline");
+    eprintln!("[TEST030] outline: {}", &outline[..outline.len().min(200)]);
+    assert!(!outline.is_empty(), "rst outline must not be empty");
+
+    let thumb = extract_bytes(&outputs, "thumbnail");
+    assert!(
+        thumb.len() >= 8 && thumb[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "rst thumbnail must be valid PNG"
+    );
+}
+
+// =============================================================================
+// Scenario 18: txtcartridge Log Format (3 caps, fan-out)
+// txtcartridge: extract_metadata + extract_outline + generate_thumbnail on .log
+// =============================================================================
+
+// TEST031: Log file fan-out produces metadata, outline, and thumbnail from log input
+#[tokio::test]
+async fn test031_log_document_intelligence() {
+    let dev_binaries = match require_binaries(&["txtcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let metadata_urn = log_extract_metadata();
+    let outline_urn = log_extract_outline();
+    let thumbnail_urn = log_generate_thumbnail();
+    registry.register(metadata_urn.clone());
+    registry.register(outline_urn.clone());
+    registry.register(thumbnail_urn.clone());
+
+    let dot = dot_graph(
+        "log_document_intelligence",
+        &[
+            dot_edge("log_input", "metadata", &metadata_urn),
+            dot_edge("log_input", "outline", &outline_urn),
+            dot_edge("log_input", "thumbnail", &thumbnail_urn),
+        ],
+    );
+    eprintln!("[TEST031] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+    assert_eq!(graph.edges.len(), 3);
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert("log_input".to_string(), NodeData::Bytes(generate_test_log()));
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let meta = extract_text(&outputs, "metadata");
+    eprintln!("[TEST031] metadata: {}", &meta[..meta.len().min(200)]);
+    assert!(!meta.is_empty(), "log metadata must not be empty");
+
+    // Log files don't have section headers — outline may be minimal but must not error
+    let outline = extract_text(&outputs, "outline");
+    eprintln!("[TEST031] outline: {}", &outline[..outline.len().min(200)]);
+    assert!(!outline.is_empty(), "log outline response must not be empty");
+
+    let thumb = extract_bytes(&outputs, "thumbnail");
+    assert!(
+        thumb.len() >= 8 && thumb[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "log thumbnail must be valid PNG"
+    );
+}
+
+// =============================================================================
+// Scenario 19: All Four Text Formats in One DAG (12 caps, 4 parallel fan-outs)
+// txtcartridge: txt + rst + log + md each → metadata + outline + thumbnail
+// =============================================================================
+
+// TEST032: 12-cap DAG processing all four text formats simultaneously
+#[tokio::test]
+async fn test032_all_text_formats_intelligence() {
+    let dev_binaries = match require_binaries(&["txtcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let txt_meta = txt_extract_metadata();
+    let txt_outline = txt_extract_outline();
+    let txt_thumb = txt_generate_thumbnail();
+    let rst_meta = rst_extract_metadata();
+    let rst_outline = rst_extract_outline();
+    let rst_thumb = rst_generate_thumbnail();
+    let log_meta = log_extract_metadata();
+    let log_outline = log_extract_outline();
+    let log_thumb = log_generate_thumbnail();
+    let md_meta = md_extract_metadata();
+    let md_outline = md_extract_outline();
+    let md_thumb = md_generate_thumbnail();
+    registry.register(txt_meta.clone());
+    registry.register(txt_outline.clone());
+    registry.register(txt_thumb.clone());
+    registry.register(rst_meta.clone());
+    registry.register(rst_outline.clone());
+    registry.register(rst_thumb.clone());
+    registry.register(log_meta.clone());
+    registry.register(log_outline.clone());
+    registry.register(log_thumb.clone());
+    registry.register(md_meta.clone());
+    registry.register(md_outline.clone());
+    registry.register(md_thumb.clone());
+
+    let dot = dot_graph(
+        "all_text_formats",
+        &[
+            dot_edge("txt_input", "txt_metadata", &txt_meta),
+            dot_edge("txt_input", "txt_outline", &txt_outline),
+            dot_edge("txt_input", "txt_thumbnail", &txt_thumb),
+            dot_edge("rst_input", "rst_metadata", &rst_meta),
+            dot_edge("rst_input", "rst_outline", &rst_outline),
+            dot_edge("rst_input", "rst_thumbnail", &rst_thumb),
+            dot_edge("log_input", "log_metadata", &log_meta),
+            dot_edge("log_input", "log_outline", &log_outline),
+            dot_edge("log_input", "log_thumbnail", &log_thumb),
+            dot_edge("md_input", "md_metadata", &md_meta),
+            dot_edge("md_input", "md_outline", &md_outline),
+            dot_edge("md_input", "md_thumbnail", &md_thumb),
+        ],
+    );
+    eprintln!("[TEST032] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+    assert_eq!(graph.edges.len(), 12, "12 edges expected");
+    assert_eq!(graph.nodes.len(), 16, "4 inputs + 12 outputs");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert("txt_input".to_string(), NodeData::Bytes(generate_test_txt()));
+    inputs.insert("rst_input".to_string(), NodeData::Bytes(generate_test_rst()));
+    inputs.insert("log_input".to_string(), NodeData::Bytes(generate_test_log()));
+    inputs.insert("md_input".to_string(), NodeData::Bytes(generate_test_markdown()));
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    // All 12 output nodes must have data
+    let expected_nodes = [
+        "txt_metadata", "txt_outline", "txt_thumbnail",
+        "rst_metadata", "rst_outline", "rst_thumbnail",
+        "log_metadata", "log_outline", "log_thumbnail",
+        "md_metadata", "md_outline", "md_thumbnail",
+    ];
+    for node in &expected_nodes {
+        assert!(outputs.contains_key(*node), "Missing output node '{}'", node);
+    }
+
+    // All thumbnails must be valid PNG
+    for node in &["txt_thumbnail", "rst_thumbnail", "log_thumbnail", "md_thumbnail"] {
+        let thumb = extract_bytes(&outputs, node);
+        assert!(
+            thumb.len() >= 8 && thumb[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+            "{} must be valid PNG",
+            node
+        );
+    }
+
+    // All metadata outputs must be non-empty
+    for node in &["txt_metadata", "rst_metadata", "log_metadata", "md_metadata"] {
+        assert!(!extract_text(&outputs, node).is_empty(), "{} must not be empty", node);
+    }
+
+    eprintln!("[TEST032] All 12 outputs verified across 4 text formats");
+}
+
+// =============================================================================
+// Scenario 20: modelcartridge list-models (1 cap)
+// modelcartridge: model-repo → model-list
+// =============================================================================
+
+// TEST033: List all locally cached models via modelcartridge
+#[tokio::test]
+async fn test033_model_list_models() {
+    let dev_binaries = match require_binaries(&["modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let list_urn = model_list_models();
+    registry.register(list_urn.clone());
+
+    let dot = dot_graph(
+        "model_list",
+        &[dot_edge("repo_input", "model_list", &list_urn)],
+    );
+    eprintln!("[TEST033] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+    assert_eq!(graph.edges.len(), 1);
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    // Empty JSON object: list all models without filtering
+    inputs.insert("repo_input".to_string(), NodeData::Bytes(b"{}".to_vec()));
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let result = extract_text(&outputs, "model_list");
+    eprintln!("[TEST033] model_list: {}", &result[..result.len().min(300)]);
+    assert!(!result.is_empty(), "model list output must not be empty");
+    // Should be valid JSON (either empty list or list of cached models)
+    assert!(
+        result.starts_with('{') || result.starts_with('['),
+        "model list must be JSON, got: {}",
+        &result[..result.len().min(50)]
+    );
+}
+
+// =============================================================================
+// Scenario 21: ggufcartridge Embedding Dimensions (1 cap)
+// ggufcartridge: model-spec → embedding dimensions integer
+// =============================================================================
+
+// TEST034: Query GGUF embedding model dimensions via ggufcartridge
+#[tokio::test]
+async fn test034_gguf_embeddings_dimensions() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let dim_urn = gguf_embeddings_dimensions();
+    registry.register(dim_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_EMBED, &modelcartridge_bin).await;
+
+    let dot = dot_graph(
+        "gguf_dimensions",
+        &[dot_edge("model_spec", "dimensions", &dim_urn)],
+    );
+    eprintln!("[TEST034] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "model_spec".to_string(),
+        NodeData::Text(MODEL_GGUF_EMBED.to_string()),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let dim_text = extract_text(&outputs, "dimensions");
+    eprintln!("[TEST034] dimensions: {}", dim_text);
+    // Should be a positive integer (embedding dim for nomic-embed is 768)
+    let dim: usize = dim_text.trim().parse()
+        .unwrap_or_else(|_| panic!("Dimensions output must be a number, got: {}", dim_text));
+    assert!(dim > 0, "Embedding dimensions must be positive, got: {}", dim);
+}
+
+// =============================================================================
+// Scenario 22: ggufcartridge LLM Model Info (1 cap)
+// ggufcartridge: llm-generation-request → llm-model-info
+// =============================================================================
+
+// TEST035: Query GGUF model metadata via llm_model_info cap
+#[tokio::test]
+async fn test035_gguf_llm_model_info() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let info_urn = gguf_llm_model_info();
+    registry.register(info_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_LLM, &modelcartridge_bin).await;
+
+    let dot = dot_graph(
+        "gguf_model_info",
+        &[dot_edge("request_input", "model_info", &info_urn)],
+    );
+    eprintln!("[TEST035] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "request_input".to_string(),
+        NodeData::Bytes(build_llm_request(MODEL_GGUF_LLM, " ")),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let info = extract_text(&outputs, "model_info");
+    eprintln!("[TEST035] model_info: {}", &info[..info.len().min(300)]);
+    assert!(!info.is_empty(), "Model info must not be empty");
+    assert!(
+        info.contains("model_spec") || info.contains("vocab_size"),
+        "Model info must contain metadata fields, got: {}",
+        &info[..info.len().min(200)]
+    );
+}
+
+// =============================================================================
+// Scenario 23: ggufcartridge LLM Vocabulary (1 cap)
+// ggufcartridge: llm-generation-request → llm-vocab-response
+// =============================================================================
+
+// TEST036: Extract vocabulary tokens from a GGUF model via llm_vocab cap
+#[tokio::test]
+async fn test036_gguf_llm_vocab() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let vocab_urn = gguf_llm_vocab();
+    registry.register(vocab_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_LLM, &modelcartridge_bin).await;
+
+    let dot = dot_graph(
+        "gguf_vocab",
+        &[dot_edge("request_input", "vocab", &vocab_urn)],
+    );
+    eprintln!("[TEST036] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "request_input".to_string(),
+        NodeData::Bytes(build_llm_request(MODEL_GGUF_LLM, " ")),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let vocab = extract_text(&outputs, "vocab");
+    eprintln!("[TEST036] vocab (first 300): {}", &vocab[..vocab.len().min(300)]);
+    assert!(!vocab.is_empty(), "Vocab output must not be empty");
+    assert!(
+        vocab.contains("vocab") || vocab.contains("vocab_size"),
+        "Vocab output must contain vocab data, got: {}",
+        &vocab[..vocab.len().min(200)]
+    );
+}
+
+// =============================================================================
+// Scenario 24: ggufcartridge Model Info + Vocab Fan-out (2 caps)
+// ggufcartridge: same request → model_info + vocab
+// =============================================================================
+
+// TEST037: Fan-out from one LLM request to both model_info and vocab outputs
+#[tokio::test]
+async fn test037_gguf_model_info_plus_vocab() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let info_urn = gguf_llm_model_info();
+    let vocab_urn = gguf_llm_vocab();
+    registry.register(info_urn.clone());
+    registry.register(vocab_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_LLM, &modelcartridge_bin).await;
+
+    let dot = dot_graph(
+        "gguf_model_info_vocab",
+        &[
+            dot_edge("request_input", "model_info", &info_urn),
+            dot_edge("request_input", "vocab", &vocab_urn),
+        ],
+    );
+    eprintln!("[TEST037] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+    assert_eq!(graph.edges.len(), 2);
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "request_input".to_string(),
+        NodeData::Bytes(build_llm_request(MODEL_GGUF_LLM, " ")),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    assert!(outputs.contains_key("model_info"), "Missing model_info output");
+    assert!(outputs.contains_key("vocab"), "Missing vocab output");
+
+    let info = extract_text(&outputs, "model_info");
+    eprintln!("[TEST037] model_info: {}", &info[..info.len().min(200)]);
+    assert!(!info.is_empty());
+
+    let vocab = extract_text(&outputs, "vocab");
+    eprintln!("[TEST037] vocab (first 200): {}", &vocab[..vocab.len().min(200)]);
+    assert!(!vocab.is_empty());
+}
+
+// =============================================================================
+// Scenario 25: ggufcartridge LLM Text Generation (1 cap, streaming)
+// ggufcartridge: llm-generation-request → llm-text-stream
+// =============================================================================
+
+// TEST038: Generate text with a small GGUF LLM via llm_inference cap
+#[tokio::test]
+async fn test038_gguf_llm_inference() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let infer_urn = gguf_llm_inference();
+    registry.register(infer_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_LLM, &modelcartridge_bin).await;
+
+    let dot = dot_graph(
+        "gguf_inference",
+        &[dot_edge("request_input", "generation", &infer_urn)],
+    );
+    eprintln!("[TEST038] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "request_input".to_string(),
+        NodeData::Bytes(build_llm_request(
+            MODEL_GGUF_LLM,
+            "Write a single sentence about the sky.",
+        )),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let generation = extract_text(&outputs, "generation");
+    eprintln!("[TEST038] generation: {}", &generation[..generation.len().min(300)]);
+    assert!(!generation.is_empty(), "Generation output must not be empty");
+}
+
+// =============================================================================
+// Scenario 26: ggufcartridge Constrained LLM Generation (1 cap)
+// ggufcartridge: llm-generation-request (with JSON schema) → llm-text-stream
+// =============================================================================
+
+// TEST039: Generate JSON-constrained output with GGUF LLM via llm_inference_constrained cap
+#[tokio::test]
+async fn test039_gguf_llm_inference_constrained() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let constrained_urn = gguf_llm_inference_constrained();
+    registry.register(constrained_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_LLM, &modelcartridge_bin).await;
+
+    let dot = dot_graph(
+        "gguf_constrained",
+        &[dot_edge("request_input", "generation", &constrained_urn)],
+    );
+    eprintln!("[TEST039] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "request_input".to_string(),
+        NodeData::Bytes(build_llm_constrained_request(
+            MODEL_GGUF_LLM,
+            "Describe the color blue in one word.",
+        )),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let generation = extract_text(&outputs, "generation");
+    eprintln!("[TEST039] constrained generation: {}", &generation[..generation.len().min(300)]);
+    assert!(!generation.is_empty(), "Constrained generation output must not be empty");
+}
+
+// =============================================================================
+// Scenario 27: ggufcartridge Text Embeddings (fan-in: text + model-spec)
+// ggufcartridge: text_input + model_spec → embedding vector
+// The generate_embeddings cap requires both the text stream (media:textable;form=scalar)
+// and the model-spec stream (media:model-spec;textable;form=scalar) simultaneously.
+// Fan-in via two edges with the same cap URN to the same output node.
+// =============================================================================
+
+// TEST040: Generate GGUF text embeddings with fan-in of text and model-spec inputs
+#[tokio::test]
+async fn test040_gguf_generate_embeddings() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let embed_urn = gguf_generate_embeddings();
+    registry.register(embed_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_EMBED, &modelcartridge_bin).await;
+
+    // Fan-in: both text_input and model_spec feed into embedding via the same cap.
+    // The handler reads both streams: media:textable;form=scalar AND media:model-spec;textable;form=scalar.
+    let dot = dot_graph(
+        "gguf_text_embedding",
+        &[
+            dot_edge("text_input", "embedding", &embed_urn),
+            dot_edge("model_spec", "embedding", &embed_urn),
+        ],
+    );
+    eprintln!("[TEST040] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "text_input".to_string(),
+        NodeData::Text("The quick brown fox jumps over the lazy dog.".to_string()),
+    );
+    inputs.insert(
+        "model_spec".to_string(),
+        NodeData::Text(MODEL_GGUF_EMBED.to_string()),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let embedding = extract_text(&outputs, "embedding");
+    eprintln!(
+        "[TEST040] embedding: {}",
+        &embedding[..embedding.len().min(200)]
+    );
+    assert!(!embedding.is_empty(), "GGUF embedding output must not be empty");
+    assert!(
+        embedding.contains("embeddings") || embedding.contains("embedding"),
+        "Output should contain embedding vector data"
+    );
+}
+
+// =============================================================================
+// Scenario 28: ggufcartridge Vision Analysis (fan-in: image + model-spec)
+// ggufcartridge: image_input + model_spec → llm-text-stream (image analysis)
+// =============================================================================
+
+// TEST041: Analyze image with GGUF vision model via fan-in of image and model-spec
+#[tokio::test]
+async fn test041_gguf_analyze_image() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let vision_urn = gguf_analyze_image();
+    registry.register(vision_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    // Vision model is large (~1.8GB) — pre-download; test proceeds regardless of download outcome
+    ensure_model_downloaded(MODEL_GGUF_VISION, &modelcartridge_bin).await;
+
+    // Fan-in: image_input and model_spec both feed into analysis via the same cap.
+    // Handler reads: media:image;png (image bytes) AND media:model-spec;textable;form=scalar.
+    let dot = dot_graph(
+        "gguf_vision",
+        &[
+            dot_edge("image_input", "analysis", &vision_urn),
+            dot_edge("model_spec", "analysis", &vision_urn),
+        ],
+    );
+    eprintln!("[TEST041] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "image_input".to_string(),
+        NodeData::Bytes(generate_test_png(64, 64, 100, 149, 237)), // blue image
+    );
+    inputs.insert(
+        "model_spec".to_string(),
+        NodeData::Text(MODEL_GGUF_VISION.to_string()),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let analysis = extract_text(&outputs, "analysis");
+    eprintln!("[TEST041] analysis: {}", &analysis[..analysis.len().min(300)]);
+    assert!(!analysis.is_empty(), "Vision analysis output must not be empty");
+}
+
+// =============================================================================
+// Scenario 29: PDF Thumbnail → ggufcartridge Vision Analysis (cross-cartridge chain)
+// pdfcartridge → candlecartridge: thumbnail output feeds into gguf vision
+// =============================================================================
+
+// TEST042: Cross-cartridge chain: PDF thumbnail piped to GGUF vision analysis
+#[tokio::test]
+async fn test042_pdf_thumbnail_to_gguf_vision() {
+    let dev_binaries =
+        match require_binaries(&["pdfcartridge", "ggufcartridge", "modelcartridge"]) {
+            Some(b) => b,
+            None => return,
+        };
+
+    let mut registry = CartridgeRegistry::new();
+    let thumbnail_urn = pdf_generate_thumbnail();
+    let vision_urn = gguf_analyze_image();
+    registry.register(thumbnail_urn.clone());
+    registry.register(vision_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_VISION, &modelcartridge_bin).await;
+
+    // Chain: pdf → thumbnail → vision analysis (fan-in with model_spec)
+    // thumbnail outputs media:image;png;thumbnail which conforms to media:image;png (vision in_spec)
+    let dot = dot_graph(
+        "pdf_thumbnail_to_vision",
+        &[
+            dot_edge("pdf_input", "thumbnail", &thumbnail_urn),
+            dot_edge("thumbnail", "analysis", &vision_urn),
+            dot_edge("model_spec", "analysis", &vision_urn),
+        ],
+    );
+    eprintln!("[TEST042] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed — thumbnail→vision media URN compatibility check");
+    assert_eq!(graph.edges.len(), 3);
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
+    inputs.insert(
+        "model_spec".to_string(),
+        NodeData::Text(MODEL_GGUF_VISION.to_string()),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    assert!(outputs.contains_key("thumbnail"), "Missing thumbnail output");
+    assert!(outputs.contains_key("analysis"), "Missing analysis output");
+
+    let thumb = extract_bytes(&outputs, "thumbnail");
+    assert!(
+        thumb.len() >= 8 && thumb[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "Thumbnail must be valid PNG"
+    );
+
+    let analysis = extract_text(&outputs, "analysis");
+    eprintln!("[TEST042] analysis: {}", &analysis[..analysis.len().min(300)]);
+    assert!(!analysis.is_empty(), "Vision analysis output must not be empty");
+}
+
+// =============================================================================
+// Scenario 30: All 4 ggufcartridge LLM Ops Fan-out (4 caps from same request)
+// ggufcartridge: request → model_info + vocab + inference + inference_constrained
+// =============================================================================
+
+// TEST043: Fan-out from one LLM request to all 4 ggufcartridge LLM operations
+#[tokio::test]
+async fn test043_gguf_all_llm_ops() {
+    let dev_binaries = match require_binaries(&["ggufcartridge", "modelcartridge"]) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut registry = CartridgeRegistry::new();
+    let info_urn = gguf_llm_model_info();
+    let vocab_urn = gguf_llm_vocab();
+    let infer_urn = gguf_llm_inference();
+    let constrained_urn = gguf_llm_inference_constrained();
+    registry.register(info_urn.clone());
+    registry.register(vocab_urn.clone());
+    registry.register(infer_urn.clone());
+    registry.register(constrained_urn.clone());
+
+    let modelcartridge_bin = dev_binaries
+        .iter()
+        .find(|p| p.to_str().map_or(false, |s| s.contains("modelcartridge")))
+        .expect("modelcartridge binary required")
+        .clone();
+    ensure_model_downloaded(MODEL_GGUF_LLM, &modelcartridge_bin).await;
+
+    // Fan-out: same request dispatched to all 4 LLM caps simultaneously.
+    // model_info and vocab use the same request format; inference and constrained
+    // inference differ only in constraint field — both use unconstrained format here.
+    let dot = dot_graph(
+        "gguf_all_llm_ops",
+        &[
+            dot_edge("request_input", "model_info", &info_urn),
+            dot_edge("request_input", "vocab", &vocab_urn),
+            dot_edge("request_input", "generation", &infer_urn),
+            dot_edge("request_input", "constrained_generation", &constrained_urn),
+        ],
+    );
+    eprintln!("[TEST043] DOT:\n{}", dot);
+
+    let graph = parse_dot_to_cap_dag(&dot, &registry)
+        .await
+        .expect("Parse failed");
+    assert_eq!(graph.edges.len(), 4);
+    assert_eq!(graph.nodes.len(), 5); // 1 input + 4 outputs
+
+    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let mut inputs = HashMap::new();
+    // Use constrained request so both inference caps receive valid input
+    inputs.insert(
+        "request_input".to_string(),
+        NodeData::Bytes(build_llm_constrained_request(
+            MODEL_GGUF_LLM,
+            "Name one color.",
+        )),
+    );
+
+    let outputs = execute_dag(
+        &graph,
+        plugin_dir,
+        "https://filegrind.com/api/plugins".to_string(),
+        inputs,
+        dev_bins,
+    )
+    .await
+    .expect("Execution failed");
+
+    let expected = ["model_info", "vocab", "generation", "constrained_generation"];
+    for node in &expected {
+        assert!(outputs.contains_key(*node), "Missing output node '{}'", node);
+    }
+
+    let info = extract_text(&outputs, "model_info");
+    eprintln!("[TEST043] model_info: {}", &info[..info.len().min(200)]);
+    assert!(!info.is_empty());
+
+    let vocab = extract_text(&outputs, "vocab");
+    eprintln!("[TEST043] vocab (first 100): {}", &vocab[..vocab.len().min(100)]);
+    assert!(!vocab.is_empty());
+
+    let gen = extract_text(&outputs, "generation");
+    eprintln!("[TEST043] generation: {}", &gen[..gen.len().min(200)]);
+    assert!(!gen.is_empty());
+
+    let cgen = extract_text(&outputs, "constrained_generation");
+    eprintln!(
+        "[TEST043] constrained_generation: {}",
+        &cgen[..cgen.len().min(200)]
+    );
+    assert!(!cgen.is_empty());
+
+    eprintln!("[TEST043] All 4 ggufcartridge LLM ops fan-out complete");
+}
