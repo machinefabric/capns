@@ -596,8 +596,8 @@ mod tests {
     async fn test136_cache_key_generation() {
         let (registry, _temp_dir) = registry_with_temp_cache().await;
         // Use URNs with required in/out (new media URN format)
-        let key1 = registry.cache_key("cap:in=media:void;op=extract;out=media:form=map;target=metadata");
-        let key2 = registry.cache_key("cap:in=media:void;op=extract;out=media:form=map;target=metadata");
+        let key1 = registry.cache_key("cap:in=media:void;op=extract;out=media:record;target=metadata");
+        let key2 = registry.cache_key("cap:in=media:void;op=extract;out=media:record;target=metadata");
         let key3 = registry.cache_key("cap:in=media:void;op=different;out=media:object");
 
         assert_eq!(key1, key2);
@@ -626,7 +626,7 @@ mod json_parse_tests {
     #[test]
     fn test138_parse_registry_json_with_stdin() {
         // JSON with stdin args - means cap accepts stdin of specified media type
-        let json = r#"{"urn":"cap:in=\"media:pdf\";op=extract_metadata;out=\"media:file-metadata;textable;form=map\"","command":"extract-metadata","title":"Extract Metadata","args":[{"media_urn":"media:pdf","required":true,"sources":[{"stdin":"media:pdf"}]}]}"#;
+        let json = r#"{"urn":"cap:in=\"media:pdf\";op=extract_metadata;out=\"media:file-metadata;textable;record\"","command":"extract-metadata","title":"Extract Metadata","args":[{"media_urn":"media:pdf","required":true,"sources":[{"stdin":"media:pdf"}]}]}"#;
 
         let cap: Cap = serde_json::from_str(json).expect("Failed to parse JSON");
         assert_eq!(cap.title, "Extract Metadata");

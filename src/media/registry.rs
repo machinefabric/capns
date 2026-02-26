@@ -419,7 +419,7 @@ impl MediaUrnRegistry {
     /// # Example
     /// ```ignore
     /// let urns = registry.media_urns_for_extension("pdf")?;
-    /// // May return ["media:pdf", "media:pdf;form=list"]
+    /// // May return ["media:pdf", "media:pdf;list"]
     /// ```
     pub fn media_urns_for_extension(&self, extension: &str) -> Result<Vec<String>, MediaRegistryError> {
         let ext_lower = extension.to_lowercase();
@@ -678,8 +678,8 @@ mod tests {
     #[tokio::test]
     async fn test615_cache_key_generation() {
         let (registry, _temp_dir) = registry_with_temp_cache().await;
-        let key1 = registry.cache_key("media:textable;form=scalar");
-        let key2 = registry.cache_key("media:textable;form=scalar");
+        let key1 = registry.cache_key("media:textable");
+        let key2 = registry.cache_key("media:textable");
         let key3 = registry.cache_key("media:integer");
 
         assert_eq!(key1, key2);

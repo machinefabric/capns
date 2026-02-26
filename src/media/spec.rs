@@ -249,7 +249,7 @@ impl MediaValidation {
 /// ## Example
 /// ```json
 /// {
-///   "urn": "media:my-output;json;form=map",
+///   "urn": "media:my-output;json;record",
 ///   "media_type": "application/json",
 ///   "title": "My Output",
 ///   "profile_uri": "https://example.com/schema/my-output",
@@ -409,29 +409,29 @@ impl ResolvedMediaSpec {
         self.parse_media_urn().is_binary()
     }
 
-    /// Check if this represents a map/object structure (form=map).
-    /// This indicates a key-value structure, regardless of representation format.
-    pub fn is_map(&self) -> bool {
-        self.parse_media_urn().is_map()
+    /// Check if this represents a record (has internal key-value structure).
+    /// This indicates the data has internal fields (e.g., JSON object).
+    pub fn is_record(&self) -> bool {
+        self.parse_media_urn().is_record()
     }
 
-    /// Check if this represents a scalar value (form=scalar).
-    /// This indicates a single value, not a collection.
+    /// Check if this represents a scalar value (no list marker).
+    /// Scalar is the default cardinality - a single value, not a collection.
     pub fn is_scalar(&self) -> bool {
         self.parse_media_urn().is_scalar()
     }
 
-    /// Check if this represents a list/array structure (form=list).
+    /// Check if this represents a list/array structure (has list marker).
     /// This indicates an ordered collection of values.
     pub fn is_list(&self) -> bool {
         self.parse_media_urn().is_list()
     }
 
-    /// Check if this represents structured data (map or list).
+    /// Check if this represents structured data (record or list).
     /// Structured data can be serialized as JSON when transmitted as text.
     /// Note: This does NOT check for the explicit `json` tag - use is_json() for that.
     pub fn is_structured(&self) -> bool {
-        self.is_map() || self.is_list()
+        self.is_record() || self.is_list()
     }
 
     /// Check if this represents JSON representation specifically.
@@ -494,7 +494,7 @@ impl ResolvedMediaSpec {
 /// 4. If none resolve → Error
 ///
 /// # Arguments
-/// * `media_urn` - The media URN to resolve (e.g., "media:textable;form=scalar")
+/// * `media_urn` - The media URN to resolve (e.g., "media:textable")
 /// * `media_specs` - Optional media_specs array from the cap definition
 /// * `registry` - The MediaUrnRegistry for cache and remote lookups
 ///
@@ -635,17 +635,18 @@ mod tests {
     #[tokio::test]
     async fn test088_resolve_from_registry_str() {
         let registry = test_registry().await;
-        let resolved = resolve_media_urn("media:textable;form=scalar", None, &registry).await.unwrap();
+        let resolved = resolve_media_urn("media:textable", None, &registry).await.unwrap();
         assert_eq!(resolved.media_type, "text/plain");
         // Registry provides the full spec including profile
         assert!(resolved.profile_uri.is_some());
     }
 
-    // TEST089: Test resolving object media URN from registry returns JSON media type
+    // TEST089: Test resolving JSON media URN from registry returns JSON media type
     #[tokio::test]
     async fn test089_resolve_from_registry_obj() {
         let registry = test_registry().await;
-        let resolved = resolve_media_urn("media:form=map;textable", None, &registry).await.unwrap();
+        // Use MEDIA_JSON which is json;record;textable
+        let resolved = resolve_media_urn(crate::MEDIA_JSON, None, &registry).await.unwrap();
         assert_eq!(resolved.media_type, "application/json");
     }
 
@@ -702,7 +703,7 @@ mod tests {
         assert!(resolved.schema.is_none());
     }
 
-    // TEST092: Test resolving custom object form media spec with schema from local media_specs
+    // TEST092: Test resolving custom record media spec with schema from local media_specs
     #[tokio::test]
     async fn test092_resolve_custom_with_schema() {
         let registry = test_registry().await;
@@ -714,7 +715,7 @@ mod tests {
         });
         let media_specs = create_media_specs(vec![
             MediaSpecDef {
-                urn: "media:output-spec;json;form=map".to_string(),
+                urn: "media:json;output-spec;record".to_string(),
                 media_type: "application/json".to_string(),
                 title: "Output Spec".to_string(),
                 profile_uri: Some("https://example.com/schema/output".to_string()),
@@ -726,8 +727,8 @@ mod tests {
             }
         ]);
 
-        let resolved = resolve_media_urn("media:output-spec;json;form=map", Some(&media_specs), &registry).await.unwrap();
-        assert_eq!(resolved.media_urn, "media:output-spec;json;form=map");
+        let resolved = resolve_media_urn("media:json;output-spec;record", Some(&media_specs), &registry).await.unwrap();
+        assert_eq!(resolved.media_urn, "media:json;output-spec;record");
         assert_eq!(resolved.media_type, "application/json");
         assert_eq!(
             resolved.profile_uri,
@@ -757,7 +758,7 @@ mod tests {
         // Custom definition in media_specs takes precedence over registry
         let media_specs = create_media_specs(vec![
             MediaSpecDef {
-                urn: "media:textable;form=scalar".to_string(),
+                urn: "media:textable".to_string(),
                 media_type: "application/json".to_string(), // Override: normally text/plain
                 title: "Custom String".to_string(),
                 profile_uri: Some("https://custom.example.com/str".to_string()),
@@ -769,7 +770,7 @@ mod tests {
             }
         ]);
 
-        let resolved = resolve_media_urn("media:textable;form=scalar", Some(&media_specs), &registry).await.unwrap();
+        let resolved = resolve_media_urn("media:textable", Some(&media_specs), &registry).await.unwrap();
         // Custom definition used, not registry
         assert_eq!(resolved.media_type, "application/json");
         assert_eq!(
@@ -868,15 +869,15 @@ mod tests {
             extensions: Vec::new(),
         };
         assert!(resolved.is_binary());
-        assert!(!resolved.is_map());
+        assert!(!resolved.is_record());
         assert!(!resolved.is_json());
     }
 
-    // TEST100: Test ResolvedMediaSpec is_map returns true for form=map media URN
+    // TEST100: Test ResolvedMediaSpec is_record returns true when record marker is present
     #[test]
-    fn test100_resolved_is_map() {
+    fn test100_resolved_is_record() {
         let resolved = ResolvedMediaSpec {
-            media_urn: "media:textable;form=map".to_string(),
+            media_urn: "media:record;textable".to_string(),
             media_type: "application/json".to_string(),
             profile_uri: None,
             schema: None,
@@ -886,17 +887,17 @@ mod tests {
             metadata: None,
             extensions: Vec::new(),
         };
-        assert!(resolved.is_map());
+        assert!(resolved.is_record());
         assert!(!resolved.is_binary());
-        assert!(!resolved.is_scalar());
+        assert!(resolved.is_scalar(), "record without list marker is scalar");
         assert!(!resolved.is_list());
     }
 
-    // TEST101: Test ResolvedMediaSpec is_scalar returns true for form=scalar media URN
+    // TEST101: Test ResolvedMediaSpec is_scalar returns true when list marker is absent
     #[test]
     fn test101_resolved_is_scalar() {
         let resolved = ResolvedMediaSpec {
-            media_urn: "media:textable;form=scalar".to_string(),
+            media_urn: "media:textable".to_string(),
             media_type: "text/plain".to_string(),
             profile_uri: None,
             schema: None,
@@ -907,15 +908,15 @@ mod tests {
             extensions: Vec::new(),
         };
         assert!(resolved.is_scalar());
-        assert!(!resolved.is_map());
+        assert!(!resolved.is_record());
         assert!(!resolved.is_list());
     }
 
-    // TEST102: Test ResolvedMediaSpec is_list returns true for form=list media URN
+    // TEST102: Test ResolvedMediaSpec is_list returns true when list marker is present
     #[test]
     fn test102_resolved_is_list() {
         let resolved = ResolvedMediaSpec {
-            media_urn: "media:textable;form=list".to_string(),
+            media_urn: "media:list;textable".to_string(),
             media_type: "application/json".to_string(),
             profile_uri: None,
             schema: None,
@@ -926,7 +927,7 @@ mod tests {
             extensions: Vec::new(),
         };
         assert!(resolved.is_list());
-        assert!(!resolved.is_map());
+        assert!(!resolved.is_record());
         assert!(!resolved.is_scalar());
     }
 
@@ -934,7 +935,7 @@ mod tests {
     #[test]
     fn test103_resolved_is_json() {
         let resolved = ResolvedMediaSpec {
-            media_urn: "media:json;textable;form=map".to_string(),
+            media_urn: "media:json;record;textable".to_string(),
             media_type: "application/json".to_string(),
             profile_uri: None,
             schema: None,
@@ -945,7 +946,7 @@ mod tests {
             extensions: Vec::new(),
         };
         assert!(resolved.is_json());
-        assert!(resolved.is_map());
+        assert!(resolved.is_record());
         assert!(!resolved.is_binary());
     }
 

@@ -30,7 +30,7 @@ pub enum StdinSource {
 /// The cap definition's sources specify how to extract values (stdin, position, cli_flag).
 #[derive(Debug, Clone)]
 pub struct CapArgumentValue {
-    /// Semantic identifier, e.g., "media:model-spec;textable;form=scalar"
+    /// Semantic identifier, e.g., "media:model-spec;textable"
     pub media_urn: String,
     /// Value bytes (UTF-8 for text, raw for binary)
     pub value: Vec<u8>,
@@ -461,8 +461,8 @@ mod tests {
     // TEST274: Test CapArgumentValue::new stores media_urn and raw byte value
     #[test]
     fn test274_cap_argument_value_new() {
-        let arg = CapArgumentValue::new("media:model-spec;textable;form=scalar", b"gpt-4".to_vec());
-        assert_eq!(arg.media_urn, "media:model-spec;textable;form=scalar");
+        let arg = CapArgumentValue::new("media:model-spec;textable", b"gpt-4".to_vec());
+        assert_eq!(arg.media_urn, "media:model-spec;textable");
         assert_eq!(arg.value, b"gpt-4");
     }
 
@@ -546,7 +546,7 @@ mod tests {
         use crate::bifaci::frame::FrameType;
         use crate::MessageId;
 
-        let full_urn = "media:llm-generation-request;json;form=map";
+        let full_urn = "media:llm-generation-request;json;record";
         let arg = CapArgumentValue::new(full_urn, b"{\"prompt\":\"test\"}".to_vec());
         let rid = MessageId::new_uuid();
         let frames = CapArgumentValue::build_request_frames(&rid, "cap:op=test", &[arg], 32768);
@@ -569,7 +569,7 @@ mod tests {
         use crate::bifaci::frame::FrameType;
         use crate::{MessageId, find_stream};
 
-        let full_urn = "media:llm-generation-request;json;form=map";
+        let full_urn = "media:llm-generation-request;json;record";
         let payload = b"{\"prompt\":\"hello\",\"model_spec\":\"test\"}";
         let arg = CapArgumentValue::new(full_urn, payload.to_vec());
         let rid = MessageId::new_uuid();
@@ -615,7 +615,7 @@ mod tests {
     // TEST677: build_request_frames with BASE URN → find_stream with FULL URN FAILS
     // This documents the root cause of the cartridge_client.rs bug:
     // sender used "media:llm-generation-request" (base), receiver looked for
-    // "media:llm-generation-request;json;form=map" (full). is_equivalent requires
+    // "media:llm-generation-request;json;record" (full). is_equivalent requires
     // exact tag set match, so base != full.
     #[test]
     fn test677_base_urn_does_not_match_full_urn_in_find_stream() {
@@ -624,7 +624,7 @@ mod tests {
 
         // Sender uses BASE URN (the bug)
         let base_urn = "media:llm-generation-request";
-        let full_urn = "media:llm-generation-request;json;form=map";
+        let full_urn = "media:llm-generation-request;json;record";
         let arg = CapArgumentValue::new(base_urn, b"{}".to_vec());
         let rid = MessageId::new_uuid();
         let frames = CapArgumentValue::build_request_frames(&rid, "cap:op=test", &[arg], 32768);

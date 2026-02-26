@@ -1331,9 +1331,9 @@ mod tests {
     #[test]
     fn test750_no_duplicates_with_unique_caps() {
         let caps = vec![
-            make_test_cap("extract_metadata", "media:pdf", "media:file-metadata;textable;form=map", "Extract Metadata"),
-            make_test_cap("extract_outline", "media:pdf", "media:document-outline;textable;form=map", "Extract Outline"),
-            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;form=list", "Disbind PDF"),
+            make_test_cap("extract_metadata", "media:pdf", "media:file-metadata;textable;record", "Extract Metadata"),
+            make_test_cap("extract_outline", "media:pdf", "media:document-outline;textable;record", "Extract Outline"),
+            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;list", "Disbind PDF"),
         ];
 
         let result = check_for_duplicate_caps(&caps);
@@ -1346,8 +1346,8 @@ mod tests {
     #[test]
     fn test751_detects_duplicate_cap_urns() {
         let caps = vec![
-            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;form=list", "Disbind PDF"),
-            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;form=list", "Disbind PDF Again"),
+            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;list", "Disbind PDF"),
+            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;list", "Disbind PDF Again"),
         ];
 
         let result = check_for_duplicate_caps(&caps);
@@ -1363,8 +1363,8 @@ mod tests {
     #[test]
     fn test752_different_ops_same_types_not_duplicates() {
         let caps = vec![
-            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;form=list", "Disbind"),
-            make_test_cap("grind", "media:pdf", "media:disbound-pages;textable;form=list", "Grind"),
+            make_test_cap("disbind", "media:pdf", "media:disbound-pages;textable;list", "Disbind"),
+            make_test_cap("grind", "media:pdf", "media:disbound-pages;textable;list", "Grind"),
         ];
 
         let result = check_for_duplicate_caps(&caps);
@@ -1377,8 +1377,8 @@ mod tests {
     #[test]
     fn test753_same_op_different_input_types_not_duplicates() {
         let caps = vec![
-            make_test_cap("extract_metadata", "media:pdf", "media:file-metadata;textable;form=map", "Extract PDF Metadata"),
-            make_test_cap("extract_metadata", "media:txt;textable", "media:file-metadata;textable;form=map", "Extract TXT Metadata"),
+            make_test_cap("extract_metadata", "media:pdf", "media:file-metadata;textable;record", "Extract PDF Metadata"),
+            make_test_cap("extract_metadata", "media:txt;textable", "media:file-metadata;textable;record", "Extract TXT Metadata"),
         ];
 
         let result = check_for_duplicate_caps(&caps);

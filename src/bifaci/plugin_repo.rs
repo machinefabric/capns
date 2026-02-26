@@ -688,7 +688,7 @@ mod tests {
             "minAppVersion": "1.0.0",
             "caps": [
                 {
-                    "urn": "cap:in=\"media:pdf\";op=disbind;out=\"media:disbound-page;textable;form=list\"",
+                    "urn": "cap:in=\"media:pdf\";op=disbind;out=\"media:disbound-page;textable;list\"",
                     "title": "Disbind PDF",
                     "description": "Extract pages from PDF"
                 }
@@ -1136,7 +1136,7 @@ mod tests {
             },
         });
 
-        let cap_urn = r#"cap:in="media:pdf";op=disbind;out="media:disbound-page;textable;form=list""#;
+        let cap_urn = r#"cap:in="media:pdf";op=disbind;out="media:disbound-page;textable;list""#;
         plugins.insert("pdfplugin".to_string(), PluginRegistryEntry {
             name: "PDF Plugin".to_string(),
             description: "Process PDFs".to_string(),
@@ -1221,7 +1221,7 @@ mod tests {
         // TEST331: Get suggestions for missing cap
         let repo = PluginRepo::new(3600);
 
-        let cap_urn = r#"cap:in="media:pdf";op=disbind;out="media:disbound-page;textable;form=list""#;
+        let cap_urn = r#"cap:in="media:pdf";op=disbind;out="media:disbound-page;textable;list""#;
         let registry = PluginRegistryResponse {
             plugins: vec![
                 PluginInfo {
@@ -1316,8 +1316,8 @@ mod tests {
         // TEST333: Get all available caps
         let repo = PluginRepo::new(3600);
 
-        let cap1 = "cap:in=\"media:pdf\";op=disbind;out=\"media:disbound-page;textable;form=list\"";
-        let cap2 = "cap:in=\"media:txt;textable\";op=disbind;out=\"media:disbound-page;textable;form=list\"";
+        let cap1 = "cap:in=\"media:pdf\";op=disbind;out=\"media:disbound-page;textable;list\"";
+        let cap2 = "cap:in=\"media:txt;textable\";op=disbind;out=\"media:disbound-page;textable;list\"";
 
         let registry = PluginRegistryResponse {
             plugins: vec![

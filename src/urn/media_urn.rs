@@ -22,34 +22,46 @@ use tagged_urn::{TaggedUrn, TaggedUrnError};
 // =============================================================================
 // STANDARD MEDIA URN CONSTANTS
 // =============================================================================
+//
+// Cardinality and Structure use orthogonal marker tags:
+// - `list` marker: presence = list/array, absence = scalar (default)
+// - `record` marker: presence = has internal fields, absence = opaque (default)
+//
+// Examples:
+// - `media:pdf` → scalar, opaque (no markers)
+// - `media:textable;list` → list, opaque (has list marker)
+// - `media:json;textable;record` → scalar, record (has record marker)
+// - `media:json;list;record;textable` → list of records (has both markers)
 
 // Primitive types - URNs must match base.toml definitions
 /// Media URN for void (no input/output) - no coercion tags
 pub const MEDIA_VOID: &str = "media:void";
-/// Media URN for string type - textable (can become text), scalar (single value)
-pub const MEDIA_STRING: &str = "media:textable;form=scalar";
-/// Media URN for integer type - textable, numeric (math ops valid), scalar
-pub const MEDIA_INTEGER: &str = "media:integer;textable;numeric;form=scalar";
-/// Media URN for number type - textable, numeric, scalar (no primary type prefix)
-pub const MEDIA_NUMBER: &str = "media:textable;numeric;form=scalar";
+/// Media URN for string type - textable (can become text), scalar by default (no list marker)
+pub const MEDIA_STRING: &str = "media:textable";
+/// Media URN for integer type - textable, numeric (math ops valid), scalar by default
+pub const MEDIA_INTEGER: &str = "media:integer;textable;numeric";
+/// Media URN for number type - textable, numeric, scalar by default
+pub const MEDIA_NUMBER: &str = "media:textable;numeric";
 /// Media URN for boolean type - uses "bool" not "boolean" per base.toml
-pub const MEDIA_BOOLEAN: &str = "media:bool;textable;form=scalar";
-/// Media URN for JSON object type - textable (via JSON.stringify), form=map (key-value structure)
-pub const MEDIA_OBJECT: &str = "media:form=map;textable";
+pub const MEDIA_BOOLEAN: &str = "media:bool;textable";
+/// Media URN for a generic record/object type - has internal key-value structure but NOT textable
+/// Use MEDIA_JSON for textable JSON objects.
+pub const MEDIA_OBJECT: &str = "media:record";
 /// Media URN for binary data - the most general media type (no constraints)
 pub const MEDIA_BINARY: &str = "media:";
 
 // Array types - URNs must match base.toml definitions
-/// Media URN for string array type - textable, list (no primary type prefix)
-pub const MEDIA_STRING_ARRAY: &str = "media:textable;form=list";
-/// Media URN for integer array type - textable, numeric, list (per base.toml:46)
-pub const MEDIA_INTEGER_ARRAY: &str = "media:integer;textable;numeric;form=list";
-/// Media URN for number array type - textable, numeric, list (no primary type prefix)
-pub const MEDIA_NUMBER_ARRAY: &str = "media:textable;numeric;form=list";
-/// Media URN for boolean array type - uses "bool" not "boolean" per base.toml
-pub const MEDIA_BOOLEAN_ARRAY: &str = "media:bool;textable;form=list";
-/// Media URN for object array type - generic list (item type defined in schema)
-pub const MEDIA_OBJECT_ARRAY: &str = "media:form=list;textable";
+/// Media URN for string array type - textable with list marker
+pub const MEDIA_STRING_ARRAY: &str = "media:list;textable";
+/// Media URN for integer array type - textable, numeric with list marker
+pub const MEDIA_INTEGER_ARRAY: &str = "media:integer;list;textable;numeric";
+/// Media URN for number array type - textable, numeric with list marker
+pub const MEDIA_NUMBER_ARRAY: &str = "media:list;textable;numeric";
+/// Media URN for boolean array type - uses "bool" with list marker
+pub const MEDIA_BOOLEAN_ARRAY: &str = "media:bool;list;textable";
+/// Media URN for object array type - list of records (NOT textable)
+/// Use a specific format like JSON array for textable object arrays.
+pub const MEDIA_OBJECT_ARRAY: &str = "media:list;record";
 
 // Semantic media types for specialized content
 /// Media URN for PNG image data
@@ -64,12 +76,6 @@ pub const MEDIA_VIDEO: &str = "media:video";
 pub const MEDIA_AUDIO_SPEECH: &str = "media:audio;wav;speech";
 /// Media URN for thumbnail image output
 pub const MEDIA_IMAGE_THUMBNAIL: &str = "media:image;png;thumbnail";
-
-// Collection types for folder hierarchies
-/// Media URN for a collection (folder with nested structure as form=map)
-pub const MEDIA_COLLECTION: &str = "media:collection;textable;form=map";
-/// Media URN for a flat collection (folder contents as form=list)
-pub const MEDIA_COLLECTION_LIST: &str = "media:collection;textable;form=list";
 
 // Document types (PRIMARY naming - type IS the format)
 /// Media URN for PDF documents
@@ -90,28 +96,28 @@ pub const MEDIA_LOG: &str = "media:log;textable";
 pub const MEDIA_HTML: &str = "media:html;textable";
 /// Media URN for XML documents
 pub const MEDIA_XML: &str = "media:xml;textable";
-/// Media URN for JSON data
-pub const MEDIA_JSON: &str = "media:json;textable;form=map";
-/// Media URN for JSON with schema constraint (input for structured queries) - matches CATALOG: media:json;json-schema;textable;form=map
-pub const MEDIA_JSON_SCHEMA: &str = "media:json;json-schema;textable;form=map";
-/// Media URN for YAML data
-pub const MEDIA_YAML: &str = "media:yaml;textable;form=map";
+/// Media URN for JSON data - has record marker (structured key-value)
+pub const MEDIA_JSON: &str = "media:json;record;textable";
+/// Media URN for JSON with schema constraint (input for structured queries)
+pub const MEDIA_JSON_SCHEMA: &str = "media:json;json-schema;record;textable";
+/// Media URN for YAML data - has record marker (structured key-value)
+pub const MEDIA_YAML: &str = "media:record;textable;yaml";
 
 // File path types - for arguments that represent filesystem paths
-/// Media URN for a single file path - textable, scalar, and marked as a file-path for special handling
-pub const MEDIA_FILE_PATH: &str = "media:file-path;textable;form=scalar";
-/// Media URN for an array of file paths - textable, list (per file-path.toml)
-pub const MEDIA_FILE_PATH_ARRAY: &str = "media:file-path;textable;form=list";
+/// Media URN for a single file path - textable, scalar by default (no list marker)
+pub const MEDIA_FILE_PATH: &str = "media:file-path;textable";
+/// Media URN for an array of file paths - textable with list marker
+pub const MEDIA_FILE_PATH_ARRAY: &str = "media:file-path;list;textable";
 
 // Semantic text input types - distinguished by their purpose/context
-/// Media URN for frontmatter text (book metadata)
-pub const MEDIA_FRONTMATTER_TEXT: &str = "media:frontmatter;textable;form=scalar";
-/// Media URN for model spec (provider:model format, HuggingFace name, etc.)
-pub const MEDIA_MODEL_SPEC: &str = "media:model-spec;textable;form=scalar";
-/// Media URN for MLX model path
-pub const MEDIA_MLX_MODEL_PATH: &str = "media:mlx-model-path;textable;form=scalar";
-/// Media URN for model repository (input for list-models) - matches CATALOG: media:model-repo;textable;form=map
-pub const MEDIA_MODEL_REPO: &str = "media:model-repo;textable;form=map";
+/// Media URN for frontmatter text (book metadata) - scalar by default
+pub const MEDIA_FRONTMATTER_TEXT: &str = "media:frontmatter;textable";
+/// Media URN for model spec (provider:model format, HuggingFace name, etc.) - scalar by default
+pub const MEDIA_MODEL_SPEC: &str = "media:model-spec;textable";
+/// Media URN for MLX model path - scalar by default
+pub const MEDIA_MLX_MODEL_PATH: &str = "media:mlx-model-path;textable";
+/// Media URN for model repository (input for list-models) - has record marker
+pub const MEDIA_MODEL_REPO: &str = "media:model-repo;record;textable";
 
 /// Helper to build binary media URN with extension
 pub fn binary_media_urn_for_ext(ext: &str) -> String {
@@ -133,39 +139,39 @@ pub fn audio_media_urn_for_ext(ext: &str) -> String {
     format!("media:audio;ext={}", ext)
 }
 
-// CAPNS output types - all form=map structures (JSON objects)
-/// Media URN for model dimension output - matches CATALOG: media:model-dim;integer;textable;numeric;form=scalar
-pub const MEDIA_MODEL_DIM: &str = "media:model-dim;integer;textable;numeric;form=scalar";
-/// Media URN for model download output - textable, form=map
-pub const MEDIA_DOWNLOAD_OUTPUT: &str = "media:download-result;textable;form=map";
-/// Media URN for model list output - textable, form=map
-pub const MEDIA_LIST_OUTPUT: &str = "media:model-list;textable;form=map";
-/// Media URN for model status output - textable, form=map
-pub const MEDIA_STATUS_OUTPUT: &str = "media:model-status;textable;form=map";
-/// Media URN for model contents output - textable, form=map
-pub const MEDIA_CONTENTS_OUTPUT: &str = "media:model-contents;textable;form=map";
-/// Media URN for model availability output - textable, form=map
-pub const MEDIA_AVAILABILITY_OUTPUT: &str = "media:model-availability;textable;form=map";
-/// Media URN for model path output - textable, form=map
-pub const MEDIA_PATH_OUTPUT: &str = "media:model-path;textable;form=map";
-/// Media URN for embedding vector output - textable, form=map
-pub const MEDIA_EMBEDDING_VECTOR: &str = "media:embedding-vector;textable;form=map";
-/// Media URN for LLM inference output - textable, form=map
-pub const MEDIA_LLM_INFERENCE_OUTPUT: &str = "media:generated-text;textable;form=map";
-/// Media URN for extracted metadata - textable, form=map
-pub const MEDIA_FILE_METADATA: &str = "media:file-metadata;textable;form=map";
-/// Media URN for extracted outline - textable, form=map
-pub const MEDIA_DOCUMENT_OUTLINE: &str = "media:document-outline;textable;form=map";
-/// Media URN for disbound page - textable, form=list (array of page objects)
-pub const MEDIA_DISBOUND_PAGE: &str = "media:disbound-page;textable;form=list";
-/// Media URN for vision inference output - textable output from vision models
-pub const MEDIA_IMAGE_DESCRIPTION: &str = "media:image-description;textable;form=scalar";
-/// Media URN for transcription output - textable, form=map
-pub const MEDIA_TRANSCRIPTION_OUTPUT: &str = "media:transcription;textable;form=map";
-/// Media URN for decision output (bit choice) - matches CATALOG: media:decision;bool;textable;form=scalar
-pub const MEDIA_DECISION: &str = "media:decision;bool;textable;form=scalar";
-/// Media URN for decision array output (bit choices) - matches CATALOG: media:decision;bool;textable;form=list
-pub const MEDIA_DECISION_ARRAY: &str = "media:decision;bool;textable;form=list";
+// CAPNS output types - record marker for structured JSON objects, list marker for arrays
+/// Media URN for model dimension output - scalar by default (no list marker)
+pub const MEDIA_MODEL_DIM: &str = "media:integer;model-dim;numeric;textable";
+/// Media URN for model download output - has record marker
+pub const MEDIA_DOWNLOAD_OUTPUT: &str = "media:download-result;record;textable";
+/// Media URN for model list output - has record marker
+pub const MEDIA_LIST_OUTPUT: &str = "media:model-list;record;textable";
+/// Media URN for model status output - has record marker
+pub const MEDIA_STATUS_OUTPUT: &str = "media:model-status;record;textable";
+/// Media URN for model contents output - has record marker
+pub const MEDIA_CONTENTS_OUTPUT: &str = "media:model-contents;record;textable";
+/// Media URN for model availability output - has record marker
+pub const MEDIA_AVAILABILITY_OUTPUT: &str = "media:model-availability;record;textable";
+/// Media URN for model path output - has record marker
+pub const MEDIA_PATH_OUTPUT: &str = "media:model-path;record;textable";
+/// Media URN for embedding vector output - has record marker
+pub const MEDIA_EMBEDDING_VECTOR: &str = "media:embedding-vector;record;textable";
+/// Media URN for LLM inference output - has record marker
+pub const MEDIA_LLM_INFERENCE_OUTPUT: &str = "media:generated-text;record;textable";
+/// Media URN for extracted metadata - has record marker
+pub const MEDIA_FILE_METADATA: &str = "media:file-metadata;record;textable";
+/// Media URN for extracted outline - has record marker
+pub const MEDIA_DOCUMENT_OUTLINE: &str = "media:document-outline;record;textable";
+/// Media URN for disbound page - has list marker (array of page objects)
+pub const MEDIA_DISBOUND_PAGE: &str = "media:disbound-page;list;textable";
+/// Media URN for vision inference output - textable, scalar by default
+pub const MEDIA_IMAGE_DESCRIPTION: &str = "media:image-description;textable";
+/// Media URN for transcription output - has record marker
+pub const MEDIA_TRANSCRIPTION_OUTPUT: &str = "media:record;textable;transcription";
+/// Media URN for decision output (bit choice) - scalar by default
+pub const MEDIA_DECISION: &str = "media:bool;decision;textable";
+/// Media URN for decision array output (bit choices) - has list marker
+pub const MEDIA_DECISION_ARRAY: &str = "media:bool;decision;list;textable";
 
 // =============================================================================
 // MEDIA URN TYPE
@@ -293,29 +299,46 @@ impl MediaUrn {
         self.get_tag("textable").is_none()
     }
 
-    /// Check if this represents a map/object structure (form=map).
-    /// This indicates a key-value structure, regardless of representation format.
-    pub fn is_map(&self) -> bool {
-        self.has_tag("form", "map")
-    }
+    // =========================================================================
+    // CARDINALITY (list marker)
+    // =========================================================================
 
-    /// Check if this represents a scalar value (form=scalar).
-    /// This indicates a single value, not a collection.
-    pub fn is_scalar(&self) -> bool {
-        self.has_tag("form", "scalar")
-    }
-
-    /// Check if this represents a list/array structure (form=list).
-    /// This indicates an ordered collection of values.
+    /// Returns true if this media is a list (has `list` marker tag).
+    /// Returns false if scalar (no `list` marker = default).
     pub fn is_list(&self) -> bool {
-        self.has_tag("form", "list")
+        self.has_marker_tag("list")
     }
 
-    /// Check if this represents structured data (map or list).
-    /// Structured data can be serialized as JSON when transmitted as text.
-    /// Note: This does NOT check for the explicit `json` tag - use is_json() for that.
-    pub fn is_structured(&self) -> bool {
-        self.is_map() || self.is_list()
+    /// Returns true if this media is a scalar (no `list` marker).
+    /// Scalar is the default cardinality.
+    pub fn is_scalar(&self) -> bool {
+        !self.has_marker_tag("list")
+    }
+
+    // =========================================================================
+    // STRUCTURE (record marker)
+    // =========================================================================
+
+    /// Returns true if this media is a record (has `record` marker tag).
+    /// A record has internal key-value structure (e.g., JSON object).
+    pub fn is_record(&self) -> bool {
+        self.has_marker_tag("record")
+    }
+
+    /// Returns true if this media is opaque (no `record` marker).
+    /// Opaque is the default structure - no internal fields recognized.
+    pub fn is_opaque(&self) -> bool {
+        !self.has_marker_tag("record")
+    }
+
+    // =========================================================================
+    // HELPER: Check for marker tag presence
+    // =========================================================================
+
+    /// Check if a marker tag (tag with wildcard/no value) is present.
+    /// A marker tag is stored as key="*" in the tagged URN.
+    fn has_marker_tag(&self, tag_name: &str) -> bool {
+        self.0.tags.get(tag_name).map_or(false, |v| v == "*")
     }
 
     /// Check if this represents JSON representation specifically.
@@ -369,27 +392,21 @@ impl MediaUrn {
     }
 
     /// Check if this represents a single file path type (not array).
-    /// Returns true if the "file-path" marker tag is present AND NOT form=list.
+    /// Returns true if the "file-path" marker tag is present AND no list marker.
     pub fn is_file_path(&self) -> bool {
-        self.0.tags.get("file-path").map_or(false, |v| v == "*") && !self.is_list()
+        self.has_marker_tag("file-path") && !self.is_list()
     }
 
     /// Check if this represents a file path array type.
-    /// Returns true if the "file-path" marker tag is present AND form=list.
+    /// Returns true if the "file-path" marker tag is present AND has list marker.
     pub fn is_file_path_array(&self) -> bool {
-        self.0.tags.get("file-path").map_or(false, |v| v == "*") && self.is_list()
+        self.has_marker_tag("file-path") && self.is_list()
     }
 
     /// Check if this represents any file path type (single or array).
-    /// Returns true if either "file-path" or "file-path-array" marker tag is present.
+    /// Returns true if "file-path" marker tag is present.
     pub fn is_any_file_path(&self) -> bool {
-        self.is_file_path() || self.is_file_path_array()
-    }
-
-    /// Check if this represents a collection type (folder structure).
-    /// Returns true if the "collection" marker tag is present.
-    pub fn is_collection(&self) -> bool {
-        self.0.tags.get("collection").map_or(false, |v| v == "*")
+        self.has_marker_tag("file-path")
     }
 
 }
@@ -502,61 +519,65 @@ mod tests {
         assert!(MediaUrn::from_string("media:epub").unwrap().is_binary());
         // Textable types: is_binary is false
         assert!(!MediaUrn::from_string("media:textable").unwrap().is_binary());
-        assert!(!MediaUrn::from_string("media:textable;form=map").unwrap().is_binary());
+        assert!(!MediaUrn::from_string("media:textable;record").unwrap().is_binary());
         assert!(!MediaUrn::from_string(MEDIA_STRING).unwrap().is_binary());
         assert!(!MediaUrn::from_string(MEDIA_JSON).unwrap().is_binary());
         assert!(!MediaUrn::from_string(MEDIA_MD).unwrap().is_binary());
     }
 
-    // TEST062: Test is_map returns true when form=map tag is present indicating key-value structure
+    // TEST062: Test is_record returns true when record marker tag is present indicating key-value structure
     #[test]
-    fn test062_is_map() {
-        // is_map returns true if form=map tag is present (key-value structure)
-        assert!(MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_map()); // "media:form=map;textable"
-        assert!(MediaUrn::from_string("media:custom;form=map").unwrap().is_map());
-        // Without form=map tag, is_map is false
-        assert!(!MediaUrn::from_string("media:textable").unwrap().is_map());
-        assert!(!MediaUrn::from_string(MEDIA_STRING).unwrap().is_map()); // form=scalar
-        assert!(!MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_map()); // form=list
+    fn test062_is_record() {
+        // is_record returns true if record marker tag is present (key-value structure)
+        assert!(MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_record()); // "media:record;textable"
+        assert!(MediaUrn::from_string("media:custom;record").unwrap().is_record());
+        assert!(MediaUrn::from_string(MEDIA_JSON).unwrap().is_record()); // "media:json;record;textable"
+        // Without record marker, is_record is false
+        assert!(!MediaUrn::from_string("media:textable").unwrap().is_record());
+        assert!(!MediaUrn::from_string(MEDIA_STRING).unwrap().is_record()); // scalar, no record marker
+        assert!(!MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_record()); // list, no record marker
     }
 
-    // TEST063: Test is_scalar returns true when form=scalar tag is present indicating single value
+    // TEST063: Test is_scalar returns true when list marker tag is absent (scalar is default)
     #[test]
     fn test063_is_scalar() {
-        // is_scalar returns true if form=scalar tag is present (single value)
-        assert!(MediaUrn::from_string(MEDIA_STRING).unwrap().is_scalar()); // "media:textable;form=scalar"
-        assert!(MediaUrn::from_string(MEDIA_INTEGER).unwrap().is_scalar()); // "media:integer;textable;numeric;form=scalar"
-        assert!(MediaUrn::from_string(MEDIA_NUMBER).unwrap().is_scalar()); // "media:textable;numeric;form=scalar"
-        assert!(MediaUrn::from_string(MEDIA_BOOLEAN).unwrap().is_scalar()); // "media:bool;textable;form=scalar"
-        // Without form=scalar tag, is_scalar is false
-        assert!(!MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_scalar()); // form=map
-        assert!(!MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_scalar()); // form=list
+        // is_scalar returns true if NO list marker (scalar is default cardinality)
+        assert!(MediaUrn::from_string(MEDIA_STRING).unwrap().is_scalar()); // "media:textable" - no list marker
+        assert!(MediaUrn::from_string(MEDIA_INTEGER).unwrap().is_scalar()); // no list marker
+        assert!(MediaUrn::from_string(MEDIA_NUMBER).unwrap().is_scalar()); // no list marker
+        assert!(MediaUrn::from_string(MEDIA_BOOLEAN).unwrap().is_scalar()); // no list marker
+        assert!(MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_scalar()); // record but scalar
+        assert!(MediaUrn::from_string("media:textable").unwrap().is_scalar()); // plain textable is scalar
+        // With list marker, is_scalar is false
+        assert!(!MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_scalar()); // has list marker
+        assert!(!MediaUrn::from_string(MEDIA_OBJECT_ARRAY).unwrap().is_scalar()); // has list marker
     }
 
-    // TEST064: Test is_list returns true when form=list tag is present indicating ordered collection
+    // TEST064: Test is_list returns true when list marker tag is present indicating ordered collection
     #[test]
     fn test064_is_list() {
-        // is_list returns true if form=list tag is present (ordered collection)
-        assert!(MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_list()); // "media:textable;form=list"
-        assert!(MediaUrn::from_string(MEDIA_INTEGER_ARRAY).unwrap().is_list()); // "media:integer;textable;numeric;form=list"
-        assert!(MediaUrn::from_string(MEDIA_OBJECT_ARRAY).unwrap().is_list()); // "media:form=list;textable"
-        // Without form=list tag, is_list is false
-        assert!(!MediaUrn::from_string(MEDIA_STRING).unwrap().is_list()); // form=scalar
-        assert!(!MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_list()); // form=map
+        // is_list returns true if list marker tag is present (ordered collection)
+        assert!(MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_list()); // "media:list;textable"
+        assert!(MediaUrn::from_string(MEDIA_INTEGER_ARRAY).unwrap().is_list()); // has list marker
+        assert!(MediaUrn::from_string(MEDIA_OBJECT_ARRAY).unwrap().is_list()); // "media:list;record;textable"
+        assert!(MediaUrn::from_string("media:custom;list").unwrap().is_list());
+        // Without list marker, is_list is false
+        assert!(!MediaUrn::from_string(MEDIA_STRING).unwrap().is_list()); // no list marker
+        assert!(!MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_list()); // record but no list marker
     }
 
-    // TEST065: Test is_structured returns true for map or list forms indicating structured data types
+    // TEST065: Test is_opaque returns true when record marker is absent (opaque is default)
     #[test]
-    fn test065_is_structured() {
-        // is_structured returns true if form=map OR form=list (structured data types)
-        assert!(MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_structured()); // form=map
-        assert!(MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_structured()); // form=list
-        assert!(MediaUrn::from_string(MEDIA_JSON).unwrap().is_structured()); // "media:json;textable;form=map" - has form=map
-        // Scalars are NOT structured
-        assert!(!MediaUrn::from_string(MEDIA_STRING).unwrap().is_structured()); // form=scalar
-        assert!(!MediaUrn::from_string(MEDIA_INTEGER).unwrap().is_structured()); // form=scalar
-        // Pure textable without form tag is NOT structured
-        assert!(!MediaUrn::from_string("media:textable").unwrap().is_structured());
+    fn test065_is_opaque() {
+        // is_opaque returns true if NO record marker (opaque is default structure)
+        assert!(MediaUrn::from_string(MEDIA_STRING).unwrap().is_opaque()); // no record marker
+        assert!(MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_opaque()); // list but no record
+        assert!(MediaUrn::from_string(MEDIA_PDF).unwrap().is_opaque()); // binary, no record
+        assert!(MediaUrn::from_string("media:textable").unwrap().is_opaque()); // no record marker
+        // With record marker, is_opaque is false
+        assert!(!MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_opaque()); // has record marker
+        assert!(!MediaUrn::from_string(MEDIA_JSON).unwrap().is_opaque()); // has record marker
+        assert!(!MediaUrn::from_string(MEDIA_OBJECT_ARRAY).unwrap().is_opaque()); // has record marker
     }
 
     // TEST066: Test is_json returns true only when json marker tag is present for JSON representation
@@ -565,7 +586,7 @@ mod tests {
         // is_json returns true only if "json" marker tag is present (JSON representation)
         assert!(MediaUrn::from_string(MEDIA_JSON).unwrap().is_json()); // "media:json;textable"
         assert!(MediaUrn::from_string("media:custom;json").unwrap().is_json());
-        // form=map alone does not mean JSON representation
+        // record alone does not mean JSON representation
         assert!(!MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_json()); // map structure, not necessarily JSON
         assert!(!MediaUrn::from_string("media:textable").unwrap().is_json());
     }
@@ -574,12 +595,13 @@ mod tests {
     #[test]
     fn test067_is_text() {
         // is_text returns true only if "textable" marker tag is present
-        assert!(MediaUrn::from_string(MEDIA_STRING).unwrap().is_text()); // "media:textable;form=scalar"
-        assert!(MediaUrn::from_string(MEDIA_INTEGER).unwrap().is_text()); // "media:integer;textable;numeric;form=scalar"
-        assert!(MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_text()); // "media:form=map;textable"
+        assert!(MediaUrn::from_string(MEDIA_STRING).unwrap().is_text()); // "media:textable"
+        assert!(MediaUrn::from_string(MEDIA_INTEGER).unwrap().is_text()); // "media:integer;textable;numeric"
+        assert!(MediaUrn::from_string(MEDIA_JSON).unwrap().is_text()); // "media:json;record;textable"
         // Without textable tag, is_text is false
         assert!(!MediaUrn::from_string(MEDIA_BINARY).unwrap().is_text()); // "media:"
-        assert!(!MediaUrn::from_string(MEDIA_PNG).unwrap().is_text()); // "media:png"
+        assert!(!MediaUrn::from_string(MEDIA_PNG).unwrap().is_text()); // "media:image;png"
+        assert!(!MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_text()); // "media:record" (no textable)
     }
 
     // TEST068: Test is_void returns true when void flag or type=void tag is present
@@ -691,7 +713,7 @@ mod tests {
         // More tags = higher specificity
         let urn1 = MediaUrn::from_string("media:string").unwrap();
         let urn2 = MediaUrn::from_string("media:textable").unwrap();
-        let urn3 = MediaUrn::from_string("media:textable;form=scalar").unwrap();
+        let urn3 = MediaUrn::from_string("media:textable;numeric").unwrap();
 
         // Verify specificity increases with more tags
         // Note: The exact values may depend on implementation, but relative order should hold
@@ -736,10 +758,11 @@ mod debug_tests {
         println!("object.conforms_to(object) = {:?}", obj_urn.conforms_to(&obj_urn));
         println!("string.conforms_to(object) = {:?}", str_urn.conforms_to(&obj_urn));
 
-        // MEDIA_OBJECT should NOT conform to MEDIA_STRING (different type flags)
+        // MEDIA_OBJECT (media:record) should NOT conform to MEDIA_STRING (media:textable)
+        // because MEDIA_OBJECT lacks textable - records are not inherently textable.
         assert!(
             !obj_urn.conforms_to(&str_urn).expect("MediaUrn prefix mismatch impossible"),
-            "MEDIA_OBJECT should NOT conform to MEDIA_STRING"
+            "MEDIA_OBJECT should NOT conform to MEDIA_STRING (missing textable)"
         );
     }
 
@@ -748,7 +771,7 @@ mod debug_tests {
     fn test304_media_availability_output_constant() {
         let urn = MediaUrn::from_string(MEDIA_AVAILABILITY_OUTPUT).expect("must parse");
         assert!(urn.is_text(), "model-availability must be textable");
-        assert!(urn.is_map(), "model-availability must be form=map");
+        assert!(urn.is_record(), "model-availability must have record marker");
         assert!(!urn.is_binary(), "model-availability must not be binary");
         // to_string() alphabetizes tags, so compare via roundtrip parsing instead
         let reparsed = MediaUrn::from_string(&urn.to_string()).expect("roundtrip must parse");
@@ -760,7 +783,7 @@ mod debug_tests {
     fn test305_media_path_output_constant() {
         let urn = MediaUrn::from_string(MEDIA_PATH_OUTPUT).expect("must parse");
         assert!(urn.is_text(), "model-path must be textable");
-        assert!(urn.is_map(), "model-path must be form=map");
+        assert!(urn.is_record(), "model-path must have record marker");
         assert!(!urn.is_binary(), "model-path must not be binary");
         let reparsed = MediaUrn::from_string(&urn.to_string()).expect("roundtrip must parse");
         assert!(urn.conforms_to(&reparsed).unwrap(), "roundtrip must conform to original");
@@ -873,16 +896,6 @@ mod debug_tests {
         assert!(!MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_any_file_path());
     }
 
-    // TEST554: is_collection returns true when collection marker tag is present
-    #[test]
-    fn test554_is_collection() {
-        assert!(MediaUrn::from_string(MEDIA_COLLECTION).unwrap().is_collection());
-        assert!(MediaUrn::from_string(MEDIA_COLLECTION_LIST).unwrap().is_collection());
-        // Non-collection types
-        assert!(!MediaUrn::from_string(MEDIA_OBJECT).unwrap().is_collection());
-        assert!(!MediaUrn::from_string(MEDIA_STRING_ARRAY).unwrap().is_collection());
-    }
-
     // TEST555: with_tag adds a tag and without_tag removes it
     #[test]
     fn test555_with_tag_and_without_tag() {
@@ -940,12 +953,12 @@ mod debug_tests {
         assert!(bool_urn.is_scalar());
         assert!(!bool_urn.is_numeric());
 
-        // MEDIA_JSON must be json, text, map, structured, NOT binary
+        // MEDIA_JSON must be json, text, record, scalar, NOT binary
         let json_urn = MediaUrn::from_string(MEDIA_JSON).unwrap();
         assert!(json_urn.is_json());
         assert!(json_urn.is_text());
-        assert!(json_urn.is_map());
-        assert!(json_urn.is_structured());
+        assert!(json_urn.is_record());
+        assert!(json_urn.is_scalar(), "MEDIA_JSON is a scalar record (single object)");
         assert!(!json_urn.is_binary());
         assert!(!json_urn.is_list());
 

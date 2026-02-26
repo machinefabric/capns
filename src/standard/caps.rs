@@ -193,7 +193,7 @@ pub fn llm_summarization_urn(lang_code: &str) -> CapUrn {
 // -----------------------------------------------------------------------------
 
 /// Build URN for embeddings-dimensions capability
-/// Output uses MEDIA_MODEL_DIM per CATALOG: media:model-dim;integer;textable;numeric;form=scalar
+/// Output uses MEDIA_MODEL_DIM per CATALOG: media:model-dim;integer;textable;numeric
 pub fn embeddings_dimensions_urn() -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "embeddings_dimensions")
@@ -204,8 +204,8 @@ pub fn embeddings_dimensions_urn() -> CapUrn {
 }
 
 /// Build URN for text embeddings-generation capability
-/// Input: media:textable;form=scalar (text)
-/// Output: media:embedding-vector;textable;form=map
+/// Input: media:textable (text)
+/// Output: media:embedding-vector;textable;record
 pub fn embeddings_generation_urn() -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "generate_embeddings")
@@ -217,7 +217,7 @@ pub fn embeddings_generation_urn() -> CapUrn {
 
 /// Build URN for image embeddings-generation capability
 /// Input: media:image;png
-/// Output: media:embedding-vector;textable;form=map
+/// Output: media:embedding-vector;textable;record
 pub fn image_embeddings_generation_urn() -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "generate_image_embeddings")
@@ -244,7 +244,7 @@ pub fn model_download_urn() -> CapUrn {
 }
 
 /// Build URN for model-list capability
-/// Input uses MEDIA_MODEL_REPO per CATALOG: media:model-repo;textable;form=map
+/// Input uses MEDIA_MODEL_REPO per CATALOG: media:model-repo;textable;record
 pub fn model_list_urn() -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "list-models")
@@ -364,7 +364,7 @@ pub fn frontmatter_summarization_urn(lang_code: &str) -> CapUrn {
 }
 
 /// Build URN for structured-query capability
-/// Input uses MEDIA_JSON_SCHEMA per CATALOG: media:json;json-schema;textable;form=map
+/// Input uses MEDIA_JSON_SCHEMA per CATALOG: media:json;json-schema;textable;record
 pub fn structured_query_urn(lang_code: &str) -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "query_structured")
@@ -377,7 +377,7 @@ pub fn structured_query_urn(lang_code: &str) -> CapUrn {
 }
 
 /// Build URN for bit-choice capability
-/// Output uses MEDIA_DECISION per CATALOG: media:decision;bool;textable;form=scalar
+/// Output uses MEDIA_DECISION per CATALOG: media:decision;bool;textable
 pub fn bit_choice_urn(lang_code: &str) -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "choose_bit")
@@ -390,7 +390,7 @@ pub fn bit_choice_urn(lang_code: &str) -> CapUrn {
 }
 
 /// Build URN for bit-choices capability
-/// Output uses MEDIA_DECISION_ARRAY per CATALOG: media:decision;bool;textable;form=list
+/// Output uses MEDIA_DECISION_ARRAY per CATALOG: media:decision;bool;textable;list
 pub fn bit_choices_urn(lang_code: &str) -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "choose_bits")

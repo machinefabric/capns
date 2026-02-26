@@ -720,7 +720,7 @@ mod tests {
         let prev_outputs = HashMap::new();
         let mut slot_values: HashMap<String, Vec<u8>> = HashMap::new();
         slot_values.insert(
-            "cap:in=\"media:pdf\";op=resize;out=\"media:pdf\":media:width;textable;numeric;form=scalar".to_string(),
+            "cap:in=\"media:pdf\";op=resize;out=\"media:pdf\":media:width;textable;numeric".to_string(),
             b"800".to_vec(),
         );
         let context = ArgumentResolutionContext {
@@ -732,7 +732,7 @@ mod tests {
             slot_values: Some(&slot_values),
         };
         let binding = ArgumentBinding::Slot {
-            name: "media:width;textable;numeric;form=scalar".to_string(),
+            name: "media:width;textable;numeric".to_string(),
             schema: None,
         };
         let result = resolve_binding(
@@ -757,7 +757,7 @@ mod tests {
             slot_values: None,
         };
         let binding = ArgumentBinding::Slot {
-            name: "media:quality;textable;numeric;form=scalar".to_string(),
+            name: "media:quality;textable;numeric".to_string(),
             schema: None,
         };
         let default = json!(85);
@@ -780,13 +780,13 @@ mod tests {
             slot_values: None,
         };
         let binding = ArgumentBinding::Slot {
-            name: "media:question;textable;form=scalar".to_string(),
+            name: "media:question;textable".to_string(),
             schema: None,
         };
         let result = resolve_binding(&binding, &context, "cap:op=generate", None, true);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("media:question;textable;form=scalar"));
+        assert!(err.contains("media:question;textable"));
     }
 
     #[test]
@@ -802,7 +802,7 @@ mod tests {
             slot_values: None,
         };
         let binding = ArgumentBinding::Slot {
-            name: "media:suffix;textable;form=scalar".to_string(),
+            name: "media:suffix;textable".to_string(),
             schema: None,
         };
         let result = resolve_binding(&binding, &context, "cap:op=rename", None, false).unwrap();

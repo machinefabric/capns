@@ -239,7 +239,7 @@ impl InputPackage {
 /// exact match — never a subsumption/pattern match.
 ///
 /// The `media_urn` parameter must be the FULL media URN from the cap arg
-/// definition (e.g., `"media:model-spec;textable;form=scalar"`).
+/// definition (e.g., `"media:model-spec;textable"`).
 pub fn find_stream<'a>(streams: &'a [(String, Vec<u8>)], media_urn: &str) -> Option<&'a [u8]> {
     let target = match crate::MediaUrn::from_string(media_urn) {
         Ok(p) => p,
@@ -911,16 +911,11 @@ fn extract_effective_payload(
     };
 
     // File-path auto-conversion: If arg is media:file-path, read file(s)
-    // Pattern hierarchy:
-    // - media:file-path (base) accepts both scalar and list
-    // - media:file-path;form=scalar (single file)
-    // - media:file-path;form=list (array of files)
+    // Cardinality is determined by the `list` marker tag:
+    // - media:file-path;textable (single file, no list marker = scalar)
+    // - media:file-path;list;textable (array of files, has list marker)
     let file_path_base = MediaUrn::from_string("media:file-path")
         .map_err(|e| RuntimeError::Handler(format!("Invalid file-path base pattern: {}", e)))?;
-    let file_path_scalar = MediaUrn::from_string("media:file-path;form=scalar")
-        .map_err(|e| RuntimeError::Handler(format!("Invalid file-path scalar pattern: {}", e)))?;
-    let file_path_list = MediaUrn::from_string("media:file-path;form=list")
-        .map_err(|e| RuntimeError::Handler(format!("Invalid file-path list pattern: {}", e)))?;
 
     for arg in arguments.iter_mut() {
         if let ciborium::Value::Map(ref mut arg_map) = arg {
@@ -963,27 +958,10 @@ fn extract_effective_payload(
                         continue;
                     }
 
-                    // Determine if it's scalar or list using specific patterns
-                    let is_scalar = file_path_scalar.accepts(&arg_urn)
-                        .map_err(|e| RuntimeError::Handler(format!("URN matching failed: {}", e)))?;
-                    let is_list = file_path_list.accepts(&arg_urn)
-                        .map_err(|e| RuntimeError::Handler(format!("URN matching failed: {}", e)))?;
-
-                    // Hard failure if neither scalar nor list
-                    if !is_scalar && !is_list {
-                        return Err(RuntimeError::Handler(format!(
-                            "File-path argument '{}' must be either form=scalar or form=list",
-                            urn_str
-                        )));
-                    }
-
-                    // Hard failure if both (should never happen with proper URN matching)
-                    if is_scalar && is_list {
-                        return Err(RuntimeError::Handler(format!(
-                            "File-path argument '{}' cannot be both scalar and list",
-                            urn_str
-                        )));
-                    }
+                    // Determine if it's scalar or list using marker tags
+                    // No list marker = scalar (default), has list marker = list
+                    let is_list = arg_urn.is_list();
+                    let is_scalar = arg_urn.is_scalar();
 
                     // Read file(s) and replace value
                     if is_scalar {
@@ -1268,8 +1246,6 @@ impl PeerInvoker for PeerInvokerImpl {
 /// Context for file-path auto-conversion in the Demux.
 struct FilePathContext {
     file_path_pattern: MediaUrn,
-    file_path_scalar: MediaUrn,
-    file_path_list: MediaUrn,
     cap_urn: String,
     manifest: Option<CapManifest>,
 }
@@ -1279,10 +1255,6 @@ impl FilePathContext {
         Ok(Self {
             file_path_pattern: MediaUrn::from_string("media:file-path")
                 .map_err(|e| RuntimeError::Handler(format!("Failed to create file-path pattern: {}", e)))?,
-            file_path_scalar: MediaUrn::from_string("media:file-path;form=scalar")
-                .map_err(|e| RuntimeError::Handler(format!("Failed to create file-path;form=scalar pattern: {}", e)))?,
-            file_path_list: MediaUrn::from_string("media:file-path;form=list")
-                .map_err(|e| RuntimeError::Handler(format!("Failed to create file-path;form=list pattern: {}", e)))?,
             cap_urn: cap_urn.to_string(),
             manifest,
         })
@@ -1297,11 +1269,11 @@ impl FilePathContext {
     }
 
     fn is_scalar(&self, media_urn_str: &str) -> bool {
-        let arg_urn = match MediaUrn::from_string(media_urn_str) {
-            Ok(u) => u,
-            Err(_) => return false,
-        };
-        self.file_path_scalar.accepts(&arg_urn).unwrap_or(false)
+        // Uses list marker: no list marker = scalar (default)
+        match MediaUrn::from_string(media_urn_str) {
+            Ok(u) => u.is_scalar(),
+            Err(_) => false,
+        }
     }
 
     /// Given the media URN of an incoming file-path stream, find the matching
@@ -1466,9 +1438,9 @@ fn demux_multi_stream(
                                     }
                                 }
                             } else {
-                                // form=list — not yet implemented in CBOR mode
+                                // list — not yet implemented in CBOR mode
                                 let _ = streams_tx.send(Err(StreamError::Protocol(
-                                    "File-path form=list conversion not yet implemented in CBOR mode".into()
+                                    "File-path list conversion not yet implemented in CBOR mode".into()
                                 )));
                                 break;
                             }
@@ -2940,7 +2912,7 @@ mod tests {
             ));
 
             registry.add_cap(create_test_cap(
-                r#"cap:in="media:string;textable;form=scalar";op=test;out="*""#,
+                r#"cap:in="media:string;textable";op=test;out="*""#,
                 "Test String",
                 "test",
                 vec![],
@@ -2954,7 +2926,7 @@ mod tests {
             ));
 
             registry.add_cap(create_test_cap(
-                r#"cap:in="media:model-spec;textable;form=scalar";op=infer;out="*""#,
+                r#"cap:in="media:model-spec;textable";op=infer;out="*""#,
                 "Infer",
                 "infer",
                 vec![],
@@ -3308,19 +3280,19 @@ mod tests {
     // TEST261: Test extract_effective_payload with CBOR content extracts matching argument value
     #[test]
     fn test261_extract_effective_payload_cbor_match() {
-        // Build CBOR arguments: [{media_urn: "media:string;textable;form=scalar", value: bytes("hello")}]
+        // Build CBOR arguments: [{media_urn: "media:string;textable", value: bytes("hello")}]
         let args = ciborium::Value::Array(vec![
             ciborium::Value::Map(vec![
-                (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:string;textable;form=scalar".to_string())),
+                (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:string;textable".to_string())),
                 (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(b"hello".to_vec())),
             ]),
         ]);
         let mut payload = Vec::new();
         ciborium::into_writer(&args, &mut payload).unwrap();
 
-        // The cap URN has in=media:string;textable;form=scalar
+        // The cap URN has in=media:string;textable
         let registry = MockRegistry::with_test_caps();
-        let cap = registry.get(r#"cap:in="media:string;textable;form=scalar";op=test;out="*""#).unwrap();
+        let cap = registry.get(r#"cap:in="media:string;textable";op=test;out="*""#).unwrap();
         let result = extract_effective_payload(
             &payload,
             Some("application/cbor"),
@@ -3366,7 +3338,7 @@ mod tests {
         ciborium::into_writer(&args, &mut payload).unwrap();
 
         let registry = MockRegistry::with_test_caps();
-        let cap = registry.get(r#"cap:in="media:string;textable;form=scalar";op=test;out="*""#).unwrap();
+        let cap = registry.get(r#"cap:in="media:string;textable";op=test;out="*""#).unwrap();
         let result = extract_effective_payload(
             &payload,
             Some("application/cbor"),
@@ -3534,7 +3506,7 @@ mod tests {
                 (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(b"wrong".to_vec())),
             ]),
             ciborium::Value::Map(vec![
-                (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:model-spec;textable;form=scalar".to_string())),
+                (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:model-spec;textable".to_string())),
                 (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(b"correct".to_vec())),
             ]),
         ]);
@@ -3542,7 +3514,7 @@ mod tests {
         ciborium::into_writer(&args, &mut payload).unwrap();
 
         let registry = MockRegistry::with_test_caps();
-        let cap = registry.get(r#"cap:in="media:model-spec;textable;form=scalar";op=infer;out="*""#).unwrap();
+        let cap = registry.get(r#"cap:in="media:model-spec;textable";op=infer;out="*""#).unwrap();
         let result = extract_effective_payload(
             &payload,
             Some("application/cbor"),
@@ -3561,7 +3533,7 @@ mod tests {
         assert_eq!(result_array.len(), 2, "Both arguments present in CBOR array");
 
         // Find the argument matching in_spec (media:model-spec)
-        let in_spec = MediaUrn::from_string("media:model-spec;textable;form=scalar").unwrap();
+        let in_spec = MediaUrn::from_string("media:model-spec;textable").unwrap();
         let mut found_value = None;
         for arg in result_array {
             if let ciborium::Value::Map(map) = arg {
@@ -3658,7 +3630,7 @@ mod tests {
             "Process PDF",
             "process",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:pdf".to_string() },
@@ -3721,7 +3693,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![ArgSource::Position { position: 0 }],  // NO stdin source!
             )],
@@ -3753,7 +3725,7 @@ mod tests {
             "Process",
             "process",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:pdf".to_string() },
@@ -3789,7 +3761,7 @@ mod tests {
             "Batch",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -3824,7 +3796,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:pdf".to_string() },
@@ -3841,7 +3813,7 @@ mod tests {
         // Build CBOR payload and try conversion - should fail on file read
         let (raw_value, _) = runtime.extract_arg_value(&cap.args[0], &cli_args, None).unwrap();
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=scalar".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(raw_value.unwrap())),
         ]);
         let args = ciborium::Value::Array(vec![arg]);
@@ -3870,7 +3842,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },  // First
@@ -3907,7 +3879,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -3937,10 +3909,10 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:model-spec;textable;form=scalar",  // NOT file-path
+                "media:model-spec;textable",  // NOT file-path
                 true,
                 vec![
-                    ArgSource::Stdin { stdin: "media:model-spec;textable;form=scalar".to_string() },
+                    ArgSource::Stdin { stdin: "media:model-spec;textable".to_string() },
                     ArgSource::Position { position: 0 },
                 ],
             )],
@@ -3967,7 +3939,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -3985,7 +3957,7 @@ mod tests {
         // Build CBOR payload and try conversion - should fail on file read
         let (raw_value, _) = runtime.extract_arg_value(&cap.args[0], &cli_args, None).unwrap();
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=list".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;list".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(raw_value.unwrap())),
         ]);
         let args = ciborium::Value::Array(vec![arg]);
@@ -4011,7 +3983,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4029,7 +4001,7 @@ mod tests {
         // Build CBOR payload and try conversion - should fail on file read
         let (raw_value, _) = runtime.extract_arg_value(&cap.args[0], &cli_args, None).unwrap();
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=list".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;list".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(raw_value.unwrap())),
         ]);
         let args = ciborium::Value::Array(vec![arg]);
@@ -4059,7 +4031,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4092,7 +4064,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4125,7 +4097,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Position { position: 0 },                     // First
@@ -4161,7 +4133,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::CliFlag { cli_flag: "--file".to_string() },  // First (not provided)
@@ -4201,7 +4173,7 @@ mod tests {
             "Process PDF",
             "process",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:pdf".to_string() },
@@ -4258,7 +4230,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 false,  // Not required
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4268,7 +4240,7 @@ mod tests {
 
         // Build CBOR payload with empty Array value (CBOR mode)
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=list".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;list".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Array(vec![])),  // Empty array
         ]);
         let args = ciborium::Value::Array(vec![arg]);
@@ -4330,7 +4302,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4348,7 +4320,7 @@ mod tests {
         // Build full CBOR payload and attempt file-path conversion
         let (raw_value, _) = runtime.extract_arg_value(&cap.args[0], &cli_args, None).unwrap();
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=scalar".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(raw_value.unwrap())),
         ]);
         let args = ciborium::Value::Array(vec![arg]);
@@ -4376,7 +4348,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:text;textable;form=scalar",
+                "media:text;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:text;textable".to_string() },
@@ -4416,7 +4388,7 @@ mod tests {
             .expect("Should have media_urn key");
 
         match media_urn_val {
-            ciborium::Value::Text(s) => assert_eq!(s, "media:text;textable;form=scalar"),
+            ciborium::Value::Text(s) => assert_eq!(s, "media:text;textable"),
             _ => panic!("media_urn should be text"),
         }
 
@@ -4442,7 +4414,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4461,7 +4433,7 @@ mod tests {
         // Build CBOR payload and try conversion - should fail when glob matches nothing
         let (raw_value, _) = runtime.extract_arg_value(&cap.args[0], &cli_args, None).unwrap();
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=list".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;list".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Bytes(raw_value.unwrap())),
         ]);
         let args = ciborium::Value::Array(vec![arg]);
@@ -4492,7 +4464,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4535,7 +4507,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4553,7 +4525,7 @@ mod tests {
 
         // Build CBOR payload with Array of patterns
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=list".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;list".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Array(vec![
                 ciborium::Value::Text(pattern1),
                 ciborium::Value::Text(pattern2),
@@ -4623,7 +4595,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4661,7 +4633,7 @@ mod tests {
             "Test",
             "test",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4689,7 +4661,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -4706,7 +4678,7 @@ mod tests {
 
         // Build CBOR payload with invalid pattern
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=list".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;list".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Text(pattern.to_string())),
         ]);
         let args = ciborium::Value::Array(vec![arg]);
@@ -4736,7 +4708,7 @@ mod tests {
             "Process",
             "process",
             vec![CapArg::new(
-                "media:file-path;textable;form=scalar",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:pdf".to_string() },
@@ -5059,7 +5031,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;form=list",
+                "media:file-path;textable;list",
                 true,
                 vec![
                     ArgSource::Stdin { stdin: "media:".to_string() },
@@ -5069,7 +5041,7 @@ mod tests {
 
         // Build CBOR payload with Array of file paths (CBOR mode only)
         let arg = ciborium::Value::Map(vec![
-            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;form=list".to_string())),
+            (ciborium::Value::Text("media_urn".to_string()), ciborium::Value::Text("media:file-path;textable;list".to_string())),
             (ciborium::Value::Text("value".to_string()), ciborium::Value::Array(vec![
                 ciborium::Value::Text(file1.to_string_lossy().to_string()),
                 ciborium::Value::Text(file2.to_string_lossy().to_string()),
@@ -5778,10 +5750,10 @@ mod tests {
     #[test]
     fn test678_find_stream_equivalent_urn_different_tag_order() {
         let streams = vec![
-            ("media:json;form=map;llm-generation-request".to_string(), b"data".to_vec()),
+            ("media:json;record;llm-generation-request".to_string(), b"data".to_vec()),
         ];
         // Tags in different order — is_equivalent is order-independent
-        let found = super::find_stream(&streams, "media:llm-generation-request;json;form=map");
+        let found = super::find_stream(&streams, "media:llm-generation-request;json;record");
         assert!(found.is_some(), "Same tags in different order must match via is_equivalent");
         assert_eq!(found.unwrap(), b"data");
     }
@@ -5789,13 +5761,13 @@ mod tests {
     // TEST679: find_stream with base URN vs full URN fails — is_equivalent is strict
     // This is the root cause of the cartridge_client.rs bug. Sender sent
     // "media:llm-generation-request" but receiver looked for
-    // "media:llm-generation-request;json;form=map".
+    // "media:llm-generation-request;json;record".
     #[test]
     fn test679_find_stream_base_urn_does_not_match_full_urn() {
         let streams = vec![
             ("media:llm-generation-request".to_string(), b"data".to_vec()),
         ];
-        let found = super::find_stream(&streams, "media:llm-generation-request;json;form=map");
+        let found = super::find_stream(&streams, "media:llm-generation-request;json;record");
         assert!(
             found.is_none(),
             "Base URN without tags must NOT match full URN with tags"
@@ -5806,13 +5778,13 @@ mod tests {
     #[test]
     fn test680_require_stream_missing_urn_returns_error() {
         let streams = vec![
-            ("media:model-spec;textable;form=scalar".to_string(), b"gpt-4".to_vec()),
+            ("media:model-spec;textable".to_string(), b"gpt-4".to_vec()),
         ];
-        let result = super::require_stream(&streams, "media:llm-generation-request;json;form=map");
+        let result = super::require_stream(&streams, "media:llm-generation-request;json;record");
         assert!(result.is_err(), "Missing stream must fail hard");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("media:llm-generation-request;json;form=map"),
+            err.contains("media:llm-generation-request;json;record"),
             "Error must name the missing media URN, got: {}",
             err
         );
@@ -5822,11 +5794,11 @@ mod tests {
     #[test]
     fn test681_find_stream_multiple_streams_returns_correct() {
         let streams = vec![
-            ("media:model-spec;textable;form=scalar".to_string(), b"gpt-4".to_vec()),
-            ("media:llm-generation-request;json;form=map".to_string(), b"{\"prompt\":\"test\"}".to_vec()),
-            ("media:temperature;textable;numeric;form=scalar".to_string(), b"0.7".to_vec()),
+            ("media:model-spec;textable".to_string(), b"gpt-4".to_vec()),
+            ("media:llm-generation-request;json;record".to_string(), b"{\"prompt\":\"test\"}".to_vec()),
+            ("media:temperature;textable;numeric".to_string(), b"0.7".to_vec()),
         ];
-        let found = super::find_stream(&streams, "media:llm-generation-request;json;form=map");
+        let found = super::find_stream(&streams, "media:llm-generation-request;json;record");
         assert!(found.is_some());
         assert_eq!(found.unwrap(), b"{\"prompt\":\"test\"}");
     }
@@ -5835,9 +5807,9 @@ mod tests {
     #[test]
     fn test682_require_stream_str_returns_utf8() {
         let streams = vec![
-            ("media:textable;form=scalar".to_string(), b"hello world".to_vec()),
+            ("media:textable".to_string(), b"hello world".to_vec()),
         ];
-        let result = super::require_stream_str(&streams, "media:textable;form=scalar");
+        let result = super::require_stream_str(&streams, "media:textable");
         assert_eq!(result.unwrap(), "hello world");
     }
 
@@ -5845,7 +5817,7 @@ mod tests {
     #[test]
     fn test683_find_stream_invalid_urn_returns_none() {
         let streams = vec![
-            ("media:valid;form=scalar".to_string(), b"data".to_vec()),
+            ("media:valid".to_string(), b"data".to_vec()),
         ];
         // Empty string is not a valid media URN
         let found = super::find_stream(&streams, "");

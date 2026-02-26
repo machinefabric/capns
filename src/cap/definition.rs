@@ -14,10 +14,10 @@
 //!
 //! ```json
 //! {
-//!   "urn": "cap:in=\"media:string\";op=conversation;out=\"media:my-output;json;form=map\"",
+//!   "urn": "cap:in=\"media:string\";op=conversation;out=\"media:my-output;json;record\"",
 //!   "media_specs": [
 //!     {
-//!       "urn": "media:my-output;json;form=map",
+//!       "urn": "media:my-output;json;record",
 //!       "media_type": "application/json",
 //!       "title": "My Output",
 //!       "profile_uri": "https://example.com/schema",
@@ -27,7 +27,7 @@
 //!   "args": [
 //!     { "media_urn": "media:string", "required": true, "sources": [{"cli_flag": "--input"}] }
 //!   ],
-//!   "output": { "media_urn": "media:my-output;json;form=map", ... }
+//!   "output": { "media_urn": "media:my-output;json;record", ... }
 //! }
 //! ```
 
@@ -850,7 +850,7 @@ mod tests {
 
     // Helper to create test URN with required in/out specs
     fn test_urn(tags: &str) -> String {
-        format!(r#"cap:in="media:void";out="media:form=map";{}"#, tags)
+        format!(r#"cap:in="media:void";out="media:record";{}"#, tags)
     }
 
     // TEST108: Test creating new cap with URN, title, and command verifies correct initialization
@@ -864,7 +864,7 @@ mod tests {
         assert!(cap.urn_string().contains("in="));
         assert!(cap.urn_string().contains("media:void"));
         assert!(cap.urn_string().contains("out="));
-        assert!(cap.urn_string().contains("form=map"));
+        assert!(cap.urn_string().contains("record"));
         assert_eq!(cap.title, "Transform JSON Data");
         assert!(cap.metadata.is_empty());
     }

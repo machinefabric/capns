@@ -1,21 +1,24 @@
 //! Collection Input Types for Cap Chain Processing
 //!
 //! This module defines the capchain-facing collection structure for representing
-//! folder hierarchies as structured input to caps that accept `media:collection;form=map`.
+//! folder hierarchies as structured input to caps.
 //!
-//! The `form=map` representation is a logical form for capchain I/O, separate from
+//! The collection structure is a capchain internal representation, separate from
 //! database persistence. The database stores folder hierarchy via `parent_folder_id`
-//! and `folder_listings` junction table. The map structure is constructed on-demand
+//! and `folder_listings` junction table. The structure is constructed on-demand
 //! when a capchain needs collection input.
 
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use super::argument_binding::{CapInputFile, SourceEntityType};
 
-/// A collection as form=map structure for capchain input.
+/// Media URN for a collection input structure (capchain internal)
+const COLLECTION_MEDIA_URN: &str = "media:collection;record;textable";
+
+/// A collection as structured input for capchain processing.
 ///
 /// This represents a folder hierarchy with files and nested subfolders,
-/// suitable for passing to caps that accept `media:collection;form=map`.
+/// suitable for passing to caps that accept collection input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapInputCollection {
     /// The folder ID from the database
@@ -26,7 +29,7 @@ pub struct CapInputCollection {
     pub files: Vec<CollectionFile>,
     /// Nested subfolders (folder_name -> collection)
     pub folders: HashMap<String, CapInputCollection>,
-    /// Media URN for this collection (typically "media:collection;form=map")
+    /// Media URN for this collection
     pub media_urn: String,
 }
 
@@ -59,7 +62,7 @@ impl CapInputCollection {
             folder_name,
             files: Vec::new(),
             folders: HashMap::new(),
-            media_urn: crate::MEDIA_COLLECTION.to_string(),
+            media_urn: COLLECTION_MEDIA_URN.to_string(),
         }
     }
 
@@ -68,7 +71,7 @@ impl CapInputCollection {
         serde_json::to_value(self).expect("CapInputCollection is always serializable")
     }
 
-    /// Flatten to a list of CapInputFile for `form=list` handling.
+    /// Flatten to a list of CapInputFile for list handling.
     ///
     /// This recursively collects all files from this collection and
     /// all nested subfolders into a flat list.

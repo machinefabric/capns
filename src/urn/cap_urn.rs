@@ -1076,19 +1076,19 @@ mod tests {
     fn test020_specificity() {
         // Direction specs contribute their MediaUrn tag count:
         // MEDIA_VOID = "media:void" -> 1 tag (void)
-        // MEDIA_OBJECT = "media:form=map;textable" -> 2 tags (form, textable)
+        // MEDIA_OBJECT = "media:record" -> 1 tag (record)
         let cap1 = CapUrn::from_string(&test_urn("type=general")).unwrap();
         let cap2 = CapUrn::from_string(&test_urn("op=generate")).unwrap();
         let cap3 = CapUrn::from_string(&test_urn("op=*;ext=pdf")).unwrap();
 
-        assert_eq!(cap1.specificity(), 4); // void(1) + object(2) + type(1)
-        assert_eq!(cap2.specificity(), 4); // void(1) + object(2) + op(1)
-        assert_eq!(cap3.specificity(), 4); // void(1) + object(2) + ext(1) (wildcard op doesn't count)
+        assert_eq!(cap1.specificity(), 3); // void(1) + record(1) + type(1)
+        assert_eq!(cap2.specificity(), 3); // void(1) + record(1) + op(1)
+        assert_eq!(cap3.specificity(), 3); // void(1) + record(1) + ext(1) (wildcard op doesn't count)
 
         // Wildcard in direction doesn't count
         let cap4 =
             CapUrn::from_string(&format!("cap:in=*;out=\"{}\";op=test", MEDIA_OBJECT)).unwrap();
-        assert_eq!(cap4.specificity(), 3); // object(2) + op(1) (in wildcard doesn't count)
+        assert_eq!(cap4.specificity(), 2); // record(1) + op(1) (in wildcard doesn't count)
     }
 
     // TEST021: Test builder creates cap URN with correct tags and direction specs

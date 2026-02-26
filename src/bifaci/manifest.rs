@@ -94,7 +94,7 @@ mod tests {
 
     // Helper to create test URN with required in/out specs
     fn test_urn(tags: &str) -> String {
-        format!(r#"cap:in="media:void";out="media:form=map";{}"#, tags)
+        format!(r#"cap:in="media:void";out="media:record";{}"#, tags)
     }
 
     // TEST148: Test creating cap manifest with name, version, description, and caps
