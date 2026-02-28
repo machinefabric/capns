@@ -48,7 +48,7 @@ fn build_manifest() -> CapManifest {
         "Transform node1 to node2 by prepending optional text argument".to_string(),
     );
     edge1.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node1;textable".to_string() },
@@ -57,7 +57,7 @@ fn build_manifest() -> CapManifest {
         "Path to the input text file".to_string(),
     ));
     let mut prefix_arg = CapArg::with_description(
-        "media:edge1arg1;textable;form=scalar",
+        "media:edge1arg1;textable",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--prefix".to_string() }],
         "Text to prepend before the input content".to_string(),
@@ -76,7 +76,7 @@ fn build_manifest() -> CapManifest {
         "Transform node2 to node3 by appending optional text argument".to_string(),
     );
     edge2.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node2;textable".to_string() },
@@ -85,7 +85,7 @@ fn build_manifest() -> CapManifest {
         "Path to the intermediate text file".to_string(),
     ));
     let mut suffix_arg = CapArg::with_description(
-        "media:edge2arg1;textable;form=scalar",
+        "media:edge2arg1;textable",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--suffix".to_string() }],
         "Text to append after the input content".to_string(),
@@ -113,7 +113,7 @@ fn build_manifest() -> CapManifest {
         "Paths to the input text files in folder".to_string(),
     ));
     let mut transform_arg = CapArg::with_description(
-        "media:edge3arg1;textable;form=scalar",
+        "media:edge3arg1;textable",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--transform".to_string() }],
         "Text to add to each file during fan-out".to_string(),
@@ -141,7 +141,7 @@ fn build_manifest() -> CapManifest {
         "List of text items to collect".to_string(),
     ));
     let mut separator_arg = CapArg::with_description(
-        "media:edge4arg1;textable;form=scalar",
+        "media:edge4arg1;textable",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--separator".to_string() }],
         "Separator text between collected items".to_string(),
@@ -160,7 +160,7 @@ fn build_manifest() -> CapManifest {
         "Merge node2 and node3 inputs into single node5 output".to_string(),
     );
     edge5.add_arg(CapArg::with_description(
-        "media:file-path;node2;textable;form=scalar",
+        "media:file-path;node2;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node2;textable".to_string() },
@@ -171,7 +171,7 @@ fn build_manifest() -> CapManifest {
     // No stdin source — stdin is claimed by the first arg (RULE3).
     // In CBOR mode, the file path passes through as-is (no file-reading).
     edge5.add_arg(CapArg::with_description(
-        "media:file-path;node3;textable;form=scalar",
+        "media:file-path;node3;textable",
         true,
         vec![
             ArgSource::CliFlag { cli_flag: "--second-input".to_string() },
@@ -179,7 +179,7 @@ fn build_manifest() -> CapManifest {
         "Path to the second input text file (node3)".to_string(),
     ));
     let mut edge5_separator = CapArg::with_description(
-        "media:edge5arg3;textable;form=scalar",
+        "media:edge5arg3;textable",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--separator".to_string() }],
         "Separator text between merged inputs".to_string(),
@@ -198,7 +198,7 @@ fn build_manifest() -> CapManifest {
         "Transform single node1 input to list of node4 items".to_string(),
     );
     edge6.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node1;textable".to_string() },
@@ -207,7 +207,7 @@ fn build_manifest() -> CapManifest {
         "Path to the input text file".to_string(),
     ));
     let mut count_arg = CapArg::with_description(
-        "media:edge6arg1;textable;numeric;form=scalar",
+        "media:edge6arg1;textable;numeric",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--count".to_string() }],
         "Number of times to duplicate input in list".to_string(),
@@ -215,7 +215,7 @@ fn build_manifest() -> CapManifest {
     count_arg.default_value = Some(json!(1));
     edge6.add_arg(count_arg);
     let mut item_prefix_arg = CapArg::with_description(
-        "media:edge6arg2;textable;form=scalar",
+        "media:edge6arg2;textable",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--item-prefix".to_string() }],
         "Prefix to add to each list item".to_string(),
@@ -234,7 +234,7 @@ fn build_manifest() -> CapManifest {
         "Transform node3 to node6 by uppercasing all text".to_string(),
     );
     edge7.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node3;textable".to_string() },
@@ -254,7 +254,7 @@ fn build_manifest() -> CapManifest {
         "Transform node6 to node7 by reversing the string".to_string(),
     );
     edge8.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node6;textable".to_string() },
@@ -274,7 +274,7 @@ fn build_manifest() -> CapManifest {
         "Transform node7 to node8 by wrapping in << >> markers".to_string(),
     );
     edge9.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node7;textable".to_string() },
@@ -294,7 +294,7 @@ fn build_manifest() -> CapManifest {
         "Transform node8 to node1 by extracting content between << >> markers and lowercasing".to_string(),
     );
     edge10.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node8;textable".to_string() },
@@ -314,7 +314,7 @@ fn build_manifest() -> CapManifest {
         "Generate large payloads to test auto-chunking".to_string(),
     );
     let mut size_arg = CapArg::with_description(
-        "media:payload-size;textable;numeric;form=scalar",
+        "media:payload-size;textable;numeric",
         false,
         vec![ArgSource::CliFlag { cli_flag: "--size".to_string() }],
         "Size of payload in bytes".to_string(),
@@ -333,7 +333,7 @@ fn build_manifest() -> CapManifest {
         "Test PeerInvoker by chaining edge1 and edge2 calls".to_string(),
     );
     peer_test.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=scalar",
+        "media:file-path;textable",
         true,
         vec![
             ArgSource::Stdin { stdin: "media:node1;textable".to_string() },
@@ -389,7 +389,7 @@ impl Op<()> for Edge1Op {
 
         let input = require_stream(&streams, "media:node1;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        let prefix = find_stream_str(&streams, "media:edge1arg1;textable;form=scalar")
+        let prefix = find_stream_str(&streams, "media:edge1arg1;textable")
             .unwrap_or_else(|| "[PREPEND]".to_string());
 
         let result = format!("{}{}", prefix, String::from_utf8_lossy(input));
@@ -409,7 +409,7 @@ impl Op<()> for Edge2Op {
 
         let input = require_stream(&streams, "media:node2;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        let suffix = find_stream_str(&streams, "media:edge2arg1;textable;form=scalar")
+        let suffix = find_stream_str(&streams, "media:edge2arg1;textable")
             .unwrap_or_else(|| "[APPEND]".to_string());
 
         let result = format!("{}{}", String::from_utf8_lossy(input), suffix);
@@ -429,7 +429,7 @@ impl Op<()> for Edge3Op {
 
         let input_list = require_stream(&streams, "media:node1;textable;form=list")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        let transform = find_stream_str(&streams, "media:edge3arg1;textable;form=scalar")
+        let transform = find_stream_str(&streams, "media:edge3arg1;textable")
             .unwrap_or_else(|| "[TRANSFORMED]".to_string());
 
         let cbor_value: ciborium::Value = ciborium::from_reader(input_list)
@@ -462,7 +462,7 @@ impl Op<()> for Edge4Op {
 
         let input_list = require_stream(&streams, "media:node4;textable;form=list")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        let separator = find_stream_str(&streams, "media:edge4arg1;textable;form=scalar")
+        let separator = find_stream_str(&streams, "media:edge4arg1;textable")
             .unwrap_or_else(|| " ".to_string());
 
         let cbor_value: ciborium::Value = ciborium::from_reader(input_list)
@@ -496,11 +496,11 @@ impl Op<()> for Edge5Op {
         let input1 = require_stream(&streams, "media:node2;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
         // Second input: file-path arg without stdin source → passed through as file path
-        let input2_path = require_stream(&streams, "media:file-path;node3;textable;form=scalar")
+        let input2_path = require_stream(&streams, "media:file-path;node3;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
         let input2 = std::fs::read(String::from_utf8_lossy(input2_path).as_ref())
             .map_err(|e| OpError::ExecutionFailed(format!("Failed to read second input: {}", e)))?;
-        let separator = find_stream_str(&streams, "media:edge5arg3;textable;form=scalar")
+        let separator = find_stream_str(&streams, "media:edge5arg3;textable")
             .unwrap_or_else(|| " ".to_string());
 
         let result = format!("{}{}{}", String::from_utf8_lossy(input1), separator, String::from_utf8_lossy(&input2));
@@ -520,10 +520,10 @@ impl Op<()> for Edge6Op {
 
         let input = require_stream(&streams, "media:node1;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        let count = find_stream_str(&streams, "media:edge6arg1;textable;numeric;form=scalar")
+        let count = find_stream_str(&streams, "media:edge6arg1;textable;numeric")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(1);
-        let item_prefix = find_stream_str(&streams, "media:edge6arg2;textable;form=scalar")
+        let item_prefix = find_stream_str(&streams, "media:edge6arg2;textable")
             .unwrap_or_default();
 
         let input_str = String::from_utf8_lossy(input);
@@ -626,7 +626,7 @@ impl Op<()> for LargeOp {
         let req = get_req(wet)?;
         let streams = collect_args(&req)?;
 
-        let size = find_stream_str(&streams, "media:payload-size;textable;numeric;form=scalar")
+        let size = find_stream_str(&streams, "media:payload-size;textable;numeric")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(1_048_576);
 

@@ -41,6 +41,7 @@ pub use cardinality::{
 pub use argument_binding::{
     ArgumentBinding, ArgumentBindings, ArgumentResolutionContext, ArgumentSource,
     CapChainInput, CapFileMetadata, CapInputFile, ResolvedArgument, SourceEntityType,
+    resolve_binding,
 };
 pub use collection_input::{CapInputCollection, CollectionFile};
 pub use plan::{
