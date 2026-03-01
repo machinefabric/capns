@@ -1,6 +1,6 @@
 # CapDag Test Catalog
 
-**Total Tests:** 762
+**Total Tests:** 868
 
 This catalog lists all numbered tests in the capdag codebase.
 
@@ -62,42 +62,42 @@ This catalog lists all numbered tests in the capdag codebase.
 | test054 | `test054_xv5_inline_spec_redefinition_detected` | TEST054: XV5 - Test inline media spec redefinition of existing registry spec is detected and rejected | src/cap/validation.rs:1156 |
 | test055 | `test055_xv5_new_inline_spec_allowed` | TEST055: XV5 - Test new inline media spec (not in registry) is allowed | src/cap/validation.rs:1190 |
 | test056 | `test056_xv5_empty_media_specs_allowed` | TEST056: XV5 - Test empty media_specs (no inline specs) passes XV5 validation | src/cap/validation.rs:1220 |
-| test060 | `test060_wrong_prefix_fails` | TEST060: Test wrong prefix fails with InvalidPrefix error showing expected and actual prefix | src/urn/media_urn.rs:483 |
-| test061 | `test061_is_binary` | TEST061: Test is_binary returns true when textable tag is absent (binary = not textable) | src/urn/media_urn.rs:496 |
-| test062 | `test062_is_map` | TEST062: Test is_map returns true when form=map tag is present indicating key-value structure | src/urn/media_urn.rs:513 |
-| test063 | `test063_is_scalar` | TEST063: Test is_scalar returns true when form=scalar tag is present indicating single value | src/urn/media_urn.rs:525 |
-| test064 | `test064_is_list` | TEST064: Test is_list returns true when form=list tag is present indicating ordered collection | src/urn/media_urn.rs:538 |
-| test065 | `test065_is_structured` | TEST065: Test is_structured returns true for map or list forms indicating structured data types | src/urn/media_urn.rs:550 |
-| test066 | `test066_is_json` | TEST066: Test is_json returns true only when json marker tag is present for JSON representation | src/urn/media_urn.rs:564 |
-| test067 | `test067_is_text` | TEST067: Test is_text returns true only when textable marker tag is present | src/urn/media_urn.rs:575 |
-| test068 | `test068_is_void` | TEST068: Test is_void returns true when void flag or type=void tag is present | src/urn/media_urn.rs:587 |
-| test071 | `test071_to_string_roundtrip` | TEST071: Test to_string roundtrip ensures serialization and deserialization preserve URN structure | src/urn/media_urn.rs:594 |
-| test072 | `test072_constants_parse` | TEST072: Test all media URN constants parse successfully as valid media URNs | src/urn/media_urn.rs:604 |
-| test073 | `test073_extension_helpers` | TEST073: Test extension helper functions create media URNs with ext tag and correct format | src/urn/media_urn.rs:638 |
-| test074 | `test074_media_urn_matching` | TEST074: Test media URN conforms_to using tagged URN semantics with specific and generic requirements | src/urn/media_urn.rs:654 |
-| test075 | `test075_matching` | TEST075: Test accepts with implicit wildcards where handlers with fewer tags can handle more requests | src/urn/media_urn.rs:674 |
-| test076 | `test076_specificity` | TEST076: Test specificity increases with more tags for ranking conformance | src/urn/media_urn.rs:690 |
-| test077 | `test077_serde_roundtrip` | TEST077: Test serde roundtrip serializes to JSON string and deserializes back correctly | src/urn/media_urn.rs:709 |
+| test060 | `test060_wrong_prefix_fails` | TEST060: Test wrong prefix fails with InvalidPrefix error showing expected and actual prefix | src/urn/media_urn.rs:500 |
+| test061 | `test061_is_binary` | TEST061: Test is_binary returns true when textable tag is absent (binary = not textable) | src/urn/media_urn.rs:513 |
+| test062 | `test062_is_record` | TEST062: Test is_record returns true when record marker tag is present indicating key-value structure | src/urn/media_urn.rs:530 |
+| test063 | `test063_is_scalar` | TEST063: Test is_scalar returns true when list marker tag is absent (scalar is default) | src/urn/media_urn.rs:543 |
+| test064 | `test064_is_list` | TEST064: Test is_list returns true when list marker tag is present indicating ordered collection | src/urn/media_urn.rs:558 |
+| test065 | `test065_is_opaque` | TEST065: Test is_opaque returns true when record marker is absent (opaque is default) | src/urn/media_urn.rs:571 |
+| test066 | `test066_is_json` | TEST066: Test is_json returns true only when json marker tag is present for JSON representation | src/urn/media_urn.rs:585 |
+| test067 | `test067_is_text` | TEST067: Test is_text returns true only when textable marker tag is present | src/urn/media_urn.rs:596 |
+| test068 | `test068_is_void` | TEST068: Test is_void returns true when void flag or type=void tag is present | src/urn/media_urn.rs:609 |
+| test071 | `test071_to_string_roundtrip` | TEST071: Test to_string roundtrip ensures serialization and deserialization preserve URN structure | src/urn/media_urn.rs:616 |
+| test072 | `test072_constants_parse` | TEST072: Test all media URN constants parse successfully as valid media URNs | src/urn/media_urn.rs:626 |
+| test073 | `test073_extension_helpers` | TEST073: Test extension helper functions create media URNs with ext tag and correct format | src/urn/media_urn.rs:660 |
+| test074 | `test074_media_urn_matching` | TEST074: Test media URN conforms_to using tagged URN semantics with specific and generic requirements | src/urn/media_urn.rs:676 |
+| test075 | `test075_matching` | TEST075: Test accepts with implicit wildcards where handlers with fewer tags can handle more requests | src/urn/media_urn.rs:696 |
+| test076 | `test076_specificity` | TEST076: Test specificity increases with more tags for ranking conformance | src/urn/media_urn.rs:712 |
+| test077 | `test077_serde_roundtrip` | TEST077: Test serde roundtrip serializes to JSON string and deserializes back correctly | src/urn/media_urn.rs:731 |
 | test088 | `test088_resolve_from_registry_str` | TEST088: Test resolving string media URN from registry returns correct media type and profile | src/media/spec.rs:636 |
-| test089 | `test089_resolve_from_registry_obj` | TEST089: Test resolving object media URN from registry returns JSON media type | src/media/spec.rs:646 |
-| test090 | `test090_resolve_from_registry_binary` | TEST090: Test resolving binary media URN returns octet-stream and is_binary true | src/media/spec.rs:654 |
-| test091 | `test091_resolve_custom_media_spec` | TEST091: Test resolving custom media URN from local media_specs takes precedence over registry | src/media/spec.rs:678 |
-| test092 | `test092_resolve_custom_with_schema` | TEST092: Test resolving custom object form media spec with schema from local media_specs | src/media/spec.rs:707 |
-| test093 | `test093_resolve_unresolvable_fails_hard` | TEST093: Test resolving unknown media URN fails with UnresolvableMediaUrn error | src/media/spec.rs:741 |
-| test094 | `test094_local_overrides_registry` | TEST094: Test local media_specs definition overrides registry definition for same URN | src/media/spec.rs:755 |
-| test095 | `test095_media_spec_def_serialize` | TEST095: Test MediaSpecDef serializes with required fields and skips None fields | src/media/spec.rs:787 |
-| test096 | `test096_media_spec_def_deserialize` | TEST096: Test deserializing MediaSpecDef from JSON object | src/media/spec.rs:812 |
-| test097 | `test097_validate_no_duplicate_urns_catches_duplicates` | TEST097: Test duplicate URN validation catches duplicates | src/media/spec.rs:827 |
-| test098 | `test098_validate_no_duplicate_urns_passes_for_unique` | TEST098: Test duplicate URN validation passes for unique URNs | src/media/spec.rs:843 |
-| test099 | `test099_resolved_is_binary` | TEST099: Test ResolvedMediaSpec is_binary returns true when textable tag is absent | src/media/spec.rs:858 |
-| test100 | `test100_resolved_is_map` | TEST100: Test ResolvedMediaSpec is_map returns true for form=map media URN | src/media/spec.rs:877 |
-| test101 | `test101_resolved_is_scalar` | TEST101: Test ResolvedMediaSpec is_scalar returns true for form=scalar media URN | src/media/spec.rs:897 |
-| test102 | `test102_resolved_is_list` | TEST102: Test ResolvedMediaSpec is_list returns true for form=list media URN | src/media/spec.rs:916 |
-| test103 | `test103_resolved_is_json` | TEST103: Test ResolvedMediaSpec is_json returns true when json tag is present | src/media/spec.rs:935 |
-| test104 | `test104_resolved_is_text` | TEST104: Test ResolvedMediaSpec is_text returns true when textable tag is present | src/media/spec.rs:954 |
-| test105 | `test105_metadata_propagation` | TEST105: Test metadata propagates from media spec def to resolved media spec | src/media/spec.rs:977 |
-| test106 | `test106_metadata_with_validation` | TEST106: Test metadata and validation can coexist in media spec definition | src/media/spec.rs:1005 |
-| test107 | `test107_extensions_propagation` | TEST107: Test extensions field propagates from media spec def to resolved | src/media/spec.rs:1051 |
+| test089 | `test089_resolve_from_registry_obj` | TEST089: Test resolving JSON media URN from registry returns JSON media type | src/media/spec.rs:646 |
+| test090 | `test090_resolve_from_registry_binary` | TEST090: Test resolving binary media URN returns octet-stream and is_binary true | src/media/spec.rs:655 |
+| test091 | `test091_resolve_custom_media_spec` | TEST091: Test resolving custom media URN from local media_specs takes precedence over registry | src/media/spec.rs:679 |
+| test092 | `test092_resolve_custom_with_schema` | TEST092: Test resolving custom record media spec with schema from local media_specs | src/media/spec.rs:708 |
+| test093 | `test093_resolve_unresolvable_fails_hard` | TEST093: Test resolving unknown media URN fails with UnresolvableMediaUrn error | src/media/spec.rs:742 |
+| test094 | `test094_local_overrides_registry` | TEST094: Test local media_specs definition overrides registry definition for same URN | src/media/spec.rs:756 |
+| test095 | `test095_media_spec_def_serialize` | TEST095: Test MediaSpecDef serializes with required fields and skips None fields | src/media/spec.rs:788 |
+| test096 | `test096_media_spec_def_deserialize` | TEST096: Test deserializing MediaSpecDef from JSON object | src/media/spec.rs:813 |
+| test097 | `test097_validate_no_duplicate_urns_catches_duplicates` | TEST097: Test duplicate URN validation catches duplicates | src/media/spec.rs:828 |
+| test098 | `test098_validate_no_duplicate_urns_passes_for_unique` | TEST098: Test duplicate URN validation passes for unique URNs | src/media/spec.rs:844 |
+| test099 | `test099_resolved_is_binary` | TEST099: Test ResolvedMediaSpec is_binary returns true when textable tag is absent | src/media/spec.rs:859 |
+| test100 | `test100_resolved_is_record` | TEST100: Test ResolvedMediaSpec is_record returns true when record marker is present | src/media/spec.rs:878 |
+| test101 | `test101_resolved_is_scalar` | TEST101: Test ResolvedMediaSpec is_scalar returns true when list marker is absent | src/media/spec.rs:898 |
+| test102 | `test102_resolved_is_list` | TEST102: Test ResolvedMediaSpec is_list returns true when list marker is present | src/media/spec.rs:917 |
+| test103 | `test103_resolved_is_json` | TEST103: Test ResolvedMediaSpec is_json returns true when json tag is present | src/media/spec.rs:936 |
+| test104 | `test104_resolved_is_text` | TEST104: Test ResolvedMediaSpec is_text returns true when textable tag is present | src/media/spec.rs:955 |
+| test105 | `test105_metadata_propagation` | TEST105: Test metadata propagates from media spec def to resolved media spec | src/media/spec.rs:978 |
+| test106 | `test106_metadata_with_validation` | TEST106: Test metadata and validation can coexist in media spec definition | src/media/spec.rs:1006 |
+| test107 | `test107_extensions_propagation` | TEST107: Test extensions field propagates from media spec def to resolved | src/media/spec.rs:1052 |
 | test108 | `test108_cap_creation` | TEST108: Test creating new cap with URN, title, and command verifies correct initialization | src/cap/definition.rs:858 |
 | test109 | `test109_cap_with_metadata` | TEST109: Test creating cap with metadata initializes and retrieves metadata correctly | src/cap/definition.rs:874 |
 | test110 | `test110_cap_matching` | TEST110: Test cap matching with subset semantics for request fulfillment | src/cap/definition.rs:891 |
@@ -236,29 +236,29 @@ This catalog lists all numbered tests in the capdag codebase.
 | test245 | `test245_async_host_error_from_io` | TEST245: Test AsyncHostError::from converts io::Error to Io variant | src/bifaci/host_runtime.rs:1487 |
 | test246 | `test246_async_host_error_clone` | TEST246: Test AsyncHostError Clone implementation produces equal values | src/bifaci/host_runtime.rs:1498 |
 | test247 | `test247_response_chunk_clone` | TEST247: Test ResponseChunk Clone produces independent copy with same data | src/bifaci/host_runtime.rs:1506 |
-| test248 | `test248_register_and_find_handler` | TEST248: Test register_op and find_handler by exact cap URN | src/bifaci/plugin_runtime.rs:3080 |
-| test249 | `test249_raw_handler` | TEST249: Test register_op handler echoes bytes directly | src/bifaci/plugin_runtime.rs:3088 |
-| test250 | `test250_typed_handler_deserialization` | TEST250: Test Op handler collects input and processes it | src/bifaci/plugin_runtime.rs:3106 |
-| test251 | `test251_typed_handler_rejects_invalid_json` | TEST251: Test Op handler propagates errors through RuntimeError::Handler | src/bifaci/plugin_runtime.rs:3149 |
-| test252 | `test252_find_handler_unknown_cap` | TEST252: Test find_handler returns None for unregistered cap URNs | src/bifaci/plugin_runtime.rs:3182 |
-| test253 | `test253_handler_is_send_sync` | TEST253: Test OpFactory can be cloned via Arc and sent across threads (Send + Sync) | src/bifaci/plugin_runtime.rs:3189 |
-| test254 | `test254_no_peer_invoker` | TEST254: Test NoPeerInvoker always returns PeerRequest error | src/bifaci/plugin_runtime.rs:3234 |
-| test255 | `test255_no_peer_invoker_with_arguments` | TEST255: Test NoPeerInvoker call_with_bytes also returns error | src/bifaci/plugin_runtime.rs:3248 |
-| test256 | `test256_with_manifest_json` | TEST256: Test PluginRuntime::with_manifest_json stores manifest data and parses when valid | src/bifaci/plugin_runtime.rs:3256 |
-| test257 | `test257_new_with_invalid_json` | TEST257: Test PluginRuntime::new with invalid JSON still creates runtime (manifest is None) | src/bifaci/plugin_runtime.rs:3273 |
-| test258 | `test258_with_manifest_struct` | TEST258: Test PluginRuntime::with_manifest creates runtime with valid manifest data | src/bifaci/plugin_runtime.rs:3281 |
-| test259 | `test259_extract_effective_payload_non_cbor` | TEST259: Test extract_effective_payload with non-CBOR content_type returns raw payload unchanged | src/bifaci/plugin_runtime.rs:3290 |
-| test260 | `test260_extract_effective_payload_no_content_type` | TEST260: Test extract_effective_payload with None content_type returns raw payload unchanged | src/bifaci/plugin_runtime.rs:3300 |
-| test261 | `test261_extract_effective_payload_cbor_match` | TEST261: Test extract_effective_payload with CBOR content extracts matching argument value | src/bifaci/plugin_runtime.rs:3310 |
-| test262 | `test262_extract_effective_payload_cbor_no_match` | TEST262: Test extract_effective_payload with CBOR content fails when no argument matches expected input | src/bifaci/plugin_runtime.rs:3358 |
-| test263 | `test263_extract_effective_payload_invalid_cbor` | TEST263: Test extract_effective_payload with invalid CBOR bytes returns deserialization error | src/bifaci/plugin_runtime.rs:3387 |
-| test264 | `test264_extract_effective_payload_cbor_not_array` | TEST264: Test extract_effective_payload with CBOR non-array (e.g. map) returns error | src/bifaci/plugin_runtime.rs:3401 |
-| test266 | `test266_cli_frame_sender_construction` | TEST266: Test CliFrameSender wraps CliStreamEmitter correctly (basic construction) | src/bifaci/plugin_runtime.rs:3425 |
-| test268 | `test268_runtime_error_display` | TEST268: Test RuntimeError variants display correct messages | src/bifaci/plugin_runtime.rs:3436 |
-| test270 | `test270_multiple_handlers` | TEST270: Test registering multiple Op handlers for different caps and finding each independently | src/bifaci/plugin_runtime.rs:3458 |
-| test271 | `test271_handler_replacement` | TEST271: Test Op handler replacing an existing registration for the same cap URN | src/bifaci/plugin_runtime.rs:3483 |
-| test272 | `test272_extract_effective_payload_multiple_args` | TEST272: Test extract_effective_payload CBOR with multiple arguments selects the correct one | src/bifaci/plugin_runtime.rs:3530 |
-| test273 | `test273_extract_effective_payload_binary_value` | TEST273: Test extract_effective_payload with binary data in CBOR value (not just text) | src/bifaci/plugin_runtime.rs:3603 |
+| test248 | `test248_register_and_find_handler` | TEST248: Test register_op and find_handler by exact cap URN | src/bifaci/plugin_runtime.rs:3052 |
+| test249 | `test249_raw_handler` | TEST249: Test register_op handler echoes bytes directly | src/bifaci/plugin_runtime.rs:3060 |
+| test250 | `test250_typed_handler_deserialization` | TEST250: Test Op handler collects input and processes it | src/bifaci/plugin_runtime.rs:3078 |
+| test251 | `test251_typed_handler_rejects_invalid_json` | TEST251: Test Op handler propagates errors through RuntimeError::Handler | src/bifaci/plugin_runtime.rs:3121 |
+| test252 | `test252_find_handler_unknown_cap` | TEST252: Test find_handler returns None for unregistered cap URNs | src/bifaci/plugin_runtime.rs:3154 |
+| test253 | `test253_handler_is_send_sync` | TEST253: Test OpFactory can be cloned via Arc and sent across threads (Send + Sync) | src/bifaci/plugin_runtime.rs:3161 |
+| test254 | `test254_no_peer_invoker` | TEST254: Test NoPeerInvoker always returns PeerRequest error | src/bifaci/plugin_runtime.rs:3206 |
+| test255 | `test255_no_peer_invoker_with_arguments` | TEST255: Test NoPeerInvoker call_with_bytes also returns error | src/bifaci/plugin_runtime.rs:3220 |
+| test256 | `test256_with_manifest_json` | TEST256: Test PluginRuntime::with_manifest_json stores manifest data and parses when valid | src/bifaci/plugin_runtime.rs:3228 |
+| test257 | `test257_new_with_invalid_json` | TEST257: Test PluginRuntime::new with invalid JSON still creates runtime (manifest is None) | src/bifaci/plugin_runtime.rs:3245 |
+| test258 | `test258_with_manifest_struct` | TEST258: Test PluginRuntime::with_manifest creates runtime with valid manifest data | src/bifaci/plugin_runtime.rs:3253 |
+| test259 | `test259_extract_effective_payload_non_cbor` | TEST259: Test extract_effective_payload with non-CBOR content_type returns raw payload unchanged | src/bifaci/plugin_runtime.rs:3262 |
+| test260 | `test260_extract_effective_payload_no_content_type` | TEST260: Test extract_effective_payload with None content_type returns raw payload unchanged | src/bifaci/plugin_runtime.rs:3272 |
+| test261 | `test261_extract_effective_payload_cbor_match` | TEST261: Test extract_effective_payload with CBOR content extracts matching argument value | src/bifaci/plugin_runtime.rs:3282 |
+| test262 | `test262_extract_effective_payload_cbor_no_match` | TEST262: Test extract_effective_payload with CBOR content fails when no argument matches expected input | src/bifaci/plugin_runtime.rs:3330 |
+| test263 | `test263_extract_effective_payload_invalid_cbor` | TEST263: Test extract_effective_payload with invalid CBOR bytes returns deserialization error | src/bifaci/plugin_runtime.rs:3359 |
+| test264 | `test264_extract_effective_payload_cbor_not_array` | TEST264: Test extract_effective_payload with CBOR non-array (e.g. map) returns error | src/bifaci/plugin_runtime.rs:3373 |
+| test266 | `test266_cli_frame_sender_construction` | TEST266: Test CliFrameSender wraps CliStreamEmitter correctly (basic construction) | src/bifaci/plugin_runtime.rs:3397 |
+| test268 | `test268_runtime_error_display` | TEST268: Test RuntimeError variants display correct messages | src/bifaci/plugin_runtime.rs:3408 |
+| test270 | `test270_multiple_handlers` | TEST270: Test registering multiple Op handlers for different caps and finding each independently | src/bifaci/plugin_runtime.rs:3430 |
+| test271 | `test271_handler_replacement` | TEST271: Test Op handler replacing an existing registration for the same cap URN | src/bifaci/plugin_runtime.rs:3455 |
+| test272 | `test272_extract_effective_payload_multiple_args` | TEST272: Test extract_effective_payload CBOR with multiple arguments selects the correct one | src/bifaci/plugin_runtime.rs:3502 |
+| test273 | `test273_extract_effective_payload_binary_value` | TEST273: Test extract_effective_payload with binary data in CBOR value (not just text) | src/bifaci/plugin_runtime.rs:3575 |
 | test274 | `test274_cap_argument_value_new` | TEST274: Test CapArgumentValue::new stores media_urn and raw byte value | src/cap/caller.rs:463 |
 | test275 | `test275_cap_argument_value_from_str` | TEST275: Test CapArgumentValue::from_str converts string to UTF-8 bytes | src/cap/caller.rs:471 |
 | test276 | `test276_cap_argument_value_as_str_valid` | TEST276: Test CapArgumentValue::value_as_str succeeds for UTF-8 data | src/cap/caller.rs:479 |
@@ -278,9 +278,9 @@ This catalog lists all numbered tests in the capdag codebase.
 | test292 | `test292_message_id_uniqueness` | TEST292: Sequential requests get distinct MessageIds | src/bifaci/integration_tests.rs:1057 |
 | test293 | `test293_plugin_runtime_handler_registration` | TEST293: Test PluginRuntime Op registration and lookup by exact and non-existent cap URN | src/bifaci/integration_tests.rs:21 |
 | test299 | `test299_empty_payload_roundtrip` | TEST299: Empty payload request/response roundtrip | src/bifaci/integration_tests.rs:1110 |
-| test304 | `test304_media_availability_output_constant` | TEST304: Test MEDIA_AVAILABILITY_OUTPUT constant parses as valid media URN with correct tags | src/urn/media_urn.rs:748 |
-| test305 | `test305_media_path_output_constant` | TEST305: Test MEDIA_PATH_OUTPUT constant parses as valid media URN with correct tags | src/urn/media_urn.rs:760 |
-| test306 | `test306_availability_and_path_output_distinct` | TEST306: Test MEDIA_AVAILABILITY_OUTPUT and MEDIA_PATH_OUTPUT are distinct URNs | src/urn/media_urn.rs:771 |
+| test304 | `test304_media_availability_output_constant` | TEST304: Test MEDIA_AVAILABILITY_OUTPUT constant parses as valid media URN with correct tags | src/urn/media_urn.rs:771 |
+| test305 | `test305_media_path_output_constant` | TEST305: Test MEDIA_PATH_OUTPUT constant parses as valid media URN with correct tags | src/urn/media_urn.rs:783 |
+| test306 | `test306_availability_and_path_output_distinct` | TEST306: Test MEDIA_AVAILABILITY_OUTPUT and MEDIA_PATH_OUTPUT are distinct URNs | src/urn/media_urn.rs:794 |
 | test307 | `test307_model_availability_urn` | TEST307: Test model_availability_urn builds valid cap URN with correct op and media specs | src/standard/caps.rs:720 |
 | test308 | `test308_model_path_urn` | TEST308: Test model_path_urn builds valid cap URN with correct op and media specs | src/standard/caps.rs:729 |
 | test309 | `test309_model_availability_and_path_are_distinct` | TEST309: Test model_availability_urn and model_path_urn produce distinct URNs | src/standard/caps.rs:738 |
@@ -303,45 +303,45 @@ This catalog lists all numbered tests in the capdag codebase.
 | test333 | `test333_plugin_repo_client_get_all_caps` |  | src/bifaci/plugin_repo.rs:1315 |
 | test334 | `test334_plugin_repo_client_needs_sync` |  | src/bifaci/plugin_repo.rs:1394 |
 | test335 | `test335_plugin_repo_server_client_integration` |  | src/bifaci/plugin_repo.rs:1413 |
-| test336 | `test336_file_path_reads_file_passes_bytes` | TEST336: Single file-path arg with stdin source reads file and passes bytes to handler | src/bifaci/plugin_runtime.rs:3649 |
-| test337 | `test337_file_path_without_stdin_passes_string` | TEST337: file-path arg without stdin source passes path as string (no conversion) | src/bifaci/plugin_runtime.rs:3714 |
-| test338 | `test338_file_path_via_cli_flag` | TEST338: file-path arg reads file via --file CLI flag | src/bifaci/plugin_runtime.rs:3746 |
-| test339 | `test339_file_path_array_glob_expansion` | TEST339: file-path-array reads multiple files with glob pattern | src/bifaci/plugin_runtime.rs:3778 |
-| test340 | `test340_file_not_found_clear_error` | TEST340: File not found error provides clear message | src/bifaci/plugin_runtime.rs:3821 |
-| test341 | `test341_stdin_precedence_over_file_path` | TEST341: stdin takes precedence over file-path in source order | src/bifaci/plugin_runtime.rs:3862 |
-| test342 | `test342_file_path_position_zero_reads_first_arg` | TEST342: file-path with position 0 reads first positional arg as file | src/bifaci/plugin_runtime.rs:3900 |
-| test343 | `test343_non_file_path_args_unaffected` | TEST343: Non-file-path args are not affected by file reading | src/bifaci/plugin_runtime.rs:3933 |
-| test344 | `test344_file_path_array_invalid_json_fails` | TEST344: file-path-array with nonexistent path fails clearly | src/bifaci/plugin_runtime.rs:3964 |
-| test345 | `test345_file_path_array_one_file_missing_fails_hard` | TEST345: file-path-array with literal nonexistent path fails hard | src/bifaci/plugin_runtime.rs:4005 |
-| test346 | `test346_large_file_reads_successfully` | TEST346: Large file (1MB) reads successfully | src/bifaci/plugin_runtime.rs:4049 |
-| test347 | `test347_empty_file_reads_as_empty_bytes` | TEST347: Empty file reads as empty bytes | src/bifaci/plugin_runtime.rs:4085 |
-| test348 | `test348_file_path_conversion_respects_source_order` | TEST348: file-path conversion respects source order | src/bifaci/plugin_runtime.rs:4117 |
-| test349 | `test349_file_path_multiple_sources_fallback` | TEST349: file-path arg with multiple sources tries all in order | src/bifaci/plugin_runtime.rs:4154 |
-| test350 | `test350_full_cli_mode_with_file_path_integration` | TEST350: Integration test - full CLI mode invocation with file-path | src/bifaci/plugin_runtime.rs:4191 |
-| test351 | `test351_file_path_array_empty_array` | TEST351: file-path array with empty CBOR array returns empty (CBOR mode) | src/bifaci/plugin_runtime.rs:4255 |
-| test352 | `test352_file_permission_denied_clear_error` |  | src/bifaci/plugin_runtime.rs:4305 |
-| test353 | `test353_cbor_payload_format_consistency` | TEST353: CBOR payload format matches between CLI and CBOR mode | src/bifaci/plugin_runtime.rs:4373 |
-| test354 | `test354_glob_pattern_no_matches_empty_array` | TEST354: Glob pattern with no matches fails hard (NO FALLBACK) | src/bifaci/plugin_runtime.rs:4437 |
-| test355 | `test355_glob_pattern_skips_directories` | TEST355: Glob pattern skips directories | src/bifaci/plugin_runtime.rs:4480 |
-| test356 | `test356_multiple_glob_patterns_combined` | TEST356: Multiple glob patterns combined | src/bifaci/plugin_runtime.rs:4524 |
-| test357 | `test357_symlinks_followed` |  | src/bifaci/plugin_runtime.rs:4608 |
-| test358 | `test358_binary_file_non_utf8` | TEST358: Binary file with non-UTF8 data reads correctly | src/bifaci/plugin_runtime.rs:4651 |
-| test359 | `test359_invalid_glob_pattern_fails` | TEST359: Invalid glob pattern fails with clear error | src/bifaci/plugin_runtime.rs:4686 |
-| test360 | `test360_extract_effective_payload_with_file_data` | TEST360: Extract effective payload handles file-path data correctly | src/bifaci/plugin_runtime.rs:4728 |
-| test361 | `test361_cli_mode_file_path` | TEST361: CLI mode with file path - pass file path as command-line argument | src/bifaci/plugin_runtime.rs:4814 |
-| test362 | `test362_cli_mode_piped_binary` | TEST362: CLI mode with binary piped in - pipe binary data via stdin  This test simulates real-world conditions: - Pure binary data piped to stdin (NOT CBOR) - CLI mode detected (command arg present) - Cap accepts stdin source - Binary is chunked on-the-fly and accumulated - Handler receives complete CBOR payload | src/bifaci/plugin_runtime.rs:4860 |
-| test363 | `test363_cbor_mode_chunked_content` | TEST363: CBOR mode with chunked content - send file content streaming as chunks | src/bifaci/plugin_runtime.rs:4927 |
-| test364 | `test364_cbor_mode_file_path` | TEST364: CBOR mode with file path - send file path in CBOR arguments (auto-conversion) | src/bifaci/plugin_runtime.rs:4973 |
+| test336 | `test336_file_path_reads_file_passes_bytes` | TEST336: Single file-path arg with stdin source reads file and passes bytes to handler | src/bifaci/plugin_runtime.rs:3621 |
+| test337 | `test337_file_path_without_stdin_passes_string` | TEST337: file-path arg without stdin source passes path as string (no conversion) | src/bifaci/plugin_runtime.rs:3686 |
+| test338 | `test338_file_path_via_cli_flag` | TEST338: file-path arg reads file via --file CLI flag | src/bifaci/plugin_runtime.rs:3718 |
+| test339 | `test339_file_path_array_glob_expansion` | TEST339: file-path-array reads multiple files with glob pattern | src/bifaci/plugin_runtime.rs:3750 |
+| test340 | `test340_file_not_found_clear_error` | TEST340: File not found error provides clear message | src/bifaci/plugin_runtime.rs:3793 |
+| test341 | `test341_stdin_precedence_over_file_path` | TEST341: stdin takes precedence over file-path in source order | src/bifaci/plugin_runtime.rs:3834 |
+| test342 | `test342_file_path_position_zero_reads_first_arg` | TEST342: file-path with position 0 reads first positional arg as file | src/bifaci/plugin_runtime.rs:3872 |
+| test343 | `test343_non_file_path_args_unaffected` | TEST343: Non-file-path args are not affected by file reading | src/bifaci/plugin_runtime.rs:3905 |
+| test344 | `test344_file_path_array_invalid_json_fails` | TEST344: file-path-array with nonexistent path fails clearly | src/bifaci/plugin_runtime.rs:3936 |
+| test345 | `test345_file_path_array_one_file_missing_fails_hard` | TEST345: file-path-array with literal nonexistent path fails hard | src/bifaci/plugin_runtime.rs:3977 |
+| test346 | `test346_large_file_reads_successfully` | TEST346: Large file (1MB) reads successfully | src/bifaci/plugin_runtime.rs:4021 |
+| test347 | `test347_empty_file_reads_as_empty_bytes` | TEST347: Empty file reads as empty bytes | src/bifaci/plugin_runtime.rs:4057 |
+| test348 | `test348_file_path_conversion_respects_source_order` | TEST348: file-path conversion respects source order | src/bifaci/plugin_runtime.rs:4089 |
+| test349 | `test349_file_path_multiple_sources_fallback` | TEST349: file-path arg with multiple sources tries all in order | src/bifaci/plugin_runtime.rs:4126 |
+| test350 | `test350_full_cli_mode_with_file_path_integration` | TEST350: Integration test - full CLI mode invocation with file-path | src/bifaci/plugin_runtime.rs:4163 |
+| test351 | `test351_file_path_array_empty_array` | TEST351: file-path array with empty CBOR array returns empty (CBOR mode) | src/bifaci/plugin_runtime.rs:4227 |
+| test352 | `test352_file_permission_denied_clear_error` |  | src/bifaci/plugin_runtime.rs:4277 |
+| test353 | `test353_cbor_payload_format_consistency` | TEST353: CBOR payload format matches between CLI and CBOR mode | src/bifaci/plugin_runtime.rs:4345 |
+| test354 | `test354_glob_pattern_no_matches_empty_array` | TEST354: Glob pattern with no matches fails hard (NO FALLBACK) | src/bifaci/plugin_runtime.rs:4409 |
+| test355 | `test355_glob_pattern_skips_directories` | TEST355: Glob pattern skips directories | src/bifaci/plugin_runtime.rs:4452 |
+| test356 | `test356_multiple_glob_patterns_combined` | TEST356: Multiple glob patterns combined | src/bifaci/plugin_runtime.rs:4496 |
+| test357 | `test357_symlinks_followed` |  | src/bifaci/plugin_runtime.rs:4580 |
+| test358 | `test358_binary_file_non_utf8` | TEST358: Binary file with non-UTF8 data reads correctly | src/bifaci/plugin_runtime.rs:4623 |
+| test359 | `test359_invalid_glob_pattern_fails` | TEST359: Invalid glob pattern fails with clear error | src/bifaci/plugin_runtime.rs:4658 |
+| test360 | `test360_extract_effective_payload_with_file_data` | TEST360: Extract effective payload handles file-path data correctly | src/bifaci/plugin_runtime.rs:4700 |
+| test361 | `test361_cli_mode_file_path` | TEST361: CLI mode with file path - pass file path as command-line argument | src/bifaci/plugin_runtime.rs:4786 |
+| test362 | `test362_cli_mode_piped_binary` | TEST362: CLI mode with binary piped in - pipe binary data via stdin  This test simulates real-world conditions: - Pure binary data piped to stdin (NOT CBOR) - CLI mode detected (command arg present) - Cap accepts stdin source - Binary is chunked on-the-fly and accumulated - Handler receives complete CBOR payload | src/bifaci/plugin_runtime.rs:4832 |
+| test363 | `test363_cbor_mode_chunked_content` | TEST363: CBOR mode with chunked content - send file content streaming as chunks | src/bifaci/plugin_runtime.rs:4899 |
+| test364 | `test364_cbor_mode_file_path` | TEST364: CBOR mode with file path - send file path in CBOR arguments (auto-conversion) | src/bifaci/plugin_runtime.rs:4945 |
 | test365 | `test365_stream_start_frame` | TEST365: Frame::stream_start stores request_id, stream_id, and media_urn | src/bifaci/frame.rs:1279 |
 | test366 | `test366_stream_end_frame` | TEST366: Frame::stream_end stores request_id and stream_id | src/bifaci/frame.rs:1296 |
 | test367 | `test367_stream_start_with_empty_stream_id` | TEST367: StreamStart frame with empty stream_id still constructs (validation happens elsewhere) | src/bifaci/frame.rs:1312 |
 | test368 | `test368_stream_start_with_empty_media_urn` | TEST368: StreamStart frame with empty media_urn still constructs (validation happens elsewhere) | src/bifaci/frame.rs:1323 |
 | test389 | `test389_stream_start_roundtrip` | TEST389: StreamStart encode/decode roundtrip preserves stream_id and media_urn | src/bifaci/io.rs:1593 |
 | test390 | `test390_stream_end_roundtrip` | TEST390: StreamEnd encode/decode roundtrip preserves stream_id, no media_urn | src/bifaci/io.rs:1610 |
-| test395 | `test395_build_payload_small` | TEST395: Small payload (< max_chunk) produces correct CBOR arguments | src/bifaci/plugin_runtime.rs:5133 |
-| test396 | `test396_build_payload_large` | TEST396: Large payload (> max_chunk) accumulates across chunks correctly | src/bifaci/plugin_runtime.rs:5176 |
-| test397 | `test397_build_payload_empty` | TEST397: Empty reader produces valid empty CBOR arguments | src/bifaci/plugin_runtime.rs:5217 |
-| test398 | `test398_build_payload_io_error` | TEST398: IO error from reader propagates as RuntimeError::Io | src/bifaci/plugin_runtime.rs:5255 |
+| test395 | `test395_build_payload_small` | TEST395: Small payload (< max_chunk) produces correct CBOR arguments | src/bifaci/plugin_runtime.rs:5105 |
+| test396 | `test396_build_payload_large` | TEST396: Large payload (> max_chunk) accumulates across chunks correctly | src/bifaci/plugin_runtime.rs:5148 |
+| test397 | `test397_build_payload_empty` | TEST397: Empty reader produces valid empty CBOR arguments | src/bifaci/plugin_runtime.rs:5189 |
+| test398 | `test398_build_payload_io_error` | TEST398: IO error from reader propagates as RuntimeError::Io | src/bifaci/plugin_runtime.rs:5227 |
 | test399 | `test399_relay_notify_discriminant_roundtrip` | TEST399: Verify RelayNotify frame type discriminant roundtrips through u8 (value 10) | src/bifaci/frame.rs:1334 |
 | test400 | `test400_relay_state_discriminant_roundtrip` | TEST400: Verify RelayState frame type discriminant roundtrips through u8 (value 11) | src/bifaci/frame.rs:1343 |
 | test401 | `test401_relay_notify_frame` | TEST401: Verify relay_notify factory stores manifest and limits, and accessors extract them | src/bifaci/frame.rs:1352 |
@@ -410,8 +410,8 @@ This catalog lists all numbered tests in the capdag codebase.
 | test474 | `test474_cap_discard_accepts_specific_void_cap` | TEST474: CAP_DISCARD accepts specific-input/void-output caps | src/standard/caps.rs:803 |
 | test475 | `test475_validate_passes_with_identity` | TEST475: CapManifest::validate() passes when CAP_IDENTITY is present | src/bifaci/manifest.rs:295 |
 | test476 | `test476_validate_fails_without_identity` | TEST476: CapManifest::validate() fails when CAP_IDENTITY is missing | src/bifaci/manifest.rs:309 |
-| test478 | `test478_auto_registers_identity_handler` | TEST478: PluginRuntime auto-registers identity and discard handlers on construction | src/bifaci/plugin_runtime.rs:5285 |
-| test479 | `test479_custom_identity_overrides_default` | TEST479: Custom identity Op overrides auto-registered default | src/bifaci/plugin_runtime.rs:5304 |
+| test478 | `test478_auto_registers_identity_handler` | TEST478: PluginRuntime auto-registers identity and discard handlers on construction | src/bifaci/plugin_runtime.rs:5257 |
+| test479 | `test479_custom_identity_overrides_default` | TEST479: Custom identity Op overrides auto-registered default | src/bifaci/plugin_runtime.rs:5276 |
 | test480 | `test480_parse_caps_rejects_manifest_without_identity` | TEST480: parse_caps_from_manifest rejects manifest without CAP_IDENTITY | src/bifaci/host_runtime.rs:1350 |
 | test481 | `test481_verify_identity_succeeds` | TEST481: verify_identity succeeds with standard identity echo handler | src/bifaci/io.rs:1830 |
 | test482 | `test482_verify_identity_fails_on_err` | TEST482: verify_identity fails when plugin returns ERR on identity call | src/bifaci/io.rs:1858 |
@@ -460,36 +460,35 @@ This catalog lists all numbered tests in the capdag codebase.
 | test526 | `test526_relay_state_empty_payload` | TEST526: RelayState with empty payload is valid | src/bifaci/frame.rs:2509 |
 | test527 | `test527_relay_notify_large_manifest` | TEST527: RelayNotify with large manifest roundtrips correctly | src/bifaci/frame.rs:2519 |
 | test528 | `test528_relay_frames_use_uint_zero_id` | TEST528: RelayNotify and RelayState use MessageId::Uint(0) | src/bifaci/frame.rs:2546 |
-| test529 | `test529_input_stream_iterator_order` | TEST529: InputStream iterator yields chunks in order | src/bifaci/plugin_runtime.rs:5364 |
-| test530 | `test530_input_stream_collect_bytes` | TEST530: InputStream::collect_bytes concatenates byte chunks | src/bifaci/plugin_runtime.rs:5381 |
-| test531 | `test531_input_stream_collect_bytes_text` | TEST531: InputStream::collect_bytes handles text chunks | src/bifaci/plugin_runtime.rs:5395 |
-| test532 | `test532_input_stream_empty` | TEST532: InputStream empty stream produces empty bytes | src/bifaci/plugin_runtime.rs:5408 |
-| test533 | `test533_input_stream_error_propagation` | TEST533: InputStream propagates errors | src/bifaci/plugin_runtime.rs:5418 |
-| test534 | `test534_input_stream_media_urn` | TEST534: InputStream::media_urn returns correct URN | src/bifaci/plugin_runtime.rs:5437 |
-| test535 | `test535_input_package_iteration` | TEST535: InputPackage iterator yields streams | src/bifaci/plugin_runtime.rs:5446 |
-| test536 | `test536_input_package_collect_all_bytes` | TEST536: InputPackage::collect_all_bytes aggregates all streams | src/bifaci/plugin_runtime.rs:5479 |
-| test537 | `test537_input_package_empty` | TEST537: InputPackage empty package produces empty bytes | src/bifaci/plugin_runtime.rs:5513 |
-| test538 | `test538_input_package_error_propagation` | TEST538: InputPackage propagates stream errors | src/bifaci/plugin_runtime.rs:5528 |
-| test539 | `test539_output_stream_sends_stream_start` | TEST539: OutputStream sends STREAM_START on first write | src/bifaci/plugin_runtime.rs:5584 |
-| test540 | `test540_output_stream_close_sends_stream_end` | TEST540: OutputStream::close sends STREAM_END with correct chunk_count | src/bifaci/plugin_runtime.rs:5606 |
-| test541 | `test541_output_stream_chunks_large_data` | TEST541: OutputStream chunks large data correctly | src/bifaci/plugin_runtime.rs:5633 |
-| test542 | `test542_output_stream_empty` | TEST542: OutputStream empty stream sends STREAM_START and STREAM_END only | src/bifaci/plugin_runtime.rs:5660 |
-| test543 | `test543_peer_call_arg_creates_stream` | TEST543: PeerCall::arg creates OutputStream with correct stream_id | src/bifaci/plugin_runtime.rs:5685 |
-| test544 | `test544_peer_call_finish_sends_end` | TEST544: PeerCall::finish sends END frame | src/bifaci/plugin_runtime.rs:5704 |
-| test545 | `test545_peer_call_finish_returns_response_stream` | TEST545: PeerCall::finish returns InputStream for response | src/bifaci/plugin_runtime.rs:5730 |
-| test546 | `test546_is_image` | TEST546: is_image returns true only when image marker tag is present | src/urn/media_urn.rs:785 |
-| test547 | `test547_is_audio` | TEST547: is_audio returns true only when audio marker tag is present | src/urn/media_urn.rs:798 |
-| test548 | `test548_is_video` | TEST548: is_video returns true only when video marker tag is present | src/urn/media_urn.rs:810 |
-| test549 | `test549_is_numeric` | TEST549: is_numeric returns true only when numeric marker tag is present | src/urn/media_urn.rs:821 |
-| test550 | `test550_is_bool` | TEST550: is_bool returns true only when bool marker tag is present | src/urn/media_urn.rs:834 |
-| test551 | `test551_is_file_path` | TEST551: is_file_path returns true for scalar file-path, false for array | src/urn/media_urn.rs:847 |
-| test552 | `test552_is_file_path_array` | TEST552: is_file_path_array returns true for list file-path, false for scalar | src/urn/media_urn.rs:858 |
-| test553 | `test553_is_any_file_path` | TEST553: is_any_file_path returns true for both scalar and array file-path | src/urn/media_urn.rs:868 |
-| test554 | `test554_is_collection` | TEST554: is_collection returns true when collection marker tag is present | src/urn/media_urn.rs:878 |
-| test555 | `test555_with_tag_and_without_tag` | TEST555: with_tag adds a tag and without_tag removes it | src/urn/media_urn.rs:888 |
-| test556 | `test556_image_media_urn_for_ext` | TEST556: image_media_urn_for_ext creates valid image media URN | src/urn/media_urn.rs:905 |
-| test557 | `test557_audio_media_urn_for_ext` | TEST557: audio_media_urn_for_ext creates valid audio media URN | src/urn/media_urn.rs:915 |
-| test558 | `test558_predicate_constant_consistency` | TEST558: predicates are consistent with constants — every constant triggers exactly the expected predicates | src/urn/media_urn.rs:925 |
+| test529 | `test529_input_stream_iterator_order` | TEST529: InputStream iterator yields chunks in order | src/bifaci/plugin_runtime.rs:5336 |
+| test530 | `test530_input_stream_collect_bytes` | TEST530: InputStream::collect_bytes concatenates byte chunks | src/bifaci/plugin_runtime.rs:5353 |
+| test531 | `test531_input_stream_collect_bytes_text` | TEST531: InputStream::collect_bytes handles text chunks | src/bifaci/plugin_runtime.rs:5367 |
+| test532 | `test532_input_stream_empty` | TEST532: InputStream empty stream produces empty bytes | src/bifaci/plugin_runtime.rs:5380 |
+| test533 | `test533_input_stream_error_propagation` | TEST533: InputStream propagates errors | src/bifaci/plugin_runtime.rs:5390 |
+| test534 | `test534_input_stream_media_urn` | TEST534: InputStream::media_urn returns correct URN | src/bifaci/plugin_runtime.rs:5409 |
+| test535 | `test535_input_package_iteration` | TEST535: InputPackage iterator yields streams | src/bifaci/plugin_runtime.rs:5418 |
+| test536 | `test536_input_package_collect_all_bytes` | TEST536: InputPackage::collect_all_bytes aggregates all streams | src/bifaci/plugin_runtime.rs:5451 |
+| test537 | `test537_input_package_empty` | TEST537: InputPackage empty package produces empty bytes | src/bifaci/plugin_runtime.rs:5485 |
+| test538 | `test538_input_package_error_propagation` | TEST538: InputPackage propagates stream errors | src/bifaci/plugin_runtime.rs:5500 |
+| test539 | `test539_output_stream_sends_stream_start` | TEST539: OutputStream sends STREAM_START on first write | src/bifaci/plugin_runtime.rs:5556 |
+| test540 | `test540_output_stream_close_sends_stream_end` | TEST540: OutputStream::close sends STREAM_END with correct chunk_count | src/bifaci/plugin_runtime.rs:5578 |
+| test541 | `test541_output_stream_chunks_large_data` | TEST541: OutputStream chunks large data correctly | src/bifaci/plugin_runtime.rs:5605 |
+| test542 | `test542_output_stream_empty` | TEST542: OutputStream empty stream sends STREAM_START and STREAM_END only | src/bifaci/plugin_runtime.rs:5632 |
+| test543 | `test543_peer_call_arg_creates_stream` | TEST543: PeerCall::arg creates OutputStream with correct stream_id | src/bifaci/plugin_runtime.rs:5657 |
+| test544 | `test544_peer_call_finish_sends_end` | TEST544: PeerCall::finish sends END frame | src/bifaci/plugin_runtime.rs:5676 |
+| test545 | `test545_peer_call_finish_returns_response_stream` | TEST545: PeerCall::finish returns InputStream for response | src/bifaci/plugin_runtime.rs:5702 |
+| test546 | `test546_is_image` | TEST546: is_image returns true only when image marker tag is present | src/urn/media_urn.rs:808 |
+| test547 | `test547_is_audio` | TEST547: is_audio returns true only when audio marker tag is present | src/urn/media_urn.rs:821 |
+| test548 | `test548_is_video` | TEST548: is_video returns true only when video marker tag is present | src/urn/media_urn.rs:833 |
+| test549 | `test549_is_numeric` | TEST549: is_numeric returns true only when numeric marker tag is present | src/urn/media_urn.rs:844 |
+| test550 | `test550_is_bool` | TEST550: is_bool returns true only when bool marker tag is present | src/urn/media_urn.rs:857 |
+| test551 | `test551_is_file_path` | TEST551: is_file_path returns true for scalar file-path, false for array | src/urn/media_urn.rs:870 |
+| test552 | `test552_is_file_path_array` | TEST552: is_file_path_array returns true for list file-path, false for scalar | src/urn/media_urn.rs:881 |
+| test553 | `test553_is_any_file_path` | TEST553: is_any_file_path returns true for both scalar and array file-path | src/urn/media_urn.rs:891 |
+| test555 | `test555_with_tag_and_without_tag` | TEST555: with_tag adds a tag and without_tag removes it | src/urn/media_urn.rs:901 |
+| test556 | `test556_image_media_urn_for_ext` | TEST556: image_media_urn_for_ext creates valid image media URN | src/urn/media_urn.rs:918 |
+| test557 | `test557_audio_media_urn_for_ext` | TEST557: audio_media_urn_for_ext creates valid audio media URN | src/urn/media_urn.rs:928 |
+| test558 | `test558_predicate_constant_consistency` | TEST558: predicates are consistent with constants — every constant triggers exactly the expected predicates | src/urn/media_urn.rs:938 |
 | test559 | `test559_without_tag` | TEST559: without_tag removes tag, ignores in/out, case-insensitive for keys | src/urn/cap_urn.rs:1828 |
 | test560 | `test560_with_in_out_spec` | TEST560: with_in_spec and with_out_spec change direction specs | src/urn/cap_urn.rs:1853 |
 | test561 | `test561_in_out_media_urn` | TEST561: in_media_urn and out_media_urn parse direction specs into MediaUrn | src/urn/cap_urn.rs:1877 |
@@ -604,29 +603,29 @@ This catalog lists all numbered tests in the capdag codebase.
 | test671 | `test671_resolve_optional_slot_no_value_returns_none` |  | src/planner/argument_binding.rs:793 |
 | test675 | `test675_build_request_frames_preserves_media_urn_in_stream_start` | TEST675: build_request_frames with full media URN preserves it in STREAM_START frame | src/cap/caller.rs:545 |
 | test676 | `test676_build_request_frames_round_trip_find_stream_succeeds` | TEST676: Full round-trip: build_request_frames → extract streams → find_stream succeeds | src/cap/caller.rs:568 |
-| test677 | `test677_base_urn_does_not_match_full_urn_in_find_stream` | TEST677: build_request_frames with BASE URN → find_stream with FULL URN FAILS This documents the root cause of the cartridge_client.rs bug: sender used "media:llm-generation-request" (base), receiver looked for "media:llm-generation-request;json;form=map" (full). is_equivalent requires exact tag set match, so base != full. | src/cap/caller.rs:621 |
-| test678 | `test678_find_stream_equivalent_urn_different_tag_order` | TEST678: find_stream with exact equivalent URN (same tags, different order) succeeds | src/bifaci/plugin_runtime.rs:5779 |
-| test679 | `test679_find_stream_base_urn_does_not_match_full_urn` | TEST679: find_stream with base URN vs full URN fails — is_equivalent is strict This is the root cause of the cartridge_client.rs bug. Sender sent "media:llm-generation-request" but receiver looked for "media:llm-generation-request;json;form=map". | src/bifaci/plugin_runtime.rs:5794 |
-| test680 | `test680_require_stream_missing_urn_returns_error` | TEST680: require_stream with missing URN returns hard StreamError | src/bifaci/plugin_runtime.rs:5807 |
-| test681 | `test681_find_stream_multiple_streams_returns_correct` | TEST681: find_stream with multiple streams returns the correct one | src/bifaci/plugin_runtime.rs:5823 |
-| test682 | `test682_require_stream_str_returns_utf8` | TEST682: require_stream_str returns UTF-8 string for text data | src/bifaci/plugin_runtime.rs:5836 |
-| test683 | `test683_find_stream_invalid_urn_returns_none` | TEST683: find_stream returns None for invalid media URN string (not a parse error — just None) | src/bifaci/plugin_runtime.rs:5846 |
-| test684 | `test684_from_media_urn_single` | TEST684: Tests InputCardinality correctly identifies single-value media URNs Verifies that URNs without form=list are parsed as Single cardinality | src/planner/cardinality.rs:281 |
-| test685 | `test685_from_media_urn_vector` | TEST685: Tests InputCardinality correctly identifies list/vector media URNs Verifies that URNs with form=list tag are parsed as Sequence cardinality | src/planner/cardinality.rs:290 |
-| test686 | `test686_from_media_urn_vector_tag_position` | TEST686: Tests that form=list tag position doesn't affect vector detection Verifies cardinality parsing is independent of tag order in URN | src/planner/cardinality.rs:299 |
-| test687 | `test687_from_media_urn_no_false_positives` | TEST687: Tests that URN content doesn't cause false positive vector detection Verifies that "sequence" in media type name doesn't trigger Sequence cardinality | src/planner/cardinality.rs:307 |
-| test688 | `test688_is_multiple` | TEST688: Tests is_multiple method correctly identifies multi-value cardinalities Verifies Single returns false while Sequence and AtLeastOne return true | src/planner/cardinality.rs:314 |
-| test689 | `test689_accepts_single` | TEST689: Tests accepts_single method identifies cardinalities that accept single values Verifies Single and AtLeastOne accept singles while Sequence does not | src/planner/cardinality.rs:323 |
-| test690 | `test690_compatibility_single_to_single` | TEST690: Tests cardinality compatibility for single-to-single data flow Verifies Direct compatibility when both input and output are Single | src/planner/cardinality.rs:334 |
-| test691 | `test691_compatibility_single_to_vector` | TEST691: Tests cardinality compatibility when wrapping single value into array Verifies WrapInArray compatibility when Sequence expects Single input | src/planner/cardinality.rs:341 |
-| test692 | `test692_compatibility_vector_to_single` | TEST692: Tests cardinality compatibility when unwrapping array to singles Verifies RequiresFanOut compatibility when Single expects Sequence input | src/planner/cardinality.rs:348 |
-| test693 | `test693_compatibility_vector_to_vector` | TEST693: Tests cardinality compatibility for sequence-to-sequence data flow Verifies Direct compatibility when both input and output are Sequence | src/planner/cardinality.rs:355 |
-| test694 | `test694_apply_to_urn_add_vector` | TEST694: Tests applying Sequence cardinality adds form=list tag to URN Verifies that apply_to_urn correctly modifies URN to indicate vector form | src/planner/cardinality.rs:364 |
-| test695 | `test695_apply_to_urn_remove_vector` | TEST695: Tests applying Single cardinality removes form=list tag from URN Verifies that apply_to_urn correctly strips vector form indicator | src/planner/cardinality.rs:372 |
-| test696 | `test696_apply_to_urn_no_change_needed` | TEST696: Tests apply_to_urn is idempotent when URN already matches cardinality Verifies that URN remains unchanged when form already matches desired cardinality | src/planner/cardinality.rs:380 |
-| test697 | `test697_cap_cardinality_info_one_to_one` | TEST697: Tests CapCardinalityInfo correctly identifies one-to-one pattern Verifies Single input and Single output result in OneToOne pattern | src/planner/cardinality.rs:392 |
-| test698 | `test698_cap_cardinality_info_one_to_many` | TEST698: Tests CapCardinalityInfo correctly identifies one-to-many pattern Verifies Single input and Sequence output result in OneToMany pattern | src/planner/cardinality.rs:402 |
-| test699 | `test699_cap_cardinality_info_many_to_one` | TEST699: Tests CapCardinalityInfo correctly identifies many-to-one pattern Verifies Sequence input and Single output result in ManyToOne pattern | src/planner/cardinality.rs:412 |
+| test677 | `test677_base_urn_does_not_match_full_urn_in_find_stream` | TEST677: build_request_frames with BASE URN → find_stream with FULL URN FAILS This documents the root cause of the cartridge_client.rs bug: sender used "media:llm-generation-request" (base), receiver looked for "media:llm-generation-request;json;record" (full). is_equivalent requires exact tag set match, so base != full. | src/cap/caller.rs:621 |
+| test678 | `test678_find_stream_equivalent_urn_different_tag_order` | TEST678: find_stream with exact equivalent URN (same tags, different order) succeeds | src/bifaci/plugin_runtime.rs:5751 |
+| test679 | `test679_find_stream_base_urn_does_not_match_full_urn` | TEST679: find_stream with base URN vs full URN fails — is_equivalent is strict This is the root cause of the cartridge_client.rs bug. Sender sent "media:llm-generation-request" but receiver looked for "media:llm-generation-request;json;record". | src/bifaci/plugin_runtime.rs:5766 |
+| test680 | `test680_require_stream_missing_urn_returns_error` | TEST680: require_stream with missing URN returns hard StreamError | src/bifaci/plugin_runtime.rs:5779 |
+| test681 | `test681_find_stream_multiple_streams_returns_correct` | TEST681: find_stream with multiple streams returns the correct one | src/bifaci/plugin_runtime.rs:5795 |
+| test682 | `test682_require_stream_str_returns_utf8` | TEST682: require_stream_str returns UTF-8 string for text data | src/bifaci/plugin_runtime.rs:5808 |
+| test683 | `test683_find_stream_invalid_urn_returns_none` | TEST683: find_stream returns None for invalid media URN string (not a parse error — just None) | src/bifaci/plugin_runtime.rs:5818 |
+| test684 | `test684_from_media_urn_single` | TEST684: Tests InputCardinality correctly identifies single-value media URNs Verifies that URNs without list marker are parsed as Single cardinality | src/planner/cardinality.rs:540 |
+| test685 | `test685_from_media_urn_vector` | TEST685: Tests InputCardinality correctly identifies list/vector media URNs Verifies that URNs with list marker tag are parsed as Sequence cardinality | src/planner/cardinality.rs:551 |
+| test686 | `test686_from_media_urn_vector_tag_position` | TEST686: Tests that list marker tag position doesn't affect vector detection Verifies cardinality parsing is independent of tag order in URN | src/planner/cardinality.rs:562 |
+| test687 | `test687_from_media_urn_no_false_positives` | TEST687: Tests that URN content doesn't cause false positive vector detection Verifies that "list" in media type name doesn't trigger Sequence cardinality | src/planner/cardinality.rs:570 |
+| test688 | `test688_is_multiple` | TEST688: Tests is_multiple method correctly identifies multi-value cardinalities Verifies Single returns false while Sequence and AtLeastOne return true | src/planner/cardinality.rs:579 |
+| test689 | `test689_accepts_single` | TEST689: Tests accepts_single method identifies cardinalities that accept single values Verifies Single and AtLeastOne accept singles while Sequence does not | src/planner/cardinality.rs:588 |
+| test690 | `test690_compatibility_single_to_single` | TEST690: Tests cardinality compatibility for single-to-single data flow Verifies Direct compatibility when both input and output are Single | src/planner/cardinality.rs:599 |
+| test691 | `test691_compatibility_single_to_vector` | TEST691: Tests cardinality compatibility when wrapping single value into array Verifies WrapInArray compatibility when Sequence expects Single input | src/planner/cardinality.rs:606 |
+| test692 | `test692_compatibility_vector_to_single` | TEST692: Tests cardinality compatibility when unwrapping array to singles Verifies RequiresFanOut compatibility when Single expects Sequence input | src/planner/cardinality.rs:613 |
+| test693 | `test693_compatibility_vector_to_vector` | TEST693: Tests cardinality compatibility for sequence-to-sequence data flow Verifies Direct compatibility when both input and output are Sequence | src/planner/cardinality.rs:620 |
+| test694 | `test694_apply_to_urn_add_vector` | TEST694: Tests applying Sequence cardinality adds list marker to URN Verifies that apply_to_urn correctly modifies URN to indicate list | src/planner/cardinality.rs:629 |
+| test695 | `test695_apply_to_urn_remove_vector` | TEST695: Tests applying Single cardinality removes list marker from URN Verifies that apply_to_urn correctly strips list marker | src/planner/cardinality.rs:638 |
+| test696 | `test696_apply_to_urn_no_change_needed` | TEST696: Tests apply_to_urn is idempotent when URN already matches cardinality Verifies that URN remains unchanged when cardinality already matches desired | src/planner/cardinality.rs:646 |
+| test697 | `test697_cap_shape_info_one_to_one` | TEST697: Tests CapShapeInfo correctly identifies one-to-one pattern Verifies Single input and Single output result in OneToOne pattern | src/planner/cardinality.rs:658 |
+| test698 | `test698_cap_shape_info_one_to_many` | TEST698: Tests CapShapeInfo correctly identifies one-to-many pattern Verifies Single input and Sequence output result in OneToMany pattern | src/planner/cardinality.rs:668 |
+| test699 | `test699_cap_shape_info_many_to_one` | TEST699: Tests CapShapeInfo correctly identifies many-to-one pattern Verifies Sequence input and Single output result in ManyToOne pattern | src/planner/cardinality.rs:678 |
 | test700 | `test700_filepath_conversion_scalar` | TEST700: File-path conversion with test-edge1 (scalar file input) | testcartridge/tests/integration_tests.rs:18 |
 | test701 | `test701_filepath_array_glob` | TEST701: File-path array with glob expansion (test-edge3) | testcartridge/tests/integration_tests.rs:46 |
 | test702 | `test702_large_payload_1mb` | TEST702: Large payload auto-chunking (1MB response) | testcartridge/tests/integration_tests.rs:72 |
@@ -636,30 +635,42 @@ This catalog lists all numbered tests in the capdag codebase.
 | test706 | `test706_empty_file` | TEST706: Empty file handling | testcartridge/tests/integration_tests.rs:155 |
 | test707 | `test707_utf8_file` | TEST707: UTF-8 file handling (textable constraint) | testcartridge/tests/integration_tests.rs:177 |
 | test708 | `test708_missing_file` | TEST708: Missing file error handling | testcartridge/tests/integration_tests.rs:200 |
-| test709 | `test709_pattern_produces_vector` | TEST709: Tests CardinalityPattern correctly identifies patterns that produce vectors Verifies OneToMany and ManyToMany return true, others return false | src/planner/cardinality.rs:424 |
-| test710 | `test710_pattern_requires_vector` | TEST710: Tests CardinalityPattern correctly identifies patterns that require vectors Verifies ManyToOne and ManyToMany return true, others return false | src/planner/cardinality.rs:434 |
-| test711 | `test711_chain_analysis_simple_linear` | TEST711: Tests chain analysis for simple linear one-to-one capability chains Verifies chains with no fan-out are valid and require no transformation | src/planner/cardinality.rs:446 |
-| test712 | `test712_chain_analysis_with_fan_out` | TEST712: Tests chain analysis detects fan-out points in capability chains Verifies chains with one-to-many transitions are marked for transformation | src/planner/cardinality.rs:460 |
-| test713 | `test713_chain_analysis_empty` | TEST713: Tests chain analysis handles empty capability chains correctly Verifies empty chains are valid and require no transformation | src/planner/cardinality.rs:474 |
-| test714 | `test714_cardinality_serialization` | TEST714: Tests InputCardinality serializes and deserializes correctly to/from JSON Verifies JSON round-trip preserves cardinality values | src/planner/cardinality.rs:485 |
-| test715 | `test715_pattern_serialization` | TEST715: Tests CardinalityPattern serializes and deserializes correctly to/from JSON Verifies JSON round-trip preserves pattern values with snake_case formatting | src/planner/cardinality.rs:496 |
-| test716 | `test716_empty_collection` | TEST716: Tests CapInputCollection empty collection has zero files and folders Verifies is_empty() returns true and counts are zero for new collection | src/planner/collection_input.rs:158 |
-| test717 | `test717_collection_with_files` | TEST717: Tests CapInputCollection correctly counts files in flat collection Verifies total_file_count() returns 2 for collection with 2 files, no folders | src/planner/collection_input.rs:171 |
-| test718 | `test718_nested_collection` | TEST718: Tests CapInputCollection correctly counts files and folders in nested structure Verifies total_file_count() includes subfolder files and total_folder_count() counts subfolders | src/planner/collection_input.rs:195 |
-| test719 | `test719_flatten_to_files` | TEST719: Tests CapInputCollection flatten_to_files recursively collects all files Verifies flatten() extracts files from root and all subfolders into flat list | src/planner/collection_input.rs:230 |
-| test720 | `test720_serialization_roundtrip` | TEST720: Tests CapInputCollection serializes to JSON and deserializes correctly Verifies JSON round-trip preserves folder_id, folder_name, files and file metadata | src/planner/collection_input.rs:262 |
+| test709 | `test709_pattern_produces_vector` | TEST709: Tests CardinalityPattern correctly identifies patterns that produce vectors Verifies OneToMany and ManyToMany return true, others return false | src/planner/cardinality.rs:690 |
+| test710 | `test710_pattern_requires_vector` | TEST710: Tests CardinalityPattern correctly identifies patterns that require vectors Verifies ManyToOne and ManyToMany return true, others return false | src/planner/cardinality.rs:700 |
+| test711 | `test711_shape_chain_analysis_simple_linear` | TEST711: Tests shape chain analysis for simple linear one-to-one capability chains Verifies chains with no fan-out are valid and require no transformation | src/planner/cardinality.rs:712 |
+| test712 | `test712_shape_chain_analysis_with_fan_out` | TEST712: Tests shape chain analysis detects fan-out points in capability chains Verifies chains with one-to-many transitions are marked for transformation | src/planner/cardinality.rs:726 |
+| test713 | `test713_shape_chain_analysis_empty` | TEST713: Tests shape chain analysis handles empty capability chains correctly Verifies empty chains are valid and require no transformation | src/planner/cardinality.rs:740 |
+| test714 | `test714_cardinality_serialization` | TEST714: Tests InputCardinality serializes and deserializes correctly to/from JSON Verifies JSON round-trip preserves cardinality values | src/planner/cardinality.rs:751 |
+| test715 | `test715_pattern_serialization` | TEST715: Tests CardinalityPattern serializes and deserializes correctly to/from JSON Verifies JSON round-trip preserves pattern values with snake_case formatting | src/planner/cardinality.rs:762 |
+| test716 | `test716_empty_collection` | TEST716: Tests CapInputCollection empty collection has zero files and folders Verifies is_empty() returns true and counts are zero for new collection | src/planner/collection_input.rs:161 |
+| test717 | `test717_collection_with_files` | TEST717: Tests CapInputCollection correctly counts files in flat collection Verifies total_file_count() returns 2 for collection with 2 files, no folders | src/planner/collection_input.rs:174 |
+| test718 | `test718_nested_collection` | TEST718: Tests CapInputCollection correctly counts files and folders in nested structure Verifies total_file_count() includes subfolder files and total_folder_count() counts subfolders | src/planner/collection_input.rs:198 |
+| test719 | `test719_flatten_to_files` | TEST719: Tests CapInputCollection flatten_to_files recursively collects all files Verifies flatten() extracts files from root and all subfolders into flat list | src/planner/collection_input.rs:233 |
+| test720 | `test720_from_media_urn_opaque` | TEST720: Tests InputStructure correctly identifies opaque media URNs Verifies that URNs without record marker are parsed as Opaque | src/planner/cardinality.rs:775 |
+| test720 | `test720_serialization_roundtrip` | TEST720: Tests CapInputCollection serializes to JSON and deserializes correctly Verifies JSON round-trip preserves folder_id, folder_name, files and file metadata | src/planner/collection_input.rs:265 |
+| test721 | `test721_from_media_urn_record` | TEST721: Tests InputStructure correctly identifies record media URNs Verifies that URNs with record marker tag are parsed as Record | src/planner/cardinality.rs:786 |
 | test721 | `test721_single_cap_plan` | TEST721: Tests creation of a simple execution plan with a single capability Verifies that single_cap() generates a valid plan with input_slot, cap node, and output node | src/planner/plan.rs:621 |
+| test722 | `test722_structure_compatibility_opaque_to_opaque` | TEST722: Tests structure compatibility for opaque-to-opaque data flow | src/planner/cardinality.rs:796 |
 | test722 | `test722_linear_chain_plan` | TEST722: Tests creation of a linear chain of capabilities connected in sequence Verifies that linear_chain() correctly links multiple caps with proper edges and topological order | src/planner/plan.rs:637 |
+| test723 | `test723_structure_compatibility_record_to_record` | TEST723: Tests structure compatibility for record-to-record data flow | src/planner/cardinality.rs:805 |
 | test723 | `test723_empty_plan` | TEST723: Tests creation and validation of an empty execution plan with no nodes Verifies that plans without capabilities are valid and handle zero nodes correctly | src/planner/plan.rs:655 |
+| test724 | `test724_structure_incompatibility_opaque_to_record` | TEST724: Tests structure incompatibility for opaque-to-record flow | src/planner/cardinality.rs:814 |
 | test724 | `test724_plan_with_metadata` | TEST724: Tests storing and retrieving metadata attached to an execution plan Verifies that arbitrary JSON metadata can be associated with a plan for context preservation | src/planner/plan.rs:664 |
+| test725 | `test725_structure_incompatibility_record_to_opaque` | TEST725: Tests structure incompatibility for record-to-opaque flow | src/planner/cardinality.rs:822 |
 | test725 | `test725_validate_invalid_edge` | TEST725: Tests plan validation detects edges pointing to non-existent nodes Verifies that validate() returns an error when an edge references a missing to_node | src/planner/plan.rs:681 |
+| test726 | `test726_apply_structure_add_record` | TEST726: Tests applying Record structure adds record marker to URN | src/planner/cardinality.rs:830 |
 | test726 | `test726_topological_order_diamond` | TEST726: Tests topological sort correctly orders a diamond-shaped DAG (A→B,C→D) Verifies that nodes with multiple paths respect dependency constraints (A first, D last) | src/planner/plan.rs:698 |
+| test727 | `test727_apply_structure_remove_record` | TEST727: Tests applying Opaque structure removes record marker from URN | src/planner/cardinality.rs:837 |
 | test727 | `test727_topological_order_detects_cycle` | TEST727: Tests topological sort detects and rejects cyclic dependencies (A→B→C→A) Verifies that circular references produce a "Cycle detected" error | src/planner/plan.rs:724 |
 | test728 | `test728_cap_node_helpers` | TEST728: Tests CapNode helper methods for identifying node types (cap, fan-out, fan-in) Verifies is_cap(), is_fan_out(), is_fan_in(), and cap_urn() correctly classify node types | src/planner/plan.rs:745 |
 | test729 | `test729_edge_types` | TEST729: Tests creation and classification of different edge types (Direct, Iteration, Collection, JsonField) Verifies that edge constructors produce correct EdgeType variants | src/planner/plan.rs:767 |
+| test730 | `test730_media_shape_from_urn_all_combinations` | TEST730: Tests MediaShape correctly parses all four combinations | src/planner/cardinality.rs:846 |
 | test730 | `test730_execution_result` | TEST730: Tests CapChainExecutionResult structure for successful execution outcomes Verifies that success status, outputs, and primary_output() accessor work correctly | src/planner/plan.rs:784 |
+| test731 | `test731_media_shape_compatible_direct` | TEST731: Tests MediaShape compatibility for matching shapes | src/planner/cardinality.rs:870 |
 | test731 | `test731_validate_invalid_from_node` | TEST731: Tests plan validation detects edges originating from non-existent nodes Verifies that validate() returns an error when an edge references a missing from_node | src/planner/plan.rs:803 |
+| test732 | `test732_media_shape_cardinality_changes` | TEST732: Tests MediaShape compatibility for cardinality changes with matching structure | src/planner/cardinality.rs:885 |
 | test732 | `test732_validate_invalid_entry_node` | TEST732: Tests plan validation detects invalid entry node references Verifies that validate() returns an error when entry_nodes contains a non-existent node ID | src/planner/plan.rs:820 |
+| test733 | `test733_media_shape_structure_mismatch` | TEST733: Tests MediaShape incompatibility when structures don't match | src/planner/cardinality.rs:902 |
 | test733 | `test733_validate_invalid_output_node` | TEST733: Tests plan validation detects invalid output node references Verifies that validate() returns an error when output_nodes contains a non-existent node ID | src/planner/plan.rs:838 |
 | test734 | `test734_topological_order_self_loop` | TEST734: Tests topological sort detects self-referencing cycles (A→A) Verifies that self-loops are recognized as cycles and produce an error | src/planner/plan.rs:856 |
 | test735 | `test735_topological_order_multiple_entry_points` | TEST735: Tests topological sort handles graphs with multiple independent starting nodes Verifies that parallel entry points (A→C, B→C) both precede their merge point in ordering | src/planner/plan.rs:872 |
@@ -667,7 +678,9 @@ This catalog lists all numbered tests in the capdag codebase.
 | test737 | `test737_linear_chain_single_cap` | TEST737: Tests linear_chain() with exactly one capability Verifies that a single-element chain produces a valid plan with input_slot, cap, and output | src/planner/plan.rs:948 |
 | test738 | `test738_linear_chain_empty` | TEST738: Tests linear_chain() with empty capability list Verifies that an empty chain produces a plan with zero nodes and edges | src/planner/plan.rs:963 |
 | test739 | `test739_node_execution_result_success` | TEST739: Tests NodeExecutionResult structure for successful node execution Verifies that success status, outputs (binary and text), and error fields work correctly | src/planner/plan.rs:977 |
+| test740 | `test740_cap_shape_info_from_specs` | TEST740: Tests CapShapeInfo correctly parses cap specs | src/planner/cardinality.rs:923 |
 | test740 | `test740_node_execution_result_failure` | TEST740: Tests NodeExecutionResult structure for failed node execution Verifies that failure status, error message, and absence of outputs are correctly represented | src/planner/plan.rs:995 |
+| test741 | `test741_cap_shape_info_pattern` | TEST741: Tests CapShapeInfo pattern detection | src/planner/cardinality.rs:937 |
 | test741 | `test741_execution_result_failure` | TEST741: Tests CapChainExecutionResult structure for failed chain execution Verifies that failure status, error message, and absence of outputs are correctly represented | src/planner/plan.rs:1013 |
 | test742 | `test742_edge_type_serialization` | TEST742: Tests EdgeType enum serialization and deserialization to/from JSON Verifies that edge types like Direct and JsonField correctly round-trip through serde_json | src/planner/plan.rs:1030 |
 | test743 | `test743_execution_node_type_serialization` | TEST743: Tests ExecutionNodeType enum serialization and deserialization to/from JSON Verifies that node types like Cap and ForEach correctly serialize with their fields | src/planner/plan.rs:1047 |
@@ -677,44 +690,48 @@ This catalog lists all numbered tests in the capdag codebase.
 | test747 | `test747_cap_node_merge` | TEST747: Tests creation and validation of Merge node that combines multiple inputs Verifies that Merge nodes with multiple input nodes and a strategy can be added to plans | src/planner/plan.rs:1117 |
 | test748 | `test748_cap_node_split` | TEST748: Tests creation of Split node that distributes input to multiple outputs Verifies that Split nodes correctly specify an input node and output count | src/planner/plan.rs:1142 |
 | test749 | `test749_get_node` | TEST749: Tests get_node() method for looking up nodes by ID in a plan Verifies that existing nodes are found and non-existent nodes return None | src/planner/plan.rs:1164 |
-| test750 | `test750_no_duplicates_with_unique_caps` | TEST750: Tests duplicate detection passes for caps with unique URN combinations Verifies that check_for_duplicate_caps() correctly accepts caps with different op/in/out combinations | src/planner/plan_builder.rs:1332 |
-| test751 | `test751_detects_duplicate_cap_urns` | TEST751: Tests duplicate detection identifies caps with identical URNs Verifies that check_for_duplicate_caps() returns an error when multiple caps share the same cap_urn | src/planner/plan_builder.rs:1347 |
-| test752 | `test752_different_ops_same_types_not_duplicates` | TEST752: Tests caps with different operations but same input/output types are not duplicates Verifies that only the complete URN (including op) is used for duplicate detection | src/planner/plan_builder.rs:1364 |
-| test753 | `test753_same_op_different_input_types_not_duplicates` | TEST753: Tests caps with same operation but different input types are not duplicates Verifies that input type differences distinguish caps with the same operation name | src/planner/plan_builder.rs:1378 |
-| test754 | `test754_input_arg_first_cap_auto_resolved_from_input` | TEST754: Tests first cap's input argument is automatically resolved from input file Verifies that determine_resolution_with_io_check() returns FromInputFile for the first cap in a chain | src/planner/plan_builder.rs:1417 |
-| test755 | `test755_input_arg_subsequent_cap_auto_resolved_from_previous` | TEST755: Tests subsequent caps' input arguments are automatically resolved from previous output Verifies that determine_resolution_with_io_check() returns FromPreviousOutput for caps after the first | src/planner/plan_builder.rs:1428 |
-| test756 | `test756_output_arg_auto_resolved` | TEST756: Tests output arguments are automatically resolved from previous cap's output Verifies that arguments matching the output spec are always resolved as FromPreviousOutput | src/planner/plan_builder.rs:1443 |
-| test757 | `test757_file_path_type_fallback_first_cap` | TEST757: Tests MEDIA_FILE_PATH argument type resolves to input file for first cap Verifies that generic file-path arguments are bound to input file in the first cap | src/planner/plan_builder.rs:1454 |
-| test758 | `test758_file_path_type_fallback_subsequent_cap` | TEST758: Tests MEDIA_FILE_PATH argument type resolves to previous output for subsequent caps Verifies that generic file-path arguments are bound to previous cap's output after the first cap | src/planner/plan_builder.rs:1465 |
-| test759 | `test759_file_path_array_fallback` | TEST759: Tests MEDIA_FILE_PATH_ARRAY argument type resolution for first and subsequent caps Verifies that file-path array arguments follow the same resolution pattern as single file paths | src/planner/plan_builder.rs:1476 |
-| test760 | `test760_non_io_arg_with_default_has_default` | TEST760: Tests required non-IO arguments with default values are marked as HasDefault Verifies that arguments like integers with defaults don't require user input | src/planner/plan_builder.rs:1490 |
-| test761 | `test761_non_io_arg_without_default_requires_user_input` | TEST761: Tests required non-IO arguments without defaults require user input Verifies that arguments like strings without defaults are marked as RequiresUserInput | src/planner/plan_builder.rs:1502 |
-| test762 | `test762_optional_non_io_arg_with_default_has_default` | TEST762: Tests optional non-IO arguments with default values are marked as HasDefault Verifies that optional arguments with defaults behave the same as required ones with defaults | src/planner/plan_builder.rs:1513 |
-| test763 | `test763_optional_non_io_arg_without_default_requires_user_input` | TEST763: Tests optional non-IO arguments without defaults still require user input Verifies that optional arguments without defaults must be explicitly provided or skipped | src/planner/plan_builder.rs:1525 |
-| test764 | `test764_validation_to_json_none` | TEST764: Tests validation_to_json() returns None for None input Verifies that missing validation metadata is converted to JSON None | src/planner/plan_builder.rs:1536 |
-| test765 | `test765_validation_to_json_empty` | TEST765: Tests validation_to_json() returns None for empty validation constraints Verifies that default MediaValidation with no constraints produces JSON None | src/planner/plan_builder.rs:1544 |
-| test766 | `test766_validation_to_json_with_constraints` | TEST766: Tests validation_to_json() converts MediaValidation with constraints to JSON Verifies that min/max validation rules are correctly serialized as JSON fields | src/planner/plan_builder.rs:1553 |
-| test767 | `test767_argument_info_serialization` | TEST767: Tests ArgumentInfo struct serialization to JSON Verifies that argument metadata including resolution status and validation is correctly serialized | src/planner/plan_builder.rs:1572 |
-| test768 | `test768_path_argument_requirements_structure` | TEST768: Tests PathArgumentRequirements structure for single-step execution paths Verifies that argument requirements are correctly organized by step with resolution information | src/planner/plan_builder.rs:1592 |
-| test769 | `test769_path_with_required_slot` | TEST769: Tests PathArgumentRequirements tracking of required user-input slots Verifies that arguments requiring user input are collected in slots and can_execute_without_input is false | src/planner/plan_builder.rs:1628 |
-| test770 | `test770_is_cap_available_with_filter` | TEST770: Tests is_cap_available() correctly applies availability filter when set Verifies that only caps in the available_caps set are considered available | src/planner/plan_builder.rs:1701 |
-| test771 | `test771_is_cap_available_without_filter` | TEST771: Tests is_cap_available() treats all caps as available when no filter is set Verifies that without an availability filter, any cap URN is considered available | src/planner/plan_builder.rs:1714 |
-| test772 | `test772_find_all_paths_filters_by_availability` | TEST772: Tests find_all_paths() excludes unavailable caps from pathfinding Verifies that only paths using available caps are returned when filter is set | src/planner/plan_builder.rs:1724 |
-| test773 | `test773_find_all_paths_returns_empty_when_no_available_caps` | TEST773: Tests find_all_paths() returns empty result when all caps are filtered out Verifies that pathfinding returns no paths when the availability filter excludes all relevant caps | src/planner/plan_builder.rs:1750 |
-| test774 | `test774_get_reachable_targets_filters_by_availability` | TEST774: Tests get_reachable_targets() only considers available caps for reachability Verifies that target specs are only reachable via caps in the availability filter | src/planner/plan_builder.rs:1769 |
-| test775 | `test775_find_path_filters_by_availability` | TEST775: Tests find_path() selects from available caps when multiple paths exist Verifies that find_path() respects availability filter and prefers available direct paths | src/planner/plan_builder.rs:1795 |
-| test776 | `test776_find_path_returns_error_when_path_unavailable` | TEST776: Tests find_path() returns error when required caps are filtered out by availability Verifies that "No path found" error is returned when filter blocks the only viable path | src/planner/plan_builder.rs:1818 |
-| test777 | `test777_type_mismatch_pdf_cap_does_not_match_png_input` | TEST777: Tests type checking prevents using PDF-specific cap with PNG input Verifies that media type compatibility is enforced during pathfinding (PNG cannot use PDF cap) | src/planner/plan_builder.rs:1845 |
-| test778 | `test778_type_mismatch_png_cap_does_not_match_pdf_input` | TEST778: Tests type checking prevents using PNG-specific cap with PDF input Verifies that media type compatibility is enforced during pathfinding (PDF cannot use PNG cap) | src/planner/plan_builder.rs:1865 |
-| test779 | `test779_get_reachable_targets_respects_type_matching` | TEST779: Tests get_reachable_targets() only returns targets reachable via type-compatible caps Verifies that PNG and PDF inputs reach different targets based on cap input type requirements | src/planner/plan_builder.rs:1885 |
-| test780 | `test780_reachable_targets_with_metadata_respects_type_matching` | TEST780: Tests get_reachable_targets_with_metadata() respects type compatibility constraints Verifies that reachable target metadata only includes type-compatible transformations | src/planner/plan_builder.rs:1913 |
-| test781 | `test781_find_all_paths_respects_type_chain` | TEST781: Tests find_all_paths() enforces type compatibility across multi-step chains Verifies that paths are only found when all intermediate types are compatible | src/planner/plan_builder.rs:1939 |
-| test782 | `test782_coherence_score_zero_for_direct_path` | TEST782: Tests coherence scoring gives 0 deviations for direct single-step paths Verifies that paths going directly from source to target without detours have perfect coherence | src/planner/plan_builder.rs:1968 |
-| test783 | `test783_coherence_score_penalizes_unrelated_intermediate` | TEST783: Tests coherence scoring penalizes paths through semantically unrelated intermediates Verifies that going from textable→thumbnail→textable incurs deviation penalty (thumbnail unrelated) | src/planner/plan_builder.rs:1994 |
-| test784 | `test784_coherence_score_related_intermediate_not_penalized` | TEST784: Tests coherence scoring does not penalize paths through semantically related intermediates Verifies that going through a supertype (txt→textable→md) maintains coherence with 0 deviations | src/planner/plan_builder.rs:2029 |
-| test785 | `test785_find_all_paths_filters_deviating_when_coherent_exists` | TEST785: Tests find_all_paths() filters out deviating paths when coherent alternatives exist Verifies that semantically wandering paths are excluded if direct coherent paths are available | src/planner/plan_builder.rs:2063 |
-| test786 | `test786_find_all_paths_keeps_all_when_all_deviate` | TEST786: Tests find_all_paths() keeps all paths when no coherent path exists Verifies that all deviating paths are returned if they're the only viable options | src/planner/plan_builder.rs:2089 |
-| test787 | `test787_find_all_paths_coherent_sorting_prefers_shorter` | TEST787: Tests find_all_paths() sorts coherent paths by length, preferring shorter ones Verifies that among multiple coherent paths, the shortest is ranked first | src/planner/plan_builder.rs:2121 |
+| test750 | `test750_shape_chain_valid` | TEST750: Tests shape chain analysis for valid chain with matching structures | src/planner/cardinality.rs:950 |
+| test750 | `test750_no_duplicates_with_unique_caps` | TEST750: Tests duplicate detection passes for caps with unique URN combinations Verifies that check_for_duplicate_caps() correctly accepts caps with different op/in/out combinations | src/planner/plan_builder.rs:1340 |
+| test751 | `test751_shape_chain_structure_mismatch` | TEST751: Tests shape chain analysis detects structure mismatch | src/planner/cardinality.rs:962 |
+| test751 | `test751_detects_duplicate_cap_urns` | TEST751: Tests duplicate detection identifies caps with identical URNs Verifies that check_for_duplicate_caps() returns an error when multiple caps share the same cap_urn | src/planner/plan_builder.rs:1355 |
+| test752 | `test752_shape_chain_with_fanout` | TEST752: Tests shape chain analysis with fan-out (matching structures) | src/planner/cardinality.rs:976 |
+| test752 | `test752_different_ops_same_types_not_duplicates` | TEST752: Tests caps with different operations but same input/output types are not duplicates Verifies that only the complete URN (including op) is used for duplicate detection | src/planner/plan_builder.rs:1372 |
+| test753 | `test753_shape_chain_list_record_to_list_record` | TEST753: Tests shape chain analysis correctly handles list-to-list record flow | src/planner/cardinality.rs:989 |
+| test753 | `test753_same_op_different_input_types_not_duplicates` | TEST753: Tests caps with same operation but different input types are not duplicates Verifies that input type differences distinguish caps with the same operation name | src/planner/plan_builder.rs:1386 |
+| test754 | `test754_input_arg_first_cap_auto_resolved_from_input` | TEST754: Tests first cap's input argument is automatically resolved from input file Verifies that determine_resolution_with_io_check() returns FromInputFile for the first cap in a chain | src/planner/plan_builder.rs:1425 |
+| test755 | `test755_input_arg_subsequent_cap_auto_resolved_from_previous` | TEST755: Tests subsequent caps' input arguments are automatically resolved from previous output Verifies that determine_resolution_with_io_check() returns FromPreviousOutput for caps after the first | src/planner/plan_builder.rs:1436 |
+| test756 | `test756_output_arg_auto_resolved` | TEST756: Tests output arguments are automatically resolved from previous cap's output Verifies that arguments matching the output spec are always resolved as FromPreviousOutput | src/planner/plan_builder.rs:1451 |
+| test757 | `test757_file_path_type_fallback_first_cap` | TEST757: Tests MEDIA_FILE_PATH argument type resolves to input file for first cap Verifies that generic file-path arguments are bound to input file in the first cap | src/planner/plan_builder.rs:1462 |
+| test758 | `test758_file_path_type_fallback_subsequent_cap` | TEST758: Tests MEDIA_FILE_PATH argument type resolves to previous output for subsequent caps Verifies that generic file-path arguments are bound to previous cap's output after the first cap | src/planner/plan_builder.rs:1473 |
+| test759 | `test759_file_path_array_fallback` | TEST759: Tests MEDIA_FILE_PATH_ARRAY argument type resolution for first and subsequent caps Verifies that file-path array arguments follow the same resolution pattern as single file paths | src/planner/plan_builder.rs:1484 |
+| test760 | `test760_non_io_arg_with_default_has_default` | TEST760: Tests required non-IO arguments with default values are marked as HasDefault Verifies that arguments like integers with defaults don't require user input | src/planner/plan_builder.rs:1498 |
+| test761 | `test761_non_io_arg_without_default_requires_user_input` | TEST761: Tests required non-IO arguments without defaults require user input Verifies that arguments like strings without defaults are marked as RequiresUserInput | src/planner/plan_builder.rs:1510 |
+| test762 | `test762_optional_non_io_arg_with_default_has_default` | TEST762: Tests optional non-IO arguments with default values are marked as HasDefault Verifies that optional arguments with defaults behave the same as required ones with defaults | src/planner/plan_builder.rs:1521 |
+| test763 | `test763_optional_non_io_arg_without_default_requires_user_input` | TEST763: Tests optional non-IO arguments without defaults still require user input Verifies that optional arguments without defaults must be explicitly provided or skipped | src/planner/plan_builder.rs:1533 |
+| test764 | `test764_validation_to_json_none` | TEST764: Tests validation_to_json() returns None for None input Verifies that missing validation metadata is converted to JSON None | src/planner/plan_builder.rs:1544 |
+| test765 | `test765_validation_to_json_empty` | TEST765: Tests validation_to_json() returns None for empty validation constraints Verifies that default MediaValidation with no constraints produces JSON None | src/planner/plan_builder.rs:1552 |
+| test766 | `test766_validation_to_json_with_constraints` | TEST766: Tests validation_to_json() converts MediaValidation with constraints to JSON Verifies that min/max validation rules are correctly serialized as JSON fields | src/planner/plan_builder.rs:1561 |
+| test767 | `test767_argument_info_serialization` | TEST767: Tests ArgumentInfo struct serialization to JSON Verifies that argument metadata including resolution status and validation is correctly serialized | src/planner/plan_builder.rs:1580 |
+| test768 | `test768_path_argument_requirements_structure` | TEST768: Tests PathArgumentRequirements structure for single-step execution paths Verifies that argument requirements are correctly organized by step with resolution information | src/planner/plan_builder.rs:1600 |
+| test769 | `test769_path_with_required_slot` | TEST769: Tests PathArgumentRequirements tracking of required user-input slots Verifies that arguments requiring user input are collected in slots and can_execute_without_input is false | src/planner/plan_builder.rs:1636 |
+| test770 | `test770_is_cap_available_with_filter` | TEST770: Tests is_cap_available() correctly applies availability filter when set Verifies that only caps in the available_caps set are considered available | src/planner/plan_builder.rs:1709 |
+| test771 | `test771_is_cap_available_without_filter` | TEST771: Tests is_cap_available() treats all caps as available when no filter is set Verifies that without an availability filter, any cap URN is considered available | src/planner/plan_builder.rs:1722 |
+| test772 | `test772_find_all_paths_filters_by_availability` | TEST772: Tests find_all_paths() excludes unavailable caps from pathfinding Verifies that only paths using available caps are returned when filter is set | src/planner/plan_builder.rs:1732 |
+| test773 | `test773_find_all_paths_returns_empty_when_no_available_caps` | TEST773: Tests find_all_paths() returns empty result when all caps are filtered out Verifies that pathfinding returns no paths when the availability filter excludes all relevant caps | src/planner/plan_builder.rs:1758 |
+| test774 | `test774_get_reachable_targets_filters_by_availability` | TEST774: Tests get_reachable_targets() only considers available caps for reachability Verifies that target specs are only reachable via caps in the availability filter | src/planner/plan_builder.rs:1777 |
+| test775 | `test775_find_path_filters_by_availability` | TEST775: Tests find_path() selects from available caps when multiple paths exist Verifies that find_path() respects availability filter and prefers available direct paths | src/planner/plan_builder.rs:1803 |
+| test776 | `test776_find_path_returns_error_when_path_unavailable` | TEST776: Tests find_path() returns error when required caps are filtered out by availability Verifies that "No path found" error is returned when filter blocks the only viable path | src/planner/plan_builder.rs:1826 |
+| test777 | `test777_type_mismatch_pdf_cap_does_not_match_png_input` | TEST777: Tests type checking prevents using PDF-specific cap with PNG input Verifies that media type compatibility is enforced during pathfinding (PNG cannot use PDF cap) | src/planner/plan_builder.rs:1853 |
+| test778 | `test778_type_mismatch_png_cap_does_not_match_pdf_input` | TEST778: Tests type checking prevents using PNG-specific cap with PDF input Verifies that media type compatibility is enforced during pathfinding (PDF cannot use PNG cap) | src/planner/plan_builder.rs:1873 |
+| test779 | `test779_get_reachable_targets_respects_type_matching` | TEST779: Tests get_reachable_targets() only returns targets reachable via type-compatible caps Verifies that PNG and PDF inputs reach different targets based on cap input type requirements | src/planner/plan_builder.rs:1893 |
+| test780 | `test780_reachable_targets_with_metadata_respects_type_matching` | TEST780: Tests get_reachable_targets_with_metadata() respects type compatibility constraints Verifies that reachable target metadata only includes type-compatible transformations | src/planner/plan_builder.rs:1921 |
+| test781 | `test781_find_all_paths_respects_type_chain` | TEST781: Tests find_all_paths() enforces type compatibility across multi-step chains Verifies that paths are only found when all intermediate types are compatible | src/planner/plan_builder.rs:1947 |
+| test782 | `test782_coherence_score_zero_for_direct_path` | TEST782: Tests coherence scoring gives 0 deviations for direct single-step paths Verifies that paths going directly from source to target without detours have perfect coherence | src/planner/plan_builder.rs:1976 |
+| test783 | `test783_coherence_score_penalizes_unrelated_intermediate` | TEST783: Tests coherence scoring penalizes paths through semantically unrelated intermediates Verifies that going from textable→thumbnail→textable incurs deviation penalty (thumbnail unrelated) | src/planner/plan_builder.rs:2002 |
+| test784 | `test784_coherence_score_related_intermediate_not_penalized` | TEST784: Tests coherence scoring does not penalize paths through semantically related intermediates Verifies that going through a supertype (txt→textable→md) maintains coherence with 0 deviations | src/planner/plan_builder.rs:2037 |
+| test785 | `test785_find_all_paths_filters_deviating_when_coherent_exists` | TEST785: Tests find_all_paths() filters out deviating paths when coherent alternatives exist Verifies that semantically wandering paths are excluded if direct coherent paths are available | src/planner/plan_builder.rs:2071 |
+| test786 | `test786_find_all_paths_keeps_all_when_all_deviate` | TEST786: Tests find_all_paths() keeps all paths when no coherent path exists Verifies that all deviating paths are returned if they're the only viable options | src/planner/plan_builder.rs:2097 |
+| test787 | `test787_find_all_paths_coherent_sorting_prefers_shorter` | TEST787: Tests find_all_paths() sorts coherent paths by length, preferring shorter ones Verifies that among multiple coherent paths, the shortest is ranked first | src/planner/plan_builder.rs:2129 |
 | test788 | `test788_cap_input_file_new` | TEST788: Tests CapInputFile constructor creates file with correct path and media URN Verifies new() initializes file_path, media_urn and leaves metadata/source_id as None | src/planner/argument_binding.rs:511 |
 | test789 | `test789_cap_input_file_from_listing` | TEST789: Tests CapInputFile from_listing sets source metadata correctly Verifies from_listing() populates source_id and source_type as Listing | src/planner/argument_binding.rs:522 |
 | test790 | `test790_cap_input_file_filename` | TEST790: Tests CapInputFile extracts filename from full path correctly Verifies filename() returns just the basename without directory path | src/planner/argument_binding.rs:531 |
@@ -752,10 +769,10 @@ This catalog lists all numbered tests in the capdag codebase.
 | test822 | `test822_extract_json_path_invalid_array_index` | TEST822: Tests error handling for non-numeric array indices Verifies that invalid indices like "items[abc]" return a descriptive parse error | src/planner/executor.rs:757 |
 | test890 | `test890_direction_semantic_matching` | TEST890: Semantic direction matching - generic provider matches specific request | src/urn/cap_urn.rs:1552 |
 | test891 | `test891_direction_semantic_specificity` | TEST891: Semantic direction specificity - more media URN tags = higher specificity | src/urn/cap_urn.rs:1609 |
-| test892 | `test892_extensions_serialization` | TEST892: Test extensions serializes/deserializes correctly in MediaSpecDef | src/media/spec.rs:1073 |
-| test893 | `test893_extensions_with_metadata_and_validation` | TEST893: Test extensions can coexist with metadata and validation | src/media/spec.rs:1095 |
-| test894 | `test894_multiple_extensions` | TEST894: Test multiple extensions in a media spec | src/media/spec.rs:1130 |
-| test895 | `test895_cbor_array_file_paths_in_cbor_mode` | TEST895: CBOR Array of file-paths in CBOR mode (validates new Array support) | src/bifaci/plugin_runtime.rs:5045 |
+| test892 | `test892_extensions_serialization` | TEST892: Test extensions serializes/deserializes correctly in MediaSpecDef | src/media/spec.rs:1074 |
+| test893 | `test893_extensions_with_metadata_and_validation` | TEST893: Test extensions can coexist with metadata and validation | src/media/spec.rs:1096 |
+| test894 | `test894_multiple_extensions` | TEST894: Test multiple extensions in a media spec | src/media/spec.rs:1131 |
+| test895 | `test895_cbor_array_file_paths_in_cbor_mode` | TEST895: CBOR Array of file-paths in CBOR mode (validates new Array support) | src/bifaci/plugin_runtime.rs:5017 |
 | test896 | `test896_full_path_engine_req_to_plugin_response` | TEST896: Full path: engine REQ → runtime → plugin → response back through relay | src/bifaci/integration_tests.rs:165 |
 | test897 | `test897_plugin_error_flows_to_engine` | TEST897: Plugin ERR frame flows back to engine through relay | src/bifaci/integration_tests.rs:274 |
 | test898 | `test898_binary_integrity_through_relay` | TEST898: Binary data integrity through full relay path (256 byte values) | src/bifaci/integration_tests.rs:346 |
@@ -768,9 +785,97 @@ This catalog lists all numbered tests in the capdag codebase.
 | test905 | `test905_send_to_master_build_request_frames_roundtrip` | TEST905: send_to_master + build_request_frames through RelaySwitch → RelaySlave → InProcessPluginHost roundtrip | src/bifaci/relay_switch.rs:1916 |
 | test906 | `test906_full_path_identity_verification` | TEST489: Full path identity verification: engine → host (attach_plugin) → plugin  This verifies that attach_plugin completes identity verification end-to-end and the plugin is ready to handle subsequent requests. | src/bifaci/integration_tests.rs:1158 |
 | test907 | `test907_cbor_rejects_stream_end_without_chunk_count` | TEST907: CBOR decode REJECTS STREAM_END frame missing chunk_count field | src/bifaci/frame.rs:1957 |
+| test920 | `test920_parse_simple_graph` | TEST920: Parse valid simple graph with one edge | src/orchestrator/parser.rs:330 |
+| test921 | `test921_fail_missing_label` | TEST921: Fail on edge missing label | src/orchestrator/parser.rs:356 |
+| test922 | `test922_fail_label_not_cap_urn` | TEST922: Fail on label not starting with cap: | src/orchestrator/parser.rs:374 |
+| test923 | `test923_fail_cap_not_found` | TEST923: Fail on cap not found in registry | src/orchestrator/parser.rs:392 |
+| test924 | `test924_fail_node_media_conflict` | TEST924: Fail on node media conflict | src/orchestrator/parser.rs:410 |
+| test925 | `test925_fail_cycle_detection` | TEST925: Fail on cycle detection | src/orchestrator/parser.rs:439 |
+| test926 | `test926_parse_with_node_media_attributes` | TEST926: Parse graph with media node attributes | src/orchestrator/parser.rs:464 |
+| test927 | `test927_fail_conflicting_media_attribute` | TEST927: Fail on conflicting media node attribute | src/orchestrator/parser.rs:486 |
+| test928 | `test928_accept_compatible_media_urns` | TEST928: Accept compatible but not identical media URNs at shared node This is the key test for the semantic matching fix: when cap A outputs media:image;png and cap B inputs media:image;png;bytes, the intermediate node should NOT conflict because the less-specific URN accepts the more-specific one. | src/orchestrator/parser.rs:513 |
+| test929 | `test929_reject_incompatible_media_urns` | TEST929: Reject truly incompatible media URNs at shared node media:pdf;bytes and media:audio;wav have no overlap — neither accepts the other. | src/orchestrator/parser.rs:548 |
+| test930 | `test930_accept_compatible_media_attribute` | TEST930: Accept compatible media node attribute (subset/superset) | src/orchestrator/parser.rs:577 |
+| test931 | `test931_reject_opaque_to_record_mismatch` | TEST931: Reject structure mismatch - opaque to record A cap expecting record input cannot accept opaque data The mismatch is caught by media_urns_compatible since record is a marker tag | src/orchestrator/parser.rs:604 |
+| test932 | `test932_reject_record_to_opaque_mismatch` | TEST932: Reject structure mismatch - record to opaque A cap expecting opaque input cannot accept record data The mismatch is caught by check_structure_compatibility | src/orchestrator/parser.rs:640 |
+| test933 | `test933_accept_opaque_to_opaque` | TEST933: Accept matching structures - both opaque | src/orchestrator/parser.rs:674 |
+| test934 | `test934_accept_record_to_record` | TEST934: Accept matching structures - both record | src/orchestrator/parser.rs:704 |
+| test1000 | `test1000_single_existing_file` | TEST1000: Single existing file | src/input_resolver/path_resolver.rs:256 |
+| test1001 | `test1001_nonexistent_file` | TEST1001: Single non-existent file | src/input_resolver/path_resolver.rs:268 |
+| test1002 | `test1002_empty_directory` | TEST1002: Empty directory | src/input_resolver/path_resolver.rs:275 |
+| test1003 | `test1003_directory_with_files` | TEST1003: Directory with files | src/input_resolver/path_resolver.rs:284 |
+| test1004 | `test1004_directory_with_subdirs` | TEST1004: Directory with subdirs (recursive) | src/input_resolver/path_resolver.rs:296 |
+| test1005 | `test1005_glob_matching_files` | TEST1005: Glob matching files | src/input_resolver/path_resolver.rs:308 |
+| test1006 | `test1006_glob_matching_nothing` | TEST1006: Glob matching nothing | src/input_resolver/path_resolver.rs:321 |
+| test1007 | `test1007_recursive_glob` | TEST1007: Recursive glob | src/input_resolver/path_resolver.rs:332 |
+| test1008 | `test1008_mixed_file_dir` | TEST1008: Mixed file + dir | src/input_resolver/path_resolver.rs:345 |
+| test1010 | `test1010_duplicate_paths` | TEST1010: Duplicate paths are deduplicated | src/input_resolver/path_resolver.rs:363 |
+| test1011 | `test1011_invalid_glob` | TEST1011: Invalid glob syntax | src/input_resolver/path_resolver.rs:379 |
+| test1013 | `test1013_empty_input` | TEST1013: Empty input array | src/input_resolver/path_resolver.rs:386 |
+| test1014 | `test1014_symlink_to_file` |  | src/input_resolver/path_resolver.rs:394 |
+| test1016 | `test1016_path_with_spaces` | TEST1016: Path with spaces | src/input_resolver/path_resolver.rs:409 |
+| test1017 | `test1017_path_with_unicode` | TEST1017: Path with unicode | src/input_resolver/path_resolver.rs:420 |
+| test1018 | `test1018_relative_path` | TEST1018: Relative path | src/input_resolver/path_resolver.rs:431 |
+| test1020 | `test1020_ds_store_excluded` | TEST1020: macOS .DS_Store is excluded | src/input_resolver/os_filter.rs:162 |
+| test1021 | `test1021_thumbs_db_excluded` | TEST1021: Windows Thumbs.db is excluded | src/input_resolver/os_filter.rs:169 |
+| test1022 | `test1022_resource_fork_excluded` | TEST1022: macOS resource fork files are excluded | src/input_resolver/os_filter.rs:176 |
+| test1023 | `test1023_office_lock_excluded` | TEST1023: Office lock files are excluded | src/input_resolver/os_filter.rs:183 |
+| test1024 | `test1024_git_dir_excluded` | TEST1024: .git directory is excluded | src/input_resolver/os_filter.rs:190 |
+| test1025 | `test1025_macosx_dir_excluded` | TEST1025: __MACOSX archive artifact is excluded | src/input_resolver/os_filter.rs:197 |
+| test1026 | `test1026_temp_files_excluded` | TEST1026: Temp files are excluded | src/input_resolver/os_filter.rs:204 |
+| test1027 | `test1027_localized_excluded` | TEST1027: .localized is excluded | src/input_resolver/os_filter.rs:213 |
+| test1028 | `test1028_desktop_ini_excluded` | TEST1028: desktop.ini is excluded | src/input_resolver/os_filter.rs:219 |
+| test1029 | `test1029_normal_files_not_excluded` | TEST1029: Normal files are NOT excluded | src/input_resolver/os_filter.rs:225 |
+| test1030 | `test1030_json_empty_object` | TEST1030: Empty object | input_resolver/adapters/data.rs:509 |
+| test1031 | `test1031_json_simple_object` | TEST1031: Simple object | input_resolver/adapters/data.rs:521 |
+| test1032 | `test1032_json_nested_object` | TEST1032: Nested object | input_resolver/adapters/data.rs:533 |
+| test1033 | `test1033_json_empty_array` | TEST1033: Empty array | input_resolver/adapters/data.rs:544 |
+| test1034 | `test1034_json_array_of_primitives` | TEST1034: Array of primitives | input_resolver/adapters/data.rs:556 |
+| test1035 | `test1035_json_array_of_strings` | TEST1035: Array of strings | input_resolver/adapters/data.rs:568 |
+| test1036 | `test1036_json_array_of_objects` | TEST1036: Array of objects | input_resolver/adapters/data.rs:580 |
+| test1037 | `test1037_json_mixed_array` | TEST1037: Mixed array (contains object) | input_resolver/adapters/data.rs:592 |
+| test1038 | `test1038_json_string_primitive` | TEST1038: String primitive | input_resolver/adapters/data.rs:606 |
+| test1039 | `test1039_json_number_primitive` | TEST1039: Number primitive | input_resolver/adapters/data.rs:618 |
+| test1040 | `test1040_json_boolean_true` | TEST1040: Boolean true | input_resolver/adapters/data.rs:630 |
+| test1041 | `test1041_json_boolean_false` | TEST1041: Boolean false | input_resolver/adapters/data.rs:642 |
+| test1042 | `test1042_json_null` | TEST1042: Null | input_resolver/adapters/data.rs:653 |
+| test1043 | `test1043_json_with_whitespace` | TEST1043: With whitespace | input_resolver/adapters/data.rs:665 |
+| test1044 | `test1044_json_invalid` | TEST1044: Invalid JSON | input_resolver/adapters/data.rs:677 |
+| test1045 | `test1045_ndjson_objects_only` | TEST1045: Objects only | input_resolver/adapters/data.rs:691 |
+| test1046 | `test1046_ndjson_single_object` | TEST1046: Single object | input_resolver/adapters/data.rs:703 |
+| test1047 | `test1047_ndjson_primitives_only` | TEST1047: Primitives only | input_resolver/adapters/data.rs:714 |
+| test1048 | `test1048_ndjson_strings_only` | TEST1048: Strings only | input_resolver/adapters/data.rs:726 |
+| test1049 | `test1049_ndjson_mixed_with_object` | TEST1049: Mixed with object | input_resolver/adapters/data.rs:738 |
+| test1050 | `test1050_ndjson_empty_lines` | TEST1050: Empty lines | input_resolver/adapters/data.rs:749 |
+| test1055 | `test1055_csv_multi_column` | TEST1055: Multi-column with header | input_resolver/adapters/data.rs:762 |
+| test1056 | `test1056_csv_single_column` | TEST1056: Single column | input_resolver/adapters/data.rs:774 |
+| test1057 | `test1057_csv_header_only` | TEST1057: Header only | input_resolver/adapters/data.rs:786 |
+| test1058 | `test1058_csv_empty` | TEST1058: Empty file | input_resolver/adapters/data.rs:797 |
+| test1061 | `test1061_tsv_multi_column` | TEST1061: TSV multi-column | input_resolver/adapters/data.rs:808 |
+| test1065 | `test1065_yaml_simple_mapping` | TEST1065: Simple mapping | input_resolver/adapters/data.rs:821 |
+| test1066 | `test1066_yaml_nested_mapping` | TEST1066: Nested mapping | input_resolver/adapters/data.rs:833 |
+| test1067 | `test1067_yaml_sequence_of_scalars` | TEST1067: Sequence of scalars | input_resolver/adapters/data.rs:844 |
+| test1068 | `test1068_yaml_sequence_of_mappings` | TEST1068: Sequence of mappings | input_resolver/adapters/data.rs:856 |
+| test1069 | `test1069_yaml_scalar` | TEST1069: Scalar only | input_resolver/adapters/data.rs:868 |
+| test1080 | `test1080_pdf_extension` | TEST1080: PDF extension mapping | input_resolver/adapters/documents.rs:228 |
+| test1081 | `test1081_png_extension` | TEST1081: PNG extension mapping | input_resolver/adapters/images.rs:338 |
+| test1082 | `test1082_mp3_extension` | TEST1082: MP3 extension mapping | input_resolver/adapters/audio.rs:243 |
+| test1083 | `test1083_mp4_extension` | TEST1083: MP4 extension mapping | input_resolver/adapters/video.rs:266 |
+| test1084 | `test1084_rust_extension` | TEST1084: Rust code extension mapping | input_resolver/adapters/code.rs:734 |
+| test1085 | `test1085_python_extension` | TEST1085: Python code extension mapping | input_resolver/adapters/code.rs:745 |
+| test1086 | `test1086_markdown_extension` | TEST1086: Markdown extension mapping | input_resolver/adapters/text.rs:268 |
+| test1087 | `test1087_toml_always_record` | TEST1087: TOML is always record | input_resolver/adapters/data.rs:880 |
+| test1088 | `test1088_log_file_is_list` | TEST1088: Log file is list | input_resolver/adapters/text.rs:279 |
+| test1089 | `test1089_unknown_extension` | TEST1089: Unknown extension fallback | input_resolver/adapters/other.rs:499 |
+| test1090 | `test1090_single_file_scalar` | TEST1090: 1 file scalar content | src/input_resolver/resolver.rs:146 |
+| test1091 | `test1091_single_file_list_content` | TEST1091: 1 file list content (CSV) | src/input_resolver/resolver.rs:158 |
+| test1092 | `test1092_two_files` | TEST1092: 2 files | src/input_resolver/resolver.rs:171 |
+| test1093 | `test1093_dir_single_file` | TEST1093: 1 dir with 1 file | src/input_resolver/resolver.rs:187 |
+| test1094 | `test1094_dir_multiple_files` | TEST1094: 1 dir with 3 files | src/input_resolver/resolver.rs:199 |
+| test1098 | `test1098_common_media` | TEST1098: Common media (all same type) | src/input_resolver/resolver.rs:213 |
+| test1099 | `test1099_heterogeneous` | TEST1099: Heterogeneous (mixed types) | src/input_resolver/resolver.rs:226 |
 
 ---
 
 *Generated from capdag source tree*
-*Total numbered tests: 762*
-
+*Total numbered tests: 868*

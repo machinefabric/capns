@@ -35,6 +35,7 @@ pub mod bifaci;
 pub mod standard;
 pub mod planner;
 pub mod orchestrator;
+pub mod input_resolver;
 
 // URN types
 pub use urn::cap_urn::*;
@@ -124,4 +125,11 @@ pub use orchestrator::{
     ParseOrchestrationError, ResolvedEdge, ResolvedGraph, CapRegistryTrait,
     parse_dot_to_cap_dag, execute_dag, NodeData, ExecutionError,
     EdgeGroup, PluginManager, ExecutionContext,
+};
+
+// InputResolver — unified input resolution with media detection
+pub use input_resolver::{
+    InputItem, ContentStructure, ResolvedFile, ResolvedInputSet, InputResolverError,
+    MediaAdapter, AdapterMatch, AdapterResult, MediaAdapterRegistry,
+    resolve_input, resolve_inputs, resolve_paths, detect_file,
 };

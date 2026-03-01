@@ -216,13 +216,51 @@ impl MediaUrnRegistry {
                 MediaRegistryError::HttpError(format!("Failed to create HTTP client: {}", e))
             })?;
 
-        Ok(Self {
+        let registry = Self {
             client,
             cache_dir,
             cached_specs: Arc::new(Mutex::new(HashMap::new())),
             extension_index: Arc::new(Mutex::new(HashMap::new())),
             config: RegistryConfig::default(),
-        })
+        };
+
+        // Install bundled specs synchronously
+        registry.install_standard_specs_sync()?;
+
+        Ok(registry)
+    }
+
+    /// Install bundled standard media specs synchronously (for testing and InputResolver)
+    pub fn install_standard_specs_sync(&self) -> Result<(), MediaRegistryError> {
+        for file in STANDARD_MEDIA_SPECS.files() {
+            // Skip non-JSON files
+            let extension = file.path().extension().and_then(|e| e.to_str());
+            if extension != Some("json") {
+                continue;
+            }
+
+            let content = match file.contents_utf8() {
+                Some(c) => c,
+                None => continue,
+            };
+
+            let spec: StoredMediaSpec = match serde_json::from_str(content) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let normalized_urn = normalize_media_urn(&spec.urn);
+
+            // Update extension index
+            self.update_extension_index(&spec);
+
+            // Add to in-memory cache
+            if let Ok(mut cached_specs) = self.cached_specs.lock() {
+                cached_specs.insert(normalized_urn, spec);
+            }
+        }
+
+        Ok(())
     }
 
     /// Install bundled standard media specs to cache if they don't exist
