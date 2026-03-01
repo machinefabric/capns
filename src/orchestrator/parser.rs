@@ -1,7 +1,7 @@
 //! DOT graph parsing and Cap URN resolution
 //!
 //! Parses DOT digraphs and interprets edge labels starting with `cap:` as Cap URNs.
-//! Resolves each Cap URN via a CapNS registry, validates the graph, and produces
+//! Resolves each Cap URN via a CapDag registry, validates the graph, and produces
 //! a validated, executable DAG IR.
 
 use super::types::{CapRegistryTrait, ParseOrchestrationError, ResolvedEdge, ResolvedGraph};

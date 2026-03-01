@@ -1,4 +1,4 @@
-# Capns Test Catalog
+# CapDag Test Catalog
 
 **Total Tests:** 762
 

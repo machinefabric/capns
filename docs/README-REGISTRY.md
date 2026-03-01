@@ -1,4 +1,4 @@
-# Capns Registry Integration
+# CapDag Registry Integration
 
 This document describes the registry integration features that have been added to all capdag implementations.
 

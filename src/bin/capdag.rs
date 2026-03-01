@@ -283,12 +283,12 @@ async fn main() {
     }
     println!();
 
-    // Create CapNS registry
-    println!("Creating CapNS registry...");
+    // Create CapDag registry
+    println!("Creating CapDag registry...");
     let registry = match CapRegistry::new().await {
         Ok(reg) => reg,
         Err(e) => {
-            eprintln!("Error creating CapNS registry: {}", e);
+            eprintln!("Error creating CapDag registry: {}", e);
             process::exit(1);
         }
     };

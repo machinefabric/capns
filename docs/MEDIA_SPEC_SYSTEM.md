@@ -40,7 +40,7 @@ Additional well-known spec IDs for specific domains:
 | `machfab:task-id.v1` | `text/plain` | `https://machinefabric.com/schema/task-id` | Task UUID |
 | `machfab:file-path-array.v1` | `application/json` | `https://machinefabric.com/schema/file-path-array` | Array of file paths |
 
-#### CapNS Output Types (`capdag:`)
+#### CapDag Output Types (`capdag:`)
 
 | Spec ID | Media Type | Description |
 |---------|------------|-------------|

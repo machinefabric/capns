@@ -1,4 +1,4 @@
-# Capns - Cap Namespace System
+# CapDag - Cap Namespace System
 
 A capability URN and definition system for plugin architectures, built on [Tagged URNs](https://github.com/machinefabric/tagged-urn-rs).
 

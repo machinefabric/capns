@@ -1,4 +1,4 @@
-# Capns Performance
+# CapDag Performance
 
 This document presents throughput measurements from the capdag cross-language interoperability test suite.
 
@@ -85,7 +85,7 @@ According to [Baeldung's IPC benchmarks](https://www.baeldung.com/linux/ipc-perf
 - Small messages (100 bytes): ~245 Mbit/s (~30 MB/s)
 - Large messages (1 MB): ~41,334 Mbit/s (~5,166 MB/s)
 
-Capns throughput (75-275 MB/s) falls between these extremes, which is expected given the CBOR framing overhead and multi-hop routing.
+CapDag throughput (75-275 MB/s) falls between these extremes, which is expected given the CBOR framing overhead and multi-hop routing.
 
 ### Pipes (stdin/stdout)
 
@@ -93,7 +93,7 @@ The [ipc-bench](https://github.com/goldsborough/ipc-bench) project reports raw p
 - 128-byte chunks: ~1,319 Mbit/s (~165 MB/s)
 - 4096-byte chunks: ~20,297 Mbit/s (~2,537 MB/s)
 
-Capns uses pipes for plugin communication. The measured throughput (75-275 MB/s) is reasonable given CBOR encoding, checksum computation, and protocol framing.
+CapDag uses pipes for plugin communication. The measured throughput (75-275 MB/s) is reasonable given CBOR encoding, checksum computation, and protocol framing.
 
 ### gRPC
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test Catalog Generator for Capns
+Test Catalog Generator for CapDag
 
 Scans all Rust test files and generates a markdown table cataloging all numbered tests
 with their descriptions.
@@ -106,7 +106,7 @@ def generate_markdown_table(tests: List[TestInfo], output_file: str):
     tests_sorted = sorted(tests, key=lambda t: int(t.number))
 
     with open(output_file, 'w', encoding='utf-8') as f:
-        f.write("# Capns Test Catalog\n\n")
+        f.write("# CapDag Test Catalog\n\n")
         f.write(f"**Total Tests:** {len(tests_sorted)}\n\n")
         f.write("This catalog lists all numbered tests in the capdag codebase.\n\n")
 

@@ -3,7 +3,7 @@ use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Capns Registry Example");
+    println!("CapDag Registry Example");
     
     // Create a registry client
     let registry = CapRegistry::new().await?;

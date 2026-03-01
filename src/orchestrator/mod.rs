@@ -1,7 +1,7 @@
-//! Orchestrator: DOT Parser with CapNS Orchestration
+//! Orchestrator: DOT Parser with CapDag Orchestration
 //!
 //! This module parses DOT digraphs and interprets edge labels starting with `cap:`
-//! as Cap URNs. It resolves each Cap URN via a CapNS registry, validates the graph,
+//! as Cap URNs. It resolves each Cap URN via a CapDag registry, validates the graph,
 //! and produces a validated, executable DAG IR.
 //!
 //! # Example
