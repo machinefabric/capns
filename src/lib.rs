@@ -34,6 +34,7 @@ pub mod media;
 pub mod bifaci;
 pub mod standard;
 pub mod planner;
+pub mod orchestrator;
 
 // URN types
 pub use urn::cap_urn::*;
@@ -116,4 +117,11 @@ pub use planner::{
     ArgumentResolution, ArgumentInfo, StepArgumentRequirements, PathArgumentRequirements,
     // Executor
     PlanExecutor,
+};
+
+// Orchestrator — DOT graph parsing and DAG execution
+pub use orchestrator::{
+    ParseOrchestrationError, ResolvedEdge, ResolvedGraph, CapRegistryTrait,
+    parse_dot_to_cap_dag, execute_dag, NodeData, ExecutionError,
+    EdgeGroup, PluginManager, ExecutionContext,
 };
