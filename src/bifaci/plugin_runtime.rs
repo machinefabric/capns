@@ -46,7 +46,7 @@ use crate::bifaci::manifest::CapManifest;
 use crate::urn::media_urn::{MediaUrn, MEDIA_FILE_PATH, MEDIA_FILE_PATH_ARRAY};
 use crate::standard::caps::{CAP_IDENTITY, CAP_DISCARD};
 use async_trait::async_trait;
-use crossbeam_channel::{bounded, Receiver, Sender};
+// crossbeam is used for demux_multi_stream (bridging sync stdin reads to async handlers)
 use ops::{Op, OpMetadata, DryContext, WetContext, OpResult, OpError};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -139,9 +139,12 @@ pub trait FrameSender: Send + Sync {
 
 /// A single input stream — yields decoded CBOR values from CHUNK frames.
 /// Handler never sees Frame, STREAM_START, STREAM_END, checksum, seq, or index.
+///
+/// This is an async stream. Use `recv()` to get the next value, or the various
+/// `collect_*` async methods if you need to accumulate.
 pub struct InputStream {
     media_urn: String,
-    rx: Receiver<Result<ciborium::Value, StreamError>>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Result<ciborium::Value, StreamError>>,
 }
 
 impl InputStream {
@@ -150,11 +153,20 @@ impl InputStream {
         &self.media_urn
     }
 
+    /// Receive the next CBOR value from this stream.
+    /// Returns None when the stream ends.
+    pub async fn recv(&mut self) -> Option<Result<ciborium::Value, StreamError>> {
+        self.rx.recv().await
+    }
+
     /// Collect all chunks into a single byte vector.
     /// Extracts inner bytes from Value::Bytes/Text and concatenates.
-    pub fn collect_bytes(self) -> Result<Vec<u8>, StreamError> {
+    ///
+    /// WARNING: Only call this if you know the stream is finite.
+    /// Infinite streams will block forever.
+    pub async fn collect_bytes(mut self) -> Result<Vec<u8>, StreamError> {
         let mut result = Vec::new();
-        for item in self {
+        while let Some(item) = self.recv().await {
             match item? {
                 ciborium::Value::Bytes(b) => result.extend(b),
                 ciborium::Value::Text(s) => result.extend(s.into_bytes()),
@@ -171,8 +183,8 @@ impl InputStream {
     }
 
     /// Collect a single CBOR value (expects exactly one chunk).
-    pub fn collect_value(mut self) -> Result<ciborium::Value, StreamError> {
-        match self.next() {
+    pub async fn collect_value(mut self) -> Result<ciborium::Value, StreamError> {
+        match self.recv().await {
             Some(Ok(value)) => Ok(value),
             Some(Err(e)) => Err(e),
             None => Err(StreamError::Closed),
@@ -180,40 +192,31 @@ impl InputStream {
     }
 }
 
-impl Iterator for InputStream {
-    type Item = Result<ciborium::Value, StreamError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.rx.recv() {
-            Ok(item) => Some(item),
-            Err(_) => None, // Channel closed — stream ended
-        }
-    }
-}
-
 /// The bundle of all input arg streams for one request.
 /// Yields InputStream objects as STREAM_START frames arrive from the wire.
 /// Returns None after END frame (all args delivered).
+///
+/// This is an async stream. Use `recv()` to get the next stream.
 pub struct InputPackage {
-    rx: Receiver<Result<InputStream, StreamError>>,
-    _demux_handle: Option<std::thread::JoinHandle<()>>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Result<InputStream, StreamError>>,
+    _demux_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl InputPackage {
-    /// Get the next input stream. Blocks until STREAM_START or END.
-    pub fn next_stream(&mut self) -> Option<Result<InputStream, StreamError>> {
-        match self.rx.recv() {
-            Ok(item) => Some(item),
-            Err(_) => None, // Channel closed — all streams delivered
-        }
+    /// Get the next input stream. Async - waits until STREAM_START or END.
+    pub async fn recv(&mut self) -> Option<Result<InputStream, StreamError>> {
+        self.rx.recv().await
     }
 
     /// Collect all streams' bytes into a single Vec<u8>.
-    pub fn collect_all_bytes(self) -> Result<Vec<u8>, StreamError> {
+    ///
+    /// WARNING: Only call this if you know all streams are finite.
+    /// Infinite streams will block forever.
+    pub async fn collect_all_bytes(mut self) -> Result<Vec<u8>, StreamError> {
         let mut all = Vec::new();
-        for stream_result in self {
+        while let Some(stream_result) = self.recv().await {
             let stream = stream_result?;
-            all.extend(stream.collect_bytes()?);
+            all.extend(stream.collect_bytes().await?);
         }
         Ok(all)
     }
@@ -221,12 +224,14 @@ impl InputPackage {
     /// Collect each stream individually into a Vec of (media_urn, bytes) pairs.
     /// Each stream's bytes are accumulated separately — NOT concatenated.
     /// Use `find_stream()` helpers to retrieve args by URN pattern matching.
-    pub fn collect_streams(self) -> Result<Vec<(String, Vec<u8>)>, StreamError> {
+    ///
+    /// WARNING: Only call this if you know all streams are finite.
+    pub async fn collect_streams(mut self) -> Result<Vec<(String, Vec<u8>)>, StreamError> {
         let mut result = Vec::new();
-        for stream_result in self {
+        while let Some(stream_result) = self.recv().await {
             let stream = stream_result?;
             let urn = stream.media_urn().to_string();
-            let bytes = stream.collect_bytes()?;
+            let bytes = stream.collect_bytes().await?;
             result.push((urn, bytes));
         }
         Ok(result)
@@ -277,13 +282,6 @@ pub fn require_stream_str(streams: &[(String, Vec<u8>)], media_urn: &str) -> Res
     ))
 }
 
-impl Iterator for InputPackage {
-    type Item = Result<InputStream, StreamError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_stream()
-    }
-}
 
 /// Writable stream handle for handler output or peer call arguments.
 /// Manages STREAM_START/CHUNK/STREAM_END framing automatically.
@@ -464,7 +462,7 @@ pub struct PeerCall {
     sender: Arc<dyn FrameSender>,
     request_id: MessageId,
     max_chunk: usize,
-    response_rx: Option<Receiver<Frame>>,
+    response_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Frame>>,
 }
 
 impl PeerCall {
@@ -484,7 +482,7 @@ impl PeerCall {
 
     /// Finish sending args and get the response stream.
     /// Sends END for the peer request, spawns Demux on response channel.
-    pub fn finish(mut self) -> Result<InputStream, RuntimeError> {
+    pub async fn finish(mut self) -> Result<InputStream, RuntimeError> {
         // Send END frame for the peer request
         let end_frame = Frame::end(self.request_id.clone(), None);
         self.sender.send(&end_frame)?;
@@ -494,7 +492,7 @@ impl PeerCall {
             .ok_or_else(|| RuntimeError::PeerRequest("PeerCall already finished".to_string()))?;
 
         // Spawn single-stream Demux for the response
-        let input_stream = demux_single_stream(response_rx)?;
+        let input_stream = demux_single_stream(response_rx).await?;
         Ok(input_stream)
     }
 }
@@ -507,19 +505,20 @@ impl PeerCall {
 /// The `call` method starts a peer invocation and returns a `PeerCall`.
 /// The handler creates arg streams with `call.arg()`, writes data, then
 /// calls `call.finish()` to get the single response `InputStream`.
+#[async_trait]
 pub trait PeerInvoker: Send + Sync {
     /// Start a peer call. Sends REQ, registers response channel.
     fn call(&self, cap_urn: &str) -> Result<PeerCall, RuntimeError>;
 
     /// Convenience: open call, write each arg's bytes, finish, return response.
-    fn call_with_bytes(&self, cap_urn: &str, args: &[(&str, &[u8])]) -> Result<InputStream, RuntimeError> {
+    async fn call_with_bytes(&self, cap_urn: &str, args: &[(&str, &[u8])]) -> Result<InputStream, RuntimeError> {
         let call = self.call(cap_urn)?;
         for &(media_urn, data) in args {
             let arg = call.arg(media_urn);
             arg.write(data)?;
             arg.close()?;
         }
-        call.finish()
+        call.finish().await
     }
 }
 
@@ -527,6 +526,7 @@ pub trait PeerInvoker: Send + Sync {
 /// Used when peer invocation is not supported (e.g., CLI mode).
 pub struct NoPeerInvoker;
 
+#[async_trait]
 impl PeerInvoker for NoPeerInvoker {
     fn call(&self, _cap_urn: &str) -> Result<PeerCall, RuntimeError> {
         Err(RuntimeError::PeerRequest(
@@ -789,12 +789,12 @@ impl Op<()> for IdentityOp {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req: Arc<Request> = wet.get_required(WET_KEY_REQUEST)
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        let input = req.take_input()
+        let mut input = req.take_input()
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        for stream_result in input {
-            let stream = stream_result
+        while let Some(stream_result) = input.recv().await {
+            let mut stream = stream_result
                 .map_err(|e| OpError::ExecutionFailed(format!("Identity input error: {}", e)))?;
-            for chunk_result in stream {
+            while let Some(chunk_result) = stream.recv().await {
                 let chunk = chunk_result
                     .map_err(|e| OpError::ExecutionFailed(format!("Identity chunk error: {}", e)))?;
                 req.output().emit_cbor(&chunk)
@@ -820,12 +820,12 @@ impl Op<()> for DiscardOp {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req: Arc<Request> = wet.get_required(WET_KEY_REQUEST)
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        let input = req.take_input()
+        let mut input = req.take_input()
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        for stream_result in input {
-            let stream = stream_result
+        while let Some(stream_result) = input.recv().await {
+            let mut stream = stream_result
                 .map_err(|e| OpError::ExecutionFailed(format!("Discard input error: {}", e)))?;
-            for chunk_result in stream {
+            while let Some(chunk_result) = stream.recv().await {
                 let _ = chunk_result
                     .map_err(|e| OpError::ExecutionFailed(format!("Discard chunk error: {}", e)))?;
             }
@@ -845,7 +845,7 @@ impl Op<()> for DiscardOp {
 /// LOG frames are re-stamped with the origin request ID and forwarded
 /// back to the host automatically (no handler involvement).
 struct PendingPeerRequest {
-    sender: Sender<Frame>,
+    sender: tokio::sync::mpsc::UnboundedSender<Frame>,
     origin_request_id: MessageId,
     origin_routing_id: Option<MessageId>,
 }
@@ -1199,12 +1199,13 @@ fn extract_effective_payload(
     Ok(serialized)
 }
 
+#[async_trait]
 impl PeerInvoker for PeerInvokerImpl {
     fn call(&self, cap_urn: &str) -> Result<PeerCall, RuntimeError> {
         let request_id = MessageId::new_uuid();
 
-        // Create channel for response frames
-        let (sender, receiver) = bounded(64);
+        // Create tokio channel for response frames (unbounded to avoid backpressure issues)
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
 
         // Register pending request before sending REQ
         {
@@ -1302,17 +1303,20 @@ impl FilePathContext {
 }
 
 /// Demux for multi-stream mode (handler input).
-/// Spawns a background thread that reads raw Frame channel and splits into
+/// Spawns a background tokio task that reads raw Frame channel and splits into
 /// per-stream InputStream channels. Handles file-path interception.
+///
+/// Input: crossbeam channel of raw frames (fed by main loop's active_requests)
+/// Output: tokio channels for async stream consumption
 fn demux_multi_stream(
-    raw_rx: Receiver<Frame>,
+    raw_rx: crossbeam_channel::Receiver<Frame>,
     file_path_ctx: Option<FilePathContext>,
 ) -> InputPackage {
-    let (streams_tx, streams_rx) = crossbeam_channel::bounded(16);
+    let (streams_tx, streams_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let handle = thread::spawn(move || {
-        // Per-stream channels: stream_id → chunk sender
-        let mut stream_channels: HashMap<String, Sender<Result<ciborium::Value, StreamError>>> = HashMap::new();
+    let handle = tokio::task::spawn_blocking(move || {
+        // Per-stream channels: stream_id → chunk sender (tokio unbounded for async recv)
+        let mut stream_channels: HashMap<String, tokio::sync::mpsc::UnboundedSender<Result<ciborium::Value, StreamError>>> = HashMap::new();
         // File-path accumulators: stream_id → (media_urn, accumulated_chunk_payloads)
         let mut fp_accumulators: HashMap<String, (String, Vec<Vec<u8>>)> = HashMap::new();
 
@@ -1335,7 +1339,7 @@ fn demux_multi_stream(
                     if is_fp {
                         fp_accumulators.insert(stream_id, (media_urn, Vec::new()));
                     } else {
-                        let (chunk_tx, chunk_rx) = crossbeam_channel::bounded(64);
+                        let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
                         stream_channels.insert(stream_id.clone(), chunk_tx);
                         let input_stream = InputStream {
                             media_urn,
@@ -1422,7 +1426,7 @@ fn demux_multi_stream(
                                 let path_str = String::from_utf8_lossy(&path_bytes);
                                 match std::fs::read(path_str.as_ref()) {
                                     Ok(file_bytes) => {
-                                        let (chunk_tx, chunk_rx) = crossbeam_channel::bounded(64);
+                                        let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
                                         let _ = chunk_tx.send(Ok(ciborium::Value::Bytes(file_bytes)));
                                         drop(chunk_tx);
                                         let input_stream = InputStream {
@@ -1449,7 +1453,7 @@ fn demux_multi_stream(
                             }
                         } else {
                             // No stdin source — pass through the path bytes as-is
-                            let (chunk_tx, chunk_rx) = crossbeam_channel::bounded(64);
+                            let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
                             let _ = chunk_tx.send(Ok(ciborium::Value::Bytes(path_bytes)));
                             drop(chunk_tx);
                             let input_stream = InputStream {
@@ -1502,19 +1506,25 @@ fn demux_multi_stream(
 }
 
 /// Demux for single-stream mode (peer response).
-/// Reads frames from channel expecting a single stream. Returns InputStream.
-fn demux_single_stream(raw_rx: Receiver<Frame>) -> Result<InputStream, RuntimeError> {
-    let (chunk_tx, chunk_rx) = crossbeam_channel::bounded(64);
-    let (meta_tx, meta_rx) = crossbeam_channel::bounded::<String>(1);
+/// Reads frames from tokio channel expecting a single stream. Returns InputStream.
+///
+/// Fully async - spawns a tokio task (not blocking) to process frames
+/// and forwards decoded chunks to the InputStream for async consumption.
+async fn demux_single_stream(mut raw_rx: tokio::sync::mpsc::UnboundedReceiver<Frame>) -> Result<InputStream, RuntimeError> {
+    let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (meta_tx, meta_rx) = tokio::sync::oneshot::channel::<String>();
 
-    thread::spawn(move || {
+    tokio::spawn(async move {
         let mut media_urn_sent = false;
-        for frame in raw_rx {
+        let mut meta_tx = Some(meta_tx);
+        while let Some(frame) = raw_rx.recv().await {
             match frame.frame_type {
                 FrameType::StreamStart => {
                     if !media_urn_sent {
                         let urn = frame.media_urn.as_ref().cloned().unwrap_or_else(|| "*".to_string());
-                        let _ = meta_tx.send(urn);
+                        if let Some(tx) = meta_tx.take() {
+                            let _ = tx.send(urn);
+                        }
                         media_urn_sent = true;
                     }
                 }
@@ -1557,8 +1567,8 @@ fn demux_single_stream(raw_rx: Receiver<Frame>) -> Result<InputStream, RuntimeEr
         }
     });
 
-    // Wait for media_urn from the first STREAM_START
-    let media_urn = meta_rx.recv().unwrap_or_else(|_| "*".to_string());
+    // Await media_urn from the first STREAM_START
+    let media_urn = meta_rx.await.unwrap_or_else(|_| "*".to_string());
 
     Ok(InputStream {
         media_urn,
@@ -2708,12 +2718,12 @@ mod tests {
         async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
             let req: Arc<Request> = wet.get_required(WET_KEY_REQUEST)
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            let input = req.take_input()
+            let mut input = req.take_input()
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let mut total = Vec::new();
-            for stream in input {
-                let stream = stream.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                for chunk in stream {
+            while let Some(stream) = input.recv().await {
+                let mut stream = stream.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+                while let Some(chunk) = stream.recv().await {
                     let chunk = chunk.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                     if let ciborium::Value::Bytes(ref b) = chunk {
                         total.extend(b);
@@ -2739,11 +2749,11 @@ mod tests {
         async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
             let req: Arc<Request> = wet.get_required(WET_KEY_REQUEST)
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            let input = req.take_input()
+            let mut input = req.take_input()
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            for stream in input {
-                let stream = stream.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                for chunk in stream {
+            while let Some(stream) = input.recv().await {
+                let mut stream = stream.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+                while let Some(chunk) = stream.recv().await {
                     let chunk = chunk.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                     req.output().emit_cbor(&chunk)
                         .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -2767,7 +2777,7 @@ mod tests {
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let input = req.take_input()
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            let bytes = input.collect_all_bytes()
+            let bytes = input.collect_all_bytes().await
                 .map_err(|e| OpError::ExecutionFailed(format!("Stream error: {}", e)))?;
             let cbor_val: ciborium::Value = ciborium::from_reader(&bytes[..])
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -3084,7 +3094,7 @@ mod tests {
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                 let input = req.take_input()
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                let all_bytes = input.collect_all_bytes()
+                let all_bytes = input.collect_all_bytes().await
                     .map_err(|e| OpError::ExecutionFailed(format!("Failed to collect: {}", e)))?;
                 let json: serde_json::Value = serde_json::from_slice(&all_bytes)
                     .map_err(|e| OpError::ExecutionFailed(format!("Bad JSON: {}", e)))?;
@@ -3125,7 +3135,7 @@ mod tests {
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                 let input = req.take_input()
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                let all_bytes = input.collect_all_bytes()
+                let all_bytes = input.collect_all_bytes().await
                     .map_err(|e| OpError::ExecutionFailed(format!("Failed to collect: {}", e)))?;
                 let _: serde_json::Value = serde_json::from_slice(&all_bytes)
                     .map_err(|e| OpError::ExecutionFailed(format!("Bad JSON: {}", e)))?;
@@ -3213,10 +3223,10 @@ mod tests {
     }
 
     // TEST255: Test NoPeerInvoker call_with_bytes also returns error
-    #[test]
-    fn test255_no_peer_invoker_with_arguments() {
+    #[tokio::test]
+    async fn test255_no_peer_invoker_with_arguments() {
         let no_peer = NoPeerInvoker;
-        let result = no_peer.call_with_bytes("cap:op=test", &[("media:test", b"value")]);
+        let result = no_peer.call_with_bytes("cap:op=test", &[("media:test", b"value".as_slice())]).await;
         assert!(result.is_err());
     }
 
@@ -3474,9 +3484,14 @@ mod tests {
             async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
                 let req: Arc<Request> = wet.get_required(WET_KEY_REQUEST)
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                let input = req.take_input()
+                let mut input = req.take_input()
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                for stream in input { for chunk in stream.map_err(|e| OpError::ExecutionFailed(e.to_string()))? { let _ = chunk.map_err(|e| OpError::ExecutionFailed(e.to_string()))?; } }
+                while let Some(stream_result) = input.recv().await {
+                    let mut stream = stream_result.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+                    while let Some(chunk) = stream.recv().await {
+                        let _ = chunk.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+                    }
+                }
                 req.output().emit_cbor(&ciborium::Value::Bytes(self.data.clone()))
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                 *self.received.lock().unwrap() = self.data.clone();
@@ -5311,13 +5326,13 @@ mod tests {
     // Stream Abstractions Tests (InputStream, InputPackage, OutputStream, PeerCall)
     // =========================================================================
 
-    use crossbeam_channel::{unbounded, Sender};
     use ciborium::Value;
     use std::sync::Arc;
+    use tokio::sync::mpsc::unbounded_channel;
 
-    // Helper: Create test InputStream from chunks
+    // Helper: Create test InputStream from chunks (using tokio channels)
     fn create_test_input_stream(media_urn: &str, chunks: Vec<Result<Value, StreamError>>) -> InputStream {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = unbounded_channel();
         for chunk in chunks {
             tx.send(chunk).unwrap();
         }
@@ -5328,17 +5343,20 @@ mod tests {
         }
     }
 
-    // TEST529: InputStream iterator yields chunks in order
-    #[test]
-    fn test529_input_stream_iterator_order() {
+    // TEST529: InputStream recv yields chunks in order
+    #[tokio::test]
+    async fn test529_input_stream_recv_order() {
         let chunks = vec![
             Ok(Value::Bytes(b"chunk1".to_vec())),
             Ok(Value::Bytes(b"chunk2".to_vec())),
             Ok(Value::Bytes(b"chunk3".to_vec())),
         ];
-        let stream = create_test_input_stream("media:test", chunks);
+        let mut stream = create_test_input_stream("media:test", chunks);
 
-        let collected: Vec<_> = stream.collect();
+        let mut collected = Vec::new();
+        while let Some(item) = stream.recv().await {
+            collected.push(item);
+        }
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0].as_ref().unwrap(), &Value::Bytes(b"chunk1".to_vec()));
         assert_eq!(collected[1].as_ref().unwrap(), &Value::Bytes(b"chunk2".to_vec()));
@@ -5346,8 +5364,8 @@ mod tests {
     }
 
     // TEST530: InputStream::collect_bytes concatenates byte chunks
-    #[test]
-    fn test530_input_stream_collect_bytes() {
+    #[tokio::test]
+    async fn test530_input_stream_collect_bytes() {
         let chunks = vec![
             Ok(Value::Bytes(b"hello".to_vec())),
             Ok(Value::Bytes(b" ".to_vec())),
@@ -5355,43 +5373,43 @@ mod tests {
         ];
         let stream = create_test_input_stream("media:", chunks);
 
-        let result = stream.collect_bytes().expect("collect must succeed");
+        let result = stream.collect_bytes().await.expect("collect must succeed");
         assert_eq!(result, b"hello world");
     }
 
     // TEST531: InputStream::collect_bytes handles text chunks
-    #[test]
-    fn test531_input_stream_collect_bytes_text() {
+    #[tokio::test]
+    async fn test531_input_stream_collect_bytes_text() {
         let chunks = vec![
             Ok(Value::Text("hello".to_string())),
             Ok(Value::Text(" world".to_string())),
         ];
         let stream = create_test_input_stream("media:text", chunks);
 
-        let result = stream.collect_bytes().expect("collect must succeed");
+        let result = stream.collect_bytes().await.expect("collect must succeed");
         assert_eq!(result, b"hello world");
     }
 
     // TEST532: InputStream empty stream produces empty bytes
-    #[test]
-    fn test532_input_stream_empty() {
+    #[tokio::test]
+    async fn test532_input_stream_empty() {
         let chunks = vec![];
         let stream = create_test_input_stream("media:void", chunks);
 
-        let result = stream.collect_bytes().expect("empty stream must succeed");
+        let result = stream.collect_bytes().await.expect("empty stream must succeed");
         assert_eq!(result, b"");
     }
 
     // TEST533: InputStream propagates errors
-    #[test]
-    fn test533_input_stream_error_propagation() {
+    #[tokio::test]
+    async fn test533_input_stream_error_propagation() {
         let chunks = vec![
             Ok(Value::Bytes(b"data".to_vec())),
             Err(StreamError::Protocol("test error".to_string())),
         ];
         let stream = create_test_input_stream("media:test", chunks);
 
-        let result = stream.collect_bytes();
+        let result = stream.collect_bytes().await;
         assert!(result.is_err(), "error must propagate");
 
         if let Err(StreamError::Protocol(msg)) = result {
@@ -5410,14 +5428,14 @@ mod tests {
         assert_eq!(stream.media_urn(), "media:image;format=png");
     }
 
-    // TEST535: InputPackage iterator yields streams
-    #[test]
-    fn test535_input_package_iteration() {
-        let (tx, rx) = unbounded();
+    // TEST535: InputPackage recv yields streams
+    #[tokio::test]
+    async fn test535_input_package_iteration() {
+        let (tx, rx) = unbounded_channel();
 
         // Send 3 streams
         for i in 0..3 {
-            let (stream_tx, stream_rx) = unbounded();
+            let (stream_tx, stream_rx) = unbounded_channel();
             stream_tx.send(Ok(Value::Bytes(format!("stream{}", i).into_bytes()))).unwrap();
             drop(stream_tx);
 
@@ -5428,12 +5446,15 @@ mod tests {
         }
         drop(tx);
 
-        let package = InputPackage {
+        let mut package = InputPackage {
             rx,
             _demux_handle: None,
         };
 
-        let streams: Vec<_> = package.collect();
+        let mut streams = Vec::new();
+        while let Some(result) = package.recv().await {
+            streams.push(result);
+        }
         assert_eq!(streams.len(), 3, "must yield 3 streams");
 
         for (i, result) in streams.iter().enumerate() {
@@ -5444,12 +5465,12 @@ mod tests {
     }
 
     // TEST536: InputPackage::collect_all_bytes aggregates all streams
-    #[test]
-    fn test536_input_package_collect_all_bytes() {
-        let (tx, rx) = unbounded();
+    #[tokio::test]
+    async fn test536_input_package_collect_all_bytes() {
+        let (tx, rx) = unbounded_channel();
 
         // Stream 1: "hello"
-        let (s1_tx, s1_rx) = unbounded();
+        let (s1_tx, s1_rx) = unbounded_channel();
         s1_tx.send(Ok(Value::Bytes(b"hello".to_vec()))).unwrap();
         drop(s1_tx);
         tx.send(Ok(InputStream {
@@ -5458,7 +5479,7 @@ mod tests {
         })).unwrap();
 
         // Stream 2: " world"
-        let (s2_tx, s2_rx) = unbounded();
+        let (s2_tx, s2_rx) = unbounded_channel();
         s2_tx.send(Ok(Value::Bytes(b" world".to_vec()))).unwrap();
         drop(s2_tx);
         tx.send(Ok(InputStream {
@@ -5473,14 +5494,14 @@ mod tests {
             _demux_handle: None,
         };
 
-        let all_bytes = package.collect_all_bytes().expect("must succeed");
+        let all_bytes = package.collect_all_bytes().await.expect("must succeed");
         assert_eq!(all_bytes, b"hello world");
     }
 
     // TEST537: InputPackage empty package produces empty bytes
-    #[test]
-    fn test537_input_package_empty() {
-        let (tx, rx) = unbounded();
+    #[tokio::test]
+    async fn test537_input_package_empty() {
+        let (tx, rx) = unbounded_channel();
         drop(tx); // No streams
 
         let package = InputPackage {
@@ -5488,17 +5509,17 @@ mod tests {
             _demux_handle: None,
         };
 
-        let all_bytes = package.collect_all_bytes().expect("empty package must succeed");
+        let all_bytes = package.collect_all_bytes().await.expect("empty package must succeed");
         assert_eq!(all_bytes, b"");
     }
 
     // TEST538: InputPackage propagates stream errors
-    #[test]
-    fn test538_input_package_error_propagation() {
-        let (tx, rx) = unbounded();
+    #[tokio::test]
+    async fn test538_input_package_error_propagation() {
+        let (tx, rx) = unbounded_channel();
 
         // Good stream
-        let (s1_tx, s1_rx) = unbounded();
+        let (s1_tx, s1_rx) = unbounded_channel();
         s1_tx.send(Ok(Value::Bytes(b"data".to_vec()))).unwrap();
         drop(s1_tx);
         tx.send(Ok(InputStream {
@@ -5507,7 +5528,7 @@ mod tests {
         })).unwrap();
 
         // Error stream
-        let (s2_tx, s2_rx) = unbounded();
+        let (s2_tx, s2_rx) = unbounded_channel();
         s2_tx.send(Err(StreamError::Protocol("stream error".to_string()))).unwrap();
         drop(s2_tx);
         tx.send(Ok(InputStream {
@@ -5522,7 +5543,7 @@ mod tests {
             _demux_handle: None,
         };
 
-        let result = package.collect_all_bytes();
+        let result = package.collect_all_bytes().await;
         assert!(result.is_err(), "error must propagate from bad stream");
     }
 
@@ -5653,8 +5674,7 @@ mod tests {
     #[test]
     fn test543_peer_call_arg_creates_stream() {
         let (sender, _frames) = MockFrameSender::new();
-        let (response_tx, response_rx) = unbounded();
-        drop(response_tx); // Close immediately for test
+        let (_response_tx, response_rx) = unbounded_channel();
 
         let peer = PeerCall {
             sender: Arc::new(sender),
@@ -5669,12 +5689,12 @@ mod tests {
     }
 
     // TEST544: PeerCall::finish sends END frame
-    #[test]
-    fn test544_peer_call_finish_sends_end() {
+    #[tokio::test]
+    async fn test544_peer_call_finish_sends_end() {
         let (sender, frames) = MockFrameSender::new();
-        let (response_tx, response_rx) = unbounded();
+        let (response_tx, response_rx) = unbounded_channel();
 
-        // Send empty response stream
+        // Close response channel immediately (simulates empty response)
         drop(response_tx);
 
         let request_id = MessageId::new_uuid();
@@ -5685,7 +5705,7 @@ mod tests {
             response_rx: Some(response_rx),
         };
 
-        let _response = peer.finish().expect("finish must succeed");
+        let _response = peer.finish().await.expect("finish must succeed");
 
         let captured = frames.lock().unwrap();
         let end_frame = captured.iter().find(|f| f.frame_type == FrameType::End)
@@ -5695,10 +5715,10 @@ mod tests {
     }
 
     // TEST545: PeerCall::finish returns InputStream for response
-    #[test]
-    fn test545_peer_call_finish_returns_response_stream() {
+    #[tokio::test]
+    async fn test545_peer_call_finish_returns_response_stream() {
         let (sender, _frames) = MockFrameSender::new();
-        let (response_tx, response_rx) = unbounded();
+        let (response_tx, response_rx) = unbounded_channel();
 
         // Send response frames (simulating STREAM_START + CHUNK + STREAM_END)
         let req_id = MessageId::new_uuid();
@@ -5734,10 +5754,10 @@ mod tests {
             response_rx: Some(response_rx),
         };
 
-        let response_stream = peer.finish().expect("finish must succeed");
+        let response_stream = peer.finish().await.expect("finish must succeed");
         assert_eq!(response_stream.media_urn(), "media:response");
 
-        let bytes = response_stream.collect_bytes().expect("collect must succeed");
+        let bytes = response_stream.collect_bytes().await.expect("collect must succeed");
         assert_eq!(bytes, b"response data");
     }
 

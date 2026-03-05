@@ -34,7 +34,7 @@ mod tests {
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                 let input = req.take_input()
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                let bytes = input.collect_all_bytes()
+                let bytes = input.collect_all_bytes().await
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                 req.output().emit_cbor(&ciborium::Value::Bytes(bytes))
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;

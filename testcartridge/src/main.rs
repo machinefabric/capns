@@ -357,10 +357,10 @@ fn build_manifest() -> CapManifest {
 // Helper: collect all input streams by media_urn
 // =============================================================================
 
-fn collect_args(req: &Request) -> std::result::Result<Vec<(String, Vec<u8>)>, OpError> {
+async fn collect_args(req: &Request) -> std::result::Result<Vec<(String, Vec<u8>)>, OpError> {
     req.take_input()
         .map_err(|e| OpError::ExecutionFailed(e.to_string()))?
-        .collect_streams()
+        .collect_streams().await
         .map_err(|e| OpError::ExecutionFailed(e.to_string()))
 }
 
@@ -385,7 +385,7 @@ struct Edge1Op;
 impl Op<()> for Edge1Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node1;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -405,7 +405,7 @@ struct Edge2Op;
 impl Op<()> for Edge2Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node2;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -425,7 +425,7 @@ struct Edge3Op;
 impl Op<()> for Edge3Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input_list = require_stream(&streams, "media:node1;textable;form=list")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -458,7 +458,7 @@ struct Edge4Op;
 impl Op<()> for Edge4Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input_list = require_stream(&streams, "media:node4;textable;form=list")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -490,7 +490,7 @@ struct Edge5Op;
 impl Op<()> for Edge5Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         // First input: file-path arg with stdin source → PluginRuntime read file, relabeled
         let input1 = require_stream(&streams, "media:node2;textable")
@@ -516,7 +516,7 @@ struct Edge6Op;
 impl Op<()> for Edge6Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node1;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -544,7 +544,7 @@ struct Edge7Op;
 impl Op<()> for Edge7Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node3;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -562,7 +562,7 @@ struct Edge8Op;
 impl Op<()> for Edge8Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node6;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -580,7 +580,7 @@ struct Edge9Op;
 impl Op<()> for Edge9Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node7;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -598,7 +598,7 @@ struct Edge10Op;
 impl Op<()> for Edge10Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node8;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -624,7 +624,7 @@ struct LargeOp;
 impl Op<()> for LargeOp {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let size = find_stream_str(&streams, "media:payload-size;textable;numeric")
             .and_then(|s| s.parse::<usize>().ok())
@@ -646,7 +646,7 @@ struct PeerOp;
 impl Op<()> for PeerOp {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
         let req = get_req(wet)?;
-        let streams = collect_args(&req)?;
+        let streams = collect_args(&req).await?;
 
         let input = require_stream(&streams, "media:node1;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -656,10 +656,10 @@ impl Op<()> for PeerOp {
         let edge1_response = req.peer().call_with_bytes(
             edge1_urn,
             &[("media:node1;textable", input)],
-        ).map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+        ).await.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
 
         // Collect edge1 response and decode CBOR
-        let edge1_cbor = edge1_response.collect_value()
+        let edge1_cbor = edge1_response.collect_value().await
             .map_err(|e| OpError::ExecutionFailed(format!("Edge1 response error: {}", e)))?;
         let edge1_bytes = match edge1_cbor {
             ciborium::Value::Bytes(b) => b,
@@ -671,9 +671,9 @@ impl Op<()> for PeerOp {
         let edge2_response = req.peer().call_with_bytes(
             edge2_urn,
             &[("media:node2;textable", &edge1_bytes)],
-        ).map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+        ).await.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
 
-        let edge2_cbor = edge2_response.collect_value()
+        let edge2_cbor = edge2_response.collect_value().await
             .map_err(|e| OpError::ExecutionFailed(format!("Edge2 response error: {}", e)))?;
         emit(req.output(), &edge2_cbor)
     }
