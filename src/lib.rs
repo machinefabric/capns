@@ -123,7 +123,7 @@ pub use planner::{
 // Orchestrator — DOT graph parsing and DAG execution
 pub use orchestrator::{
     ParseOrchestrationError, ResolvedEdge, ResolvedGraph, CapRegistryTrait,
-    parse_dot_to_cap_dag, execute_dag, NodeData, ExecutionError,
+    parse_dot_to_cap_dag, plan_to_resolved_graph, execute_dag, NodeData, ExecutionError,
     EdgeGroup, PluginManager, ExecutionContext,
 };
 

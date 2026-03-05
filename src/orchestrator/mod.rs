@@ -24,6 +24,7 @@ pub mod types;
 pub mod validation;
 pub mod parser;
 pub mod executor;
+pub mod plan_converter;
 
 // Re-export key types
 pub use types::{
@@ -34,6 +35,8 @@ pub use types::{
 };
 
 pub use parser::parse_dot_to_cap_dag;
+
+pub use plan_converter::plan_to_resolved_graph;
 
 pub use executor::{
     ExecutionError,
