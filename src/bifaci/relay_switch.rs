@@ -481,6 +481,53 @@ impl RelaySwitch {
         Ok((rid, rx))
     }
 
+    /// Register an external request and return a response channel.
+    ///
+    /// This is used when the caller builds their own frames via `build_request_frames`.
+    /// The caller must then send the frames via `send_to_master`. The switch will
+    /// route responses to the returned channel.
+    ///
+    /// Unlike `execute_cap`, this doesn't send any frames - it only sets up routing.
+    pub async fn register_external_request(
+        &mut self,
+        rid: MessageId,
+        cap_urn: &str,
+        preferred_cap: Option<&str>,
+    ) -> Result<mpsc::UnboundedReceiver<Frame>, RelaySwitchError> {
+        // Find master that can handle this cap
+        let dest_idx = self.find_master_for_cap(cap_urn, preferred_cap).ok_or_else(|| {
+            RelaySwitchError::NoHandler(cap_urn.to_string())
+        })?;
+
+        // Assign XID
+        self.xid_counter += 1;
+        let xid = MessageId::Uint(self.xid_counter);
+        let key = (xid.clone(), rid.clone());
+
+        // Create response channel
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Register response channel BEFORE sending
+        self.external_response_channels.insert(key.clone(), tx);
+
+        // Record origin (None = external caller)
+        self.origin_map.insert(key.clone(), None);
+
+        // Register routing
+        self.request_routing.insert(
+            key.clone(),
+            RoutingEntry {
+                source_master_idx: None,
+                destination_master_idx: dest_idx,
+            },
+        );
+
+        // Record RID → XID mapping for continuation frames
+        self.rid_to_xid.insert(rid, xid);
+
+        Ok(rx)
+    }
+
     /// Dynamically add a new master connection to the switch.
     ///
     /// Performs handshake (reads RelayNotify, verifies identity) with the new master,
