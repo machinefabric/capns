@@ -28,6 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{BufReader, BufWriter};
@@ -529,7 +530,7 @@ impl PluginManager {
 }
 
 // =============================================================================
-// Execution Context — RelaySwitch with dynamic master management
+// Execution Context — Arc<RelaySwitch> for concurrent DAG execution
 // =============================================================================
 
 /// Handle for cleanup of a master's associated resources.
@@ -538,25 +539,30 @@ struct MasterCleanupHandle {
     task_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
-/// Execution context: one RelaySwitch with dynamically added masters.
+/// Execution context for DAG execution.
 ///
-/// Masters are added via:
-/// - `add_master()` - for externally managed socket pairs (caller handles cleanup)
-/// - `add_plugin_host()` - spawns PluginHostRuntime + RelaySlave (context handles cleanup)
+/// Each `ExecutionContext` is an isolated execution environment that:
+/// - Shares the `RelaySwitch` via `Arc` for concurrent access
+/// - Owns its own `node_data` HashMap (isolated per execution)
+/// - Tracks cleanup handles for managed tasks
 ///
-/// All data flows as binary through `node_data`. No JSON wrapping.
+/// This design enables concurrent DAG executions:
+/// - Multiple contexts can share the same switch
+/// - Each context has isolated node data
+/// - The switch handles concurrent frame routing internally
 pub struct ExecutionContext {
-    switch: RelaySwitch,
-    /// Raw bytes at each DAG node. The base level is binary, not JSON.
+    /// Shared relay switch (interior mutability)
+    switch: Arc<RelaySwitch>,
+    /// Raw bytes at each DAG node. Isolated per execution context.
     node_data: HashMap<String, Vec<u8>>,
-    /// Negotiated max chunk size from the relay (updated after each master added).
+    /// Cached max chunk size from the relay.
     max_chunk: usize,
     /// Cleanup handles for masters added via add_plugin_host.
     cleanup_handles: Vec<MasterCleanupHandle>,
 }
 
 impl ExecutionContext {
-    /// Create a new empty ExecutionContext.
+    /// Create a new ExecutionContext with an empty RelaySwitch.
     ///
     /// The RelaySwitch starts with no masters. Use `add_master()` or
     /// `add_plugin_host()` to add masters before executing caps.
@@ -565,12 +571,36 @@ impl ExecutionContext {
             .await
             .map_err(|e| ExecutionError::HostError(format!("RelaySwitch init: {}", e)))?;
 
+        let max_chunk = switch.limits().await.max_chunk as usize;
+        let max_chunk = if max_chunk == 0 { DEFAULT_MAX_CHUNK as usize } else { max_chunk };
+
+        Ok(Self {
+            switch: Arc::new(switch),
+            node_data: HashMap::new(),
+            max_chunk,
+            cleanup_handles: Vec::new(),
+        })
+    }
+
+    /// Create a new ExecutionContext from an existing shared RelaySwitch.
+    ///
+    /// This is used for concurrent DAG executions that share the same infrastructure.
+    /// Each context has its own isolated node_data.
+    pub async fn from_switch(switch: Arc<RelaySwitch>) -> Result<Self, ExecutionError> {
+        let max_chunk = switch.limits().await.max_chunk as usize;
+        let max_chunk = if max_chunk == 0 { DEFAULT_MAX_CHUNK as usize } else { max_chunk };
+
         Ok(Self {
             switch,
             node_data: HashMap::new(),
-            max_chunk: DEFAULT_MAX_CHUNK as usize,
+            max_chunk,
             cleanup_handles: Vec::new(),
         })
+    }
+
+    /// Get the shared RelaySwitch.
+    pub fn switch(&self) -> &Arc<RelaySwitch> {
+        &self.switch
     }
 
     /// Add a master connection from an externally managed socket.
@@ -587,7 +617,7 @@ impl ExecutionContext {
             .await
             .map_err(|e| ExecutionError::HostError(format!("add_master: {}", e)))?;
 
-        self.update_max_chunk();
+        self.update_max_chunk().await;
         Ok(idx)
     }
 
@@ -662,13 +692,13 @@ impl ExecutionContext {
             task_handles: vec![host_handle, slave_handle],
         });
 
-        self.update_max_chunk();
+        self.update_max_chunk().await;
         Ok(master_idx)
     }
 
     /// Update max_chunk from current switch limits.
-    fn update_max_chunk(&mut self) {
-        let chunk = self.switch.limits().max_chunk as usize;
+    async fn update_max_chunk(&mut self) {
+        let chunk = self.switch.limits().await.max_chunk as usize;
         self.max_chunk = if chunk == 0 { DEFAULT_MAX_CHUNK as usize } else { chunk };
     }
 
@@ -678,13 +708,13 @@ impl ExecutionContext {
     }
 
     /// Get the aggregate capabilities of all connected masters.
-    pub fn capabilities(&self) -> &[u8] {
-        self.switch.capabilities()
+    pub async fn capabilities(&self) -> Vec<u8> {
+        self.switch.capabilities().await
     }
 
     /// Get the negotiated limits.
-    pub fn limits(&self) -> &Limits {
-        self.switch.limits()
+    pub async fn limits(&self) -> Limits {
+        self.switch.limits().await
     }
 
     /// Set data for a node.
@@ -702,28 +732,27 @@ impl ExecutionContext {
         &mut self.node_data
     }
 
-    /// Get the underlying RelaySwitch for direct frame operations.
-    pub fn switch(&mut self) -> &mut RelaySwitch {
-        &mut self.switch
-    }
-
-    /// Shut down the infrastructure and return accumulated node data.
-    ///
-    /// This:
-    /// 1. Drops the switch (releases frame writers and reader tasks)
-    /// 2. Aborts all managed tasks
-    ///
-    /// For masters added via `add_master()`, the caller is responsible for
-    /// shutting down their endpoints.
-    pub fn shutdown(self) -> HashMap<String, Vec<u8>> {
+    /// Consume and return the node_data map.
+    pub fn into_node_data(self) -> HashMap<String, Vec<u8>> {
         // Abort all managed tasks
         for handle in self.cleanup_handles {
             for task in handle.task_handles {
                 task.abort();
             }
         }
-
         self.node_data
+    }
+
+    /// Shut down the infrastructure and return accumulated node data.
+    ///
+    /// This:
+    /// 1. Drops the switch reference (may or may not release the switch)
+    /// 2. Aborts all managed tasks
+    ///
+    /// For masters added via `add_master()`, the caller is responsible for
+    /// shutting down their endpoints.
+    pub fn shutdown(self) -> HashMap<String, Vec<u8>> {
+        self.into_node_data()
     }
 
     /// Execute an edge group as a single cap invocation with one or more input streams.

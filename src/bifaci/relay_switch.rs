@@ -43,14 +43,24 @@
 //! **Cleanup**:
 //! - Engine-initiated: plugin's END → cleanup immediately
 //! - Peer-initiated: engine's response END → cleanup (wait for final response)
+//!
+//! ## Concurrency Model
+//!
+//! RelaySwitch uses interior mutability to allow concurrent DAG executions:
+//! - All methods take `&self` (not `&mut self`)
+//! - xid_counter: AtomicU64
+//! - Routing maps: RwLock<HashMap<...>>
+//! - Per-master socket writers: Mutex<FrameWriter<...>>
+//! - Each execute_fanin spawns its own pump that cooperatively routes frames
 
 use crate::bifaci::frame::{FlowKey, Frame, FrameType, Limits, MessageId, SeqAssigner};
 use crate::bifaci::io::{CborError, FrameReader, FrameWriter, identity_nonce};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 // =============================================================================
 // ERROR TYPES
@@ -104,22 +114,30 @@ struct RoutingEntry {
 }
 
 /// Connection to a single RelayMaster with its socket I/O.
-#[derive(Debug)]
+/// Interior mutability: writer and seq_assigner are behind Mutex.
 struct MasterConnection {
-    /// Writer for frames to slave
-    socket_writer: FrameWriter<BufWriter<OwnedWriteHalf>>,
-    /// Seq assigner for frames written to this master (output stage)
-    seq_assigner: SeqAssigner,
+    /// Writer for frames to slave (Mutex for concurrent access)
+    socket_writer: Mutex<FrameWriter<BufWriter<OwnedWriteHalf>>>,
+    /// Seq assigner for frames written to this master (Mutex for concurrent access)
+    seq_assigner: Mutex<SeqAssigner>,
     /// Latest manifest from RelayNotify
-    manifest: Vec<u8>,
+    manifest: RwLock<Vec<u8>>,
     /// Latest limits from RelayNotify
-    limits: Limits,
+    limits: RwLock<Limits>,
     /// Parsed capability URNs from manifest
-    caps: Vec<String>,
+    caps: RwLock<Vec<String>>,
     /// Connection health status
-    healthy: bool,
+    healthy: AtomicBool,
     /// Reader task handle
     reader_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for MasterConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MasterConnection")
+            .field("healthy", &self.healthy.load(Ordering::SeqCst))
+            .finish()
+    }
 }
 
 /// RelaySwitch — Cap-aware routing multiplexer for multiple RelayMasters.
@@ -127,34 +145,44 @@ struct MasterConnection {
 /// Aggregates capabilities from multiple RelayMasters and routes requests
 /// based on cap URN matching. Handles both engine→plugin and plugin→plugin
 /// (peer) invocations with correct routing semantics.
-#[derive(Debug)]
+///
+/// Uses interior mutability for concurrent DAG execution support.
+/// All public methods take `&self`, not `&mut self`.
 pub struct RelaySwitch {
     /// Managed relay master connections
-    masters: Vec<MasterConnection>,
+    masters: RwLock<Vec<MasterConnection>>,
     /// Routing: cap_urn → master index
-    cap_table: Vec<(String, usize)>,
+    cap_table: RwLock<Vec<(String, usize)>>,
     /// Routing: (xid, rid) → source/destination masters
     /// Only populated when XID is present (between RelaySwitch hops)
-    request_routing: HashMap<(MessageId, MessageId), RoutingEntry>,
+    request_routing: RwLock<HashMap<(MessageId, MessageId), RoutingEntry>>,
     /// Peer-initiated request (xid, rid) pairs for cleanup tracking
-    peer_requests: HashSet<(MessageId, MessageId)>,
+    peer_requests: RwLock<HashSet<(MessageId, MessageId)>>,
     /// Origin tracking: (xid, rid) → upstream connection index (None = external caller)
     /// Used to know where to send frames back
-    origin_map: HashMap<(MessageId, MessageId), Option<usize>>,
+    origin_map: RwLock<HashMap<(MessageId, MessageId), Option<usize>>>,
     /// Response channels for external execute_cap calls: (xid, rid) → sender
-    external_response_channels: HashMap<(MessageId, MessageId), mpsc::UnboundedSender<Frame>>,
+    external_response_channels: RwLock<HashMap<(MessageId, MessageId), mpsc::UnboundedSender<Frame>>>,
     /// Aggregate capabilities (union of all masters)
-    aggregate_capabilities: Vec<u8>,
+    aggregate_capabilities: RwLock<Vec<u8>>,
     /// Negotiated limits (minimum across all masters)
-    negotiated_limits: Limits,
-    /// Channel receiver for frames from master reader tasks
-    frame_rx: mpsc::UnboundedReceiver<(usize, Result<Frame, CborError>)>,
+    negotiated_limits: RwLock<Limits>,
+    /// Channel receiver for frames from master reader tasks (Mutex for exclusive receive)
+    frame_rx: Mutex<mpsc::UnboundedReceiver<(usize, Result<Frame, CborError>)>>,
     /// Channel sender for spawning new reader tasks (stored for add_master)
     frame_tx: mpsc::UnboundedSender<(usize, Result<Frame, CborError>)>,
     /// XID counter for assigning unique routing IDs (RelaySwitch assigns on first arrival)
-    xid_counter: u64,
+    xid_counter: AtomicU64,
     /// RID → XID mapping for engine-initiated requests (so continuation frames can find their XID)
-    rid_to_xid: HashMap<MessageId, MessageId>,
+    rid_to_xid: RwLock<HashMap<MessageId, MessageId>>,
+}
+
+impl std::fmt::Debug for RelaySwitch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelaySwitch")
+            .field("xid_counter", &self.xid_counter.load(Ordering::SeqCst))
+            .finish()
+    }
 }
 
 // =============================================================================
@@ -169,7 +197,7 @@ impl RelaySwitch {
     pub async fn new(sockets: Vec<UnixStream>) -> Result<Self, RelaySwitchError> {
         let mut masters = Vec::new();
         let (frame_tx, frame_rx) = mpsc::unbounded_channel();
-        let mut xid_counter: u64 = 0;
+        let xid_counter = AtomicU64::new(0);
 
         // Phase 1: For each master, read RelayNotify and verify identity.
         // Reader tasks are spawned only after verification succeeds.
@@ -205,8 +233,8 @@ impl RelaySwitch {
 
             // Verify identity through the relay chain.
             let mut seq_assigner = SeqAssigner::new();
-            xid_counter += 1;
-            let xid = MessageId::Uint(xid_counter);
+            let xid_val = xid_counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let xid = MessageId::Uint(xid_val);
             {
                 use crate::standard::caps::CAP_IDENTITY;
 
@@ -313,12 +341,12 @@ impl RelaySwitch {
             pending_readers.push((master_idx, socket_reader));
 
             masters.push(MasterConnection {
-                socket_writer,
-                seq_assigner,
-                manifest: caps_payload,
-                limits,
-                caps,
-                healthy: true,
+                socket_writer: Mutex::new(socket_writer),
+                seq_assigner: Mutex::new(seq_assigner),
+                manifest: RwLock::new(caps_payload),
+                limits: RwLock::new(limits),
+                caps: RwLock::new(caps),
+                healthy: AtomicBool::new(true),
                 reader_handle: None, // Spawned in phase 2
             });
         }
@@ -348,37 +376,37 @@ impl RelaySwitch {
             masters[master_idx].reader_handle = Some(reader_handle);
         }
 
-        let mut switch = Self {
-            masters,
-            cap_table: Vec::new(),
-            request_routing: HashMap::new(),
-            peer_requests: HashSet::new(),
-            origin_map: HashMap::new(),
-            external_response_channels: HashMap::new(),
-            aggregate_capabilities: Vec::new(),
-            negotiated_limits: Limits::default(),
-            frame_rx,
+        let switch = Self {
+            masters: RwLock::new(masters),
+            cap_table: RwLock::new(Vec::new()),
+            request_routing: RwLock::new(HashMap::new()),
+            peer_requests: RwLock::new(HashSet::new()),
+            origin_map: RwLock::new(HashMap::new()),
+            external_response_channels: RwLock::new(HashMap::new()),
+            aggregate_capabilities: RwLock::new(Vec::new()),
+            negotiated_limits: RwLock::new(Limits::default()),
+            frame_rx: Mutex::new(frame_rx),
             frame_tx,
             xid_counter,
-            rid_to_xid: HashMap::new(),
+            rid_to_xid: RwLock::new(HashMap::new()),
         };
 
         // Build routing tables from already-populated caps
-        switch.rebuild_cap_table();
-        switch.rebuild_capabilities();
-        switch.rebuild_limits();
+        switch.rebuild_cap_table().await;
+        switch.rebuild_capabilities().await;
+        switch.rebuild_limits().await;
 
         Ok(switch)
     }
 
     /// Get the aggregate capabilities of all healthy masters.
-    pub fn capabilities(&self) -> &[u8] {
-        &self.aggregate_capabilities
+    pub async fn capabilities(&self) -> Vec<u8> {
+        self.aggregate_capabilities.read().await.clone()
     }
 
     /// Get the negotiated limits (minimum across all masters).
-    pub fn limits(&self) -> &Limits {
-        &self.negotiated_limits
+    pub async fn limits(&self) -> Limits {
+        self.negotiated_limits.read().await.clone()
     }
 
     /// Execute a cap and return a receiver for streaming response frames.
@@ -397,41 +425,14 @@ impl RelaySwitch {
     /// `send_to_master()` to send streaming continuation frames (STREAM_START,
     /// CHUNK, STREAM_END, END) for this request. The receiver streams response
     /// frames — read from it until END or ERR.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let (request_id, mut rx) = switch.execute_cap(
-    ///     "cap:in=\"media:void\";op=test;out=\"media:void\"",
-    ///     vec![],
-    ///     "application/cbor"
-    /// ).await?;
-    ///
-    /// // Send streaming input via send_to_master() using request_id
-    /// // ...
-    ///
-    /// // Use tokio::select! to pump frames and receive responses
-    /// loop {
-    ///     tokio::select! {
-    ///         _ = switch.pump_one() => {}
-    ///         Some(frame) = rx.recv() => {
-    ///             match frame.frame_type {
-    ///                 FrameType::End => break,
-    ///                 FrameType::Err => panic!("error"),
-    ///                 _ => { /* handle streaming frames */ }
-    ///             }
-    ///         }
-    ///     }
-    /// }
-    /// ```
     pub async fn execute_cap(
-        &mut self,
+        &self,
         cap_urn: &str,
         payload: Vec<u8>,
         content_type: &str,
     ) -> Result<(MessageId, mpsc::UnboundedReceiver<Frame>), RelaySwitchError> {
         // Generate unique request ID
-        self.xid_counter += 1;
-        let rid = MessageId::Uint(self.xid_counter);
+        let rid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
 
         // Build REQ frame
         let req_frame = Frame::req(rid.clone(), cap_urn, payload, content_type);
@@ -439,28 +440,23 @@ impl RelaySwitch {
         // Create response channel
         let (tx, rx) = mpsc::unbounded_channel();
 
-        // Send the REQ frame - this will assign XID and route it
-        // We need to register the response channel BEFORE sending, because
-        // responses might arrive immediately
-
         // Find master that can handle this cap (no preference for internal requests)
-        let dest_idx = self.find_master_for_cap(cap_urn, None).ok_or_else(|| {
+        let dest_idx = self.find_master_for_cap(cap_urn, None).await.ok_or_else(|| {
             RelaySwitchError::NoHandler(cap_urn.to_string())
         })?;
 
         // Assign XID
-        self.xid_counter += 1;
-        let xid = MessageId::Uint(self.xid_counter);
+        let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
         let key = (xid.clone(), rid.clone());
 
         // Register response channel BEFORE sending
-        self.external_response_channels.insert(key.clone(), tx);
+        self.external_response_channels.write().await.insert(key.clone(), tx);
 
         // Record origin (None = external execute_cap caller)
-        self.origin_map.insert(key.clone(), None);
+        self.origin_map.write().await.insert(key.clone(), None);
 
         // Register routing
-        self.request_routing.insert(
+        self.request_routing.write().await.insert(
             key.clone(),
             RoutingEntry {
                 source_master_idx: None,
@@ -469,7 +465,7 @@ impl RelaySwitch {
         );
 
         // Record RID → XID mapping for continuation frames (if caller sends them)
-        self.rid_to_xid.insert(rid.clone(), xid.clone());
+        self.rid_to_xid.write().await.insert(rid.clone(), xid.clone());
 
         // Build frame with XID
         let mut frame_with_xid = req_frame;
@@ -489,32 +485,31 @@ impl RelaySwitch {
     ///
     /// Unlike `execute_cap`, this doesn't send any frames - it only sets up routing.
     pub async fn register_external_request(
-        &mut self,
+        &self,
         rid: MessageId,
         cap_urn: &str,
         preferred_cap: Option<&str>,
     ) -> Result<mpsc::UnboundedReceiver<Frame>, RelaySwitchError> {
         // Find master that can handle this cap
-        let dest_idx = self.find_master_for_cap(cap_urn, preferred_cap).ok_or_else(|| {
+        let dest_idx = self.find_master_for_cap(cap_urn, preferred_cap).await.ok_or_else(|| {
             RelaySwitchError::NoHandler(cap_urn.to_string())
         })?;
 
         // Assign XID
-        self.xid_counter += 1;
-        let xid = MessageId::Uint(self.xid_counter);
+        let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
         let key = (xid.clone(), rid.clone());
 
         // Create response channel
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Register response channel BEFORE sending
-        self.external_response_channels.insert(key.clone(), tx);
+        self.external_response_channels.write().await.insert(key.clone(), tx);
 
         // Record origin (None = external caller)
-        self.origin_map.insert(key.clone(), None);
+        self.origin_map.write().await.insert(key.clone(), None);
 
         // Register routing
-        self.request_routing.insert(
+        self.request_routing.write().await.insert(
             key.clone(),
             RoutingEntry {
                 source_master_idx: None,
@@ -523,7 +518,7 @@ impl RelaySwitch {
         );
 
         // Record RID → XID mapping for continuation frames
-        self.rid_to_xid.insert(rid, xid);
+        self.rid_to_xid.write().await.insert(rid, xid);
 
         Ok(rx)
     }
@@ -535,10 +530,10 @@ impl RelaySwitch {
     ///
     /// This is used for dynamically connecting new hosts (e.g., Mac client connecting via gRPC).
     pub async fn add_master(
-        &mut self,
+        &self,
         socket: UnixStream,
     ) -> Result<usize, RelaySwitchError> {
-        let master_idx = self.masters.len();
+        let master_idx = self.masters.read().await.len();
         let (read_half, write_half) = socket.into_split();
         let mut socket_reader = FrameReader::new(BufReader::new(read_half));
         let mut socket_writer = FrameWriter::new(BufWriter::new(write_half));
@@ -568,8 +563,7 @@ impl RelaySwitch {
 
         // Identity verification (same as in new())
         let mut seq_assigner = SeqAssigner::new();
-        self.xid_counter += 1;
-        let xid = MessageId::Uint(self.xid_counter);
+        let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
         {
             use crate::standard::caps::CAP_IDENTITY;
 
@@ -688,20 +682,20 @@ impl RelaySwitch {
             }
         });
 
-        self.masters.push(MasterConnection {
-            socket_writer,
-            seq_assigner,
-            manifest: caps_payload,
-            limits,
-            caps,
-            healthy: true,
+        self.masters.write().await.push(MasterConnection {
+            socket_writer: Mutex::new(socket_writer),
+            seq_assigner: Mutex::new(seq_assigner),
+            manifest: RwLock::new(caps_payload),
+            limits: RwLock::new(limits),
+            caps: RwLock::new(caps),
+            healthy: AtomicBool::new(true),
             reader_handle: Some(reader_handle),
         });
 
         // Rebuild tables
-        self.rebuild_cap_table();
-        self.rebuild_capabilities();
-        self.rebuild_limits();
+        self.rebuild_cap_table().await;
+        self.rebuild_capabilities().await;
+        self.rebuild_limits().await;
 
         Ok(master_idx)
     }
@@ -716,7 +710,7 @@ impl RelaySwitch {
     /// the master whose registered cap is equivalent to this URN.
     /// When `None`, uses standard `accepts` + closest-specificity routing.
     pub async fn send_to_master(
-        &mut self,
+        &self,
         mut frame: Frame,
         preferred_cap: Option<&str>,
     ) -> Result<(), RelaySwitchError> {
@@ -729,7 +723,7 @@ impl RelaySwitch {
                 })?;
 
                 // Find master that can handle this cap
-                let dest_idx = self.find_master_for_cap(cap_urn, preferred_cap).ok_or_else(|| {
+                let dest_idx = self.find_master_for_cap(cap_urn, preferred_cap).await.ok_or_else(|| {
                     RelaySwitchError::NoHandler(cap_urn.clone())
                 })?;
 
@@ -737,8 +731,7 @@ impl RelaySwitch {
                 let xid = if let Some(ref existing_xid) = frame.routing_id {
                     existing_xid.clone()
                 } else {
-                    self.xid_counter += 1;
-                    let new_xid = MessageId::Uint(self.xid_counter);
+                    let new_xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
                     frame.routing_id = Some(new_xid.clone());
                     new_xid
                 };
@@ -747,10 +740,10 @@ impl RelaySwitch {
                 let key = (xid.clone(), rid.clone());
 
                 // Record origin (None = external caller via send_to_master)
-                self.origin_map.insert(key.clone(), None);
+                self.origin_map.write().await.insert(key.clone(), None);
 
                 // Register routing (xid, rid) → destination
-                self.request_routing.insert(
+                self.request_routing.write().await.insert(
                     key,
                     RoutingEntry {
                         source_master_idx: None,
@@ -759,7 +752,7 @@ impl RelaySwitch {
                 );
 
                 // Record RID → XID mapping for continuation frames from engine
-                self.rid_to_xid.insert(rid, xid);
+                self.rid_to_xid.write().await.insert(rid, xid);
 
                 // Forward to destination with XID
                 self.write_to_master_idx(dest_idx, &mut frame).await?;
@@ -777,20 +770,23 @@ impl RelaySwitch {
                 } else {
                     // Engine doesn't send XID - look it up from the REQ's RID → XID mapping
                     let rid = &frame.id;
-                    let looked_up_xid = self.rid_to_xid.get(rid).ok_or_else(|| {
+                    let rid_to_xid = self.rid_to_xid.read().await;
+                    let looked_up_xid = rid_to_xid.get(rid).ok_or_else(|| {
                         RelaySwitchError::UnknownRequest(rid.clone())
-                    })?;
+                    })?.clone();
                     frame.routing_id = Some(looked_up_xid.clone());
-                    looked_up_xid.clone()
+                    looked_up_xid
                 };
 
                 let key = (xid.clone(), frame.id.clone());
 
-                let entry = self.request_routing.get(&key).ok_or_else(|| {
-                    RelaySwitchError::UnknownRequest(frame.id.clone())
-                })?;
-
-                let dest_idx = entry.destination_master_idx;
+                let dest_idx = {
+                    let routing = self.request_routing.read().await;
+                    let entry = routing.get(&key).ok_or_else(|| {
+                        RelaySwitchError::UnknownRequest(frame.id.clone())
+                    })?;
+                    entry.destination_master_idx
+                };
 
                 // Forward to destination
                 self.write_to_master_idx(dest_idx, &mut frame).await?;
@@ -809,10 +805,15 @@ impl RelaySwitch {
     ///
     /// Awaits until a frame is available from any master. Returns Ok(None) when all masters have closed.
     /// Peer requests (plugin → plugin) are handled internally and not returned.
-    pub async fn read_from_masters(&mut self) -> Result<Option<Frame>, RelaySwitchError> {
+    pub async fn read_from_masters(&self) -> Result<Option<Frame>, RelaySwitchError> {
         loop {
             // Await on channel - reader tasks send frames here
-            match self.frame_rx.recv().await {
+            let frame_result = {
+                let mut rx = self.frame_rx.lock().await;
+                rx.recv().await
+            };
+
+            match frame_result {
                 Some((master_idx, Ok(frame))) => {
                     // Got a frame from a master
                     if let Some(result_frame) = self.handle_master_frame(master_idx, frame).await? {
@@ -838,8 +839,13 @@ impl RelaySwitch {
     /// Returns Ok(Some(frame)) if a frame was processed and should be returned to caller.
     /// Returns Ok(None) if no frame was available or the frame was handled internally.
     /// Use this in tokio::select! loops for concurrent frame processing.
-    pub async fn pump_one(&mut self) -> Result<Option<Frame>, RelaySwitchError> {
-        match self.frame_rx.try_recv() {
+    pub async fn pump_one(&self) -> Result<Option<Frame>, RelaySwitchError> {
+        let frame_result = {
+            let mut rx = self.frame_rx.lock().await;
+            rx.try_recv()
+        };
+
+        match frame_result {
             Ok((master_idx, Ok(frame))) => {
                 // Got a frame from a master
                 if let Some(result_frame) = self.handle_master_frame(master_idx, frame).await? {
@@ -867,7 +873,7 @@ impl RelaySwitch {
     /// Wait for the next frame from any master with timeout.
     ///
     /// Returns Ok(Some(frame)) if a frame arrives, Ok(None) on timeout, Err on error.
-    pub async fn read_from_masters_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<Frame>, RelaySwitchError> {
+    pub async fn read_from_masters_timeout(&self, timeout: std::time::Duration) -> Result<Option<Frame>, RelaySwitchError> {
         let start = std::time::Instant::now();
         loop {
             let remaining = timeout.saturating_sub(start.elapsed());
@@ -876,7 +882,12 @@ impl RelaySwitch {
             }
 
             // Try to receive with timeout
-            match tokio::time::timeout(remaining, self.frame_rx.recv()).await {
+            let frame_result = {
+                let mut rx = self.frame_rx.lock().await;
+                tokio::time::timeout(remaining, rx.recv()).await
+            };
+
+            match frame_result {
                 Ok(Some((master_idx, Ok(frame)))) => {
                     // Got a frame from a master
                     if let Some(result_frame) = self.handle_master_frame(master_idx, frame).await? {
@@ -906,15 +917,29 @@ impl RelaySwitch {
 
     /// Write a frame to a master, assigning seq via the per-master SeqAssigner.
     /// Cleans up seq tracking on terminal frames (END/ERR).
-    async fn write_to_master_idx(&mut self, master_idx: usize, frame: &mut Frame) -> Result<(), CborError> {
+    async fn write_to_master_idx(&self, master_idx: usize, frame: &mut Frame) -> Result<(), CborError> {
         eprintln!("[RelaySwitch] write_to_master_idx: master={} {:?} id={:?} xid={:?}",
             master_idx, frame.frame_type, frame.id, frame.routing_id);
-        let master = &mut self.masters[master_idx];
-        master.seq_assigner.assign(frame);
-        master.socket_writer.write(frame).await?;
-        if matches!(frame.frame_type, FrameType::End | FrameType::Err) {
-            master.seq_assigner.remove(&FlowKey::from_frame(frame));
+
+        let masters = self.masters.read().await;
+        let master = &masters[master_idx];
+
+        // Lock seq_assigner and socket_writer separately to minimize lock contention
+        {
+            let mut seq = master.seq_assigner.lock().await;
+            seq.assign(frame);
         }
+
+        {
+            let mut writer = master.socket_writer.lock().await;
+            writer.write(frame).await?;
+        }
+
+        if matches!(frame.frame_type, FrameType::End | FrameType::Err) {
+            let mut seq = master.seq_assigner.lock().await;
+            seq.remove(&FlowKey::from_frame(frame));
+        }
+
         Ok(())
     }
 
@@ -940,7 +965,7 @@ impl RelaySwitch {
     /// Among the comparable matches, the master whose registered cap is
     /// equivalent to the preferred cap wins. If no equivalent match, falls
     /// back to closest-specificity among the comparable set.
-    fn find_master_for_cap(&self, cap_urn: &str, preferred_cap: Option<&str>) -> Option<usize> {
+    async fn find_master_for_cap(&self, cap_urn: &str, preferred_cap: Option<&str>) -> Option<usize> {
         let request_urn = match crate::CapUrn::from_string(cap_urn) {
             Ok(u) => u,
             Err(_) => return None,
@@ -955,7 +980,8 @@ impl RelaySwitch {
         // When preferred_cap is set, use is_comparable (broader); otherwise accepts (standard).
         let mut matches: Vec<(usize, usize, bool)> = Vec::new(); // (master_idx, specificity, is_preferred)
 
-        for (registered_cap, master_idx) in &self.cap_table {
+        let cap_table = self.cap_table.read().await;
+        for (registered_cap, master_idx) in cap_table.iter() {
             if let Ok(registered_urn) = crate::CapUrn::from_string(registered_cap) {
                 let is_match = if preferred_urn.is_some() {
                     // Comparable: either side accepts the other (broader match set)
@@ -1002,7 +1028,7 @@ impl RelaySwitch {
     /// Returns Some(frame) if the frame should be forwarded to the engine.
     /// Returns None if the frame was handled internally (peer request).
     async fn handle_master_frame(
-        &mut self,
+        &self,
         source_idx: usize,
         mut frame: Frame,
     ) -> Result<Option<Frame>, RelaySwitchError> {
@@ -1016,7 +1042,7 @@ impl RelaySwitch {
 
 
                 // Find destination master (no preference for peer requests)
-                let dest_idx = self.find_master_for_cap(cap_urn, None).ok_or_else(|| {
+                let dest_idx = self.find_master_for_cap(cap_urn, None).await.ok_or_else(|| {
                     RelaySwitchError::NoHandler(cap_urn.clone())
                 })?;
 
@@ -1028,8 +1054,7 @@ impl RelaySwitch {
                     ));
                 }
 
-                self.xid_counter += 1;
-                let xid = MessageId::Uint(self.xid_counter);
+                let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
                 frame.routing_id = Some(xid.clone());
 
 
@@ -1037,13 +1062,13 @@ impl RelaySwitch {
                 let key = (xid.clone(), rid.clone());
 
                 // Record RID → XID mapping for continuation frames
-                self.rid_to_xid.insert(rid.clone(), xid.clone());
+                self.rid_to_xid.write().await.insert(rid.clone(), xid.clone());
 
                 // Record origin (where this request came from)
-                self.origin_map.insert(key.clone(), Some(source_idx));
+                self.origin_map.write().await.insert(key.clone(), Some(source_idx));
 
                 // Register routing
-                self.request_routing.insert(
+                self.request_routing.write().await.insert(
                     key.clone(),
                     RoutingEntry {
                         source_master_idx: Some(source_idx),
@@ -1052,7 +1077,7 @@ impl RelaySwitch {
                 );
 
                 // Mark as peer request (for cleanup tracking)
-                self.peer_requests.insert(key);
+                self.peer_requests.write().await.insert(key);
 
                 // Forward to destination with XID
                 self.write_to_master_idx(dest_idx, &mut frame).await?;
@@ -1077,16 +1102,22 @@ impl RelaySwitch {
                     let rid = frame.id.clone();
                     let key = (xid.clone(), rid.clone());
 
-
                     // Look up routing entry
-                    let entry = self.request_routing.get(&key).ok_or_else(|| {
-                        RelaySwitchError::UnknownRequest(rid.clone())
-                    })?;
+                    let dest_idx = {
+                        let routing = self.request_routing.read().await;
+                        let entry = routing.get(&key).ok_or_else(|| {
+                            RelaySwitchError::UnknownRequest(rid.clone())
+                        })?;
+                        entry.destination_master_idx
+                    };
 
                     // Get origin (where request came from)
-                    let origin_idx = self.origin_map.get(&key).copied().ok_or_else(|| {
-                        RelaySwitchError::Protocol("No origin recorded for request".to_string())
-                    })?;
+                    let origin_idx = {
+                        let origin = self.origin_map.read().await;
+                        origin.get(&key).copied().ok_or_else(|| {
+                            RelaySwitchError::Protocol("No origin recorded for request".to_string())
+                        })?
+                    };
 
                     let is_terminal = frame.frame_type == FrameType::End
                         || frame.frame_type == FrameType::Err;
@@ -1096,17 +1127,22 @@ impl RelaySwitch {
                         None => {
                             // External caller (via send_to_master or execute_cap)
                             // Check if there's a response channel registered
-                            if let Some(tx) = self.external_response_channels.get(&key) {
+                            let tx_opt = {
+                                let channels = self.external_response_channels.read().await;
+                                channels.get(&key).cloned()
+                            };
+
+                            if let Some(tx) = tx_opt {
                                 // Send to external response channel (keep XID for now)
                                 let _ = tx.send(frame.clone());
 
                                 // Cleanup on terminal frame
                                 if is_terminal {
-                                    self.external_response_channels.remove(&key);
-                                    self.request_routing.remove(&key);
-                                    self.origin_map.remove(&key);
-                                    self.peer_requests.remove(&key);
-                                    self.rid_to_xid.remove(&rid);
+                                    self.external_response_channels.write().await.remove(&key);
+                                    self.request_routing.write().await.remove(&key);
+                                    self.origin_map.write().await.remove(&key);
+                                    self.peer_requests.write().await.remove(&key);
+                                    self.rid_to_xid.write().await.remove(&rid);
                                 }
 
                                 return Ok(None);
@@ -1117,10 +1153,10 @@ impl RelaySwitch {
 
                                 // Cleanup on terminal frame
                                 if is_terminal {
-                                    self.request_routing.remove(&key);
-                                    self.origin_map.remove(&key);
-                                    self.peer_requests.remove(&key);
-                                    self.rid_to_xid.remove(&rid);
+                                    self.request_routing.write().await.remove(&key);
+                                    self.origin_map.write().await.remove(&key);
+                                    self.peer_requests.write().await.remove(&key);
+                                    self.rid_to_xid.write().await.remove(&rid);
                                 }
 
                                 return Ok(Some(frame));
@@ -1135,10 +1171,10 @@ impl RelaySwitch {
 
                             // Cleanup on terminal frame
                             if is_terminal {
-                                self.request_routing.remove(&key);
-                                self.origin_map.remove(&key);
-                                self.peer_requests.remove(&key);
-                                self.rid_to_xid.remove(&rid);
+                                self.request_routing.write().await.remove(&key);
+                                self.origin_map.write().await.remove(&key);
+                                self.peer_requests.write().await.remove(&key);
+                                self.rid_to_xid.write().await.remove(&rid);
                             }
 
                             return Ok(None);
@@ -1153,23 +1189,28 @@ impl RelaySwitch {
 
 
                     // Look up XID from RID → XID mapping (added by the REQ)
-                    let xid = self.rid_to_xid.get(&rid).ok_or_else(|| {
-                        RelaySwitchError::UnknownRequest(rid.clone())
-                    })?.clone();
+                    let xid = {
+                        let rid_to_xid = self.rid_to_xid.read().await;
+                        rid_to_xid.get(&rid).ok_or_else(|| {
+                            RelaySwitchError::UnknownRequest(rid.clone())
+                        })?.clone()
+                    };
 
                     let key = (xid.clone(), rid.clone());
 
                     // Look up routing entry
-                    let entry = self.request_routing.get(&key).ok_or_else(|| {
-                        RelaySwitchError::UnknownRequest(rid.clone())
-                    })?;
+                    let dest_idx = {
+                        let routing = self.request_routing.read().await;
+                        let entry = routing.get(&key).ok_or_else(|| {
+                            RelaySwitchError::UnknownRequest(rid.clone())
+                        })?;
+                        entry.destination_master_idx
+                    };
 
                     // Add XID to frame for forwarding
                     frame.routing_id = Some(xid.clone());
 
                     // Forward to destination master (keep XID)
-                    let dest_idx = entry.destination_master_idx;
-
                     self.write_to_master_idx(dest_idx, &mut frame).await?;
                     return Ok(None);
                 }
@@ -1183,18 +1224,21 @@ impl RelaySwitch {
                 let new_caps = parse_caps_from_relay_notify(caps_payload)?;
 
                 // Update master's caps and limits
-                if let Some(master) = self.masters.get_mut(source_idx) {
-                    master.caps = new_caps;
-                    master.manifest = caps_payload.to_vec();
-                    // Extract and update limits from RelayNotify
-                    if let Some(new_limits) = frame.relay_notify_limits() {
-                        master.limits = new_limits;
+                {
+                    let masters = self.masters.read().await;
+                    if let Some(master) = masters.get(source_idx) {
+                        *master.caps.write().await = new_caps;
+                        *master.manifest.write().await = caps_payload.to_vec();
+                        // Extract and update limits from RelayNotify
+                        if let Some(new_limits) = frame.relay_notify_limits() {
+                            *master.limits.write().await = new_limits;
+                        }
                     }
                 }
                 // Rebuild cap_table, aggregate capabilities, and limits from all masters
-                self.rebuild_cap_table();
-                self.rebuild_capabilities();
-                self.rebuild_limits();
+                self.rebuild_cap_table().await;
+                self.rebuild_capabilities().await;
+                self.rebuild_limits().await;
 
                 // Pass through to engine (for visibility)
                 Ok(Some(frame))
@@ -1208,21 +1252,24 @@ impl RelaySwitch {
     }
 
     /// Handle master death: ERR all pending requests, mark unhealthy, rebuild tables.
-    async fn handle_master_death(&mut self, master_idx: usize) -> Result<(), RelaySwitchError> {
-        if !self.masters[master_idx].healthy {
-            return Ok(()); // Already handled
+    async fn handle_master_death(&self, master_idx: usize) -> Result<(), RelaySwitchError> {
+        // Check and update healthy status atomically
+        {
+            let masters = self.masters.read().await;
+            if !masters[master_idx].healthy.load(Ordering::SeqCst) {
+                return Ok(()); // Already handled
+            }
+            masters[master_idx].healthy.store(false, Ordering::SeqCst);
         }
-
-        // Mark unhealthy
-        self.masters[master_idx].healthy = false;
 
         // Find all pending requests for this master
-        let mut dead_requests = Vec::new();
-        for (key, entry) in &self.request_routing {
-            if entry.destination_master_idx == master_idx {
-                dead_requests.push((key.clone(), entry.source_master_idx));
-            }
-        }
+        let dead_requests: Vec<((MessageId, MessageId), Option<usize>)> = {
+            let routing = self.request_routing.read().await;
+            routing.iter()
+                .filter(|(_, entry)| entry.destination_master_idx == master_idx)
+                .map(|(key, entry)| (key.clone(), entry.source_master_idx))
+                .collect()
+        };
 
         // Send ERR for each pending request
         for (key, source_idx) in dead_requests {
@@ -1239,29 +1286,37 @@ impl RelaySwitch {
             match source_idx {
                 None => {
                     // External caller - send to response channel if exists, otherwise log
-                    if let Some(tx) = self.external_response_channels.get(&key) {
+                    let tx_opt = {
+                        let channels = self.external_response_channels.read().await;
+                        channels.get(&key).cloned()
+                    };
+                    if let Some(tx) = tx_opt {
                         let _ = tx.send(err_frame);
-                        self.external_response_channels.remove(&key);
+                        self.external_response_channels.write().await.remove(&key);
                     }
                 }
-                Some(master_idx) => {
+                Some(src_master_idx) => {
                     // Send ERR back to source master
-                    if self.masters[master_idx].healthy {
-                        let _ = self.write_to_master_idx(master_idx, &mut err_frame).await;
+                    let is_healthy = {
+                        let masters = self.masters.read().await;
+                        masters[src_master_idx].healthy.load(Ordering::SeqCst)
+                    };
+                    if is_healthy {
+                        let _ = self.write_to_master_idx(src_master_idx, &mut err_frame).await;
                     }
                 }
             }
 
             // Cleanup routing
-            self.request_routing.remove(&key);
-            self.origin_map.remove(&key);
-            self.peer_requests.remove(&key);
+            self.request_routing.write().await.remove(&key);
+            self.origin_map.write().await.remove(&key);
+            self.peer_requests.write().await.remove(&key);
         }
 
         // Rebuild tables
-        self.rebuild_cap_table();
-        self.rebuild_capabilities();
-        self.rebuild_limits();
+        self.rebuild_cap_table().await;
+        self.rebuild_capabilities().await;
+        self.rebuild_limits().await;
 
         Ok(())
     }
@@ -1271,24 +1326,29 @@ impl RelaySwitch {
     // =========================================================================
 
     /// Rebuild cap_table from all healthy masters.
-    fn rebuild_cap_table(&mut self) {
-        self.cap_table.clear();
-        for (idx, master) in self.masters.iter().enumerate() {
-            if master.healthy {
-                for cap in &master.caps {
-                    self.cap_table.push((cap.clone(), idx));
+    async fn rebuild_cap_table(&self) {
+        let mut new_cap_table = Vec::new();
+        let masters = self.masters.read().await;
+        for (idx, master) in masters.iter().enumerate() {
+            if master.healthy.load(Ordering::SeqCst) {
+                let caps = master.caps.read().await;
+                for cap in caps.iter() {
+                    new_cap_table.push((cap.clone(), idx));
                 }
             }
         }
+        *self.cap_table.write().await = new_cap_table;
     }
 
     /// Rebuild aggregate capabilities (union of all healthy masters).
-    fn rebuild_capabilities(&mut self) {
+    async fn rebuild_capabilities(&self) {
         // Collect all caps from healthy masters
         let mut all_caps: Vec<String> = Vec::new();
-        for master in &self.masters {
-            if master.healthy {
-                all_caps.extend(master.caps.iter().cloned());
+        let masters = self.masters.read().await;
+        for master in masters.iter() {
+            if master.healthy.load(Ordering::SeqCst) {
+                let caps = master.caps.read().await;
+                all_caps.extend(caps.iter().cloned());
             }
         }
 
@@ -1297,22 +1357,24 @@ impl RelaySwitch {
         all_caps.dedup();
 
         // Build manifest as JSON array (same format as RelayNotify payloads)
-        self.aggregate_capabilities = serde_json::to_vec(&all_caps).unwrap_or_default();
+        *self.aggregate_capabilities.write().await = serde_json::to_vec(&all_caps).unwrap_or_default();
     }
 
     /// Rebuild negotiated limits (minimum across all healthy masters).
-    fn rebuild_limits(&mut self) {
+    async fn rebuild_limits(&self) {
         let mut min_max_frame = usize::MAX;
         let mut min_max_chunk = usize::MAX;
 
-        for master in &self.masters {
-            if master.healthy {
-                min_max_frame = min_max_frame.min(master.limits.max_frame);
-                min_max_chunk = min_max_chunk.min(master.limits.max_chunk);
+        let masters = self.masters.read().await;
+        for master in masters.iter() {
+            if master.healthy.load(Ordering::SeqCst) {
+                let limits = master.limits.read().await;
+                min_max_frame = min_max_frame.min(limits.max_frame);
+                min_max_chunk = min_max_chunk.min(limits.max_chunk);
             }
         }
 
-        self.negotiated_limits = Limits {
+        *self.negotiated_limits.write().await = Limits {
             max_frame: if min_max_frame == usize::MAX {
                 crate::bifaci::frame::DEFAULT_MAX_FRAME
             } else {
@@ -1444,12 +1506,12 @@ mod tests {
         let switch = RelaySwitch::new(vec![engine_sock1, engine_sock2]).await.unwrap();
 
         // Verify routing (caps already populated during construction)
-        assert_eq!(switch.find_master_for_cap("cap:in=media:;out=media:", None), Some(0));
-        assert_eq!(switch.find_master_for_cap("cap:in=\"media:void\";op=double;out=\"media:void\"", None), Some(1));
-        assert_eq!(switch.find_master_for_cap("cap:in=\"media:void\";op=unknown;out=\"media:void\"", None), None);
+        assert_eq!(switch.find_master_for_cap("cap:in=media:;out=media:", None).await, Some(0));
+        assert_eq!(switch.find_master_for_cap("cap:in=\"media:void\";op=double;out=\"media:void\"", None).await, Some(1));
+        assert_eq!(switch.find_master_for_cap("cap:in=\"media:void\";op=unknown;out=\"media:void\"", None).await, None);
 
         // Verify aggregate capabilities (plain JSON array)
-        let cap_list: Vec<String> = serde_json::from_slice(switch.capabilities()).unwrap();
+        let cap_list: Vec<String> = serde_json::from_slice(&switch.capabilities().await).unwrap();
         assert_eq!(cap_list.len(), 2);
     }
 
@@ -1484,7 +1546,7 @@ mod tests {
             }
         });
 
-        let mut switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
+        let switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
 
         // Send REQ + END (caps already populated from construction)
         let req_id = MessageId::Uint(1);
@@ -1550,7 +1612,7 @@ mod tests {
             }
         });
 
-        let mut switch = RelaySwitch::new(vec![engine_sock1, engine_sock2]).await.unwrap();
+        let switch = RelaySwitch::new(vec![engine_sock1, engine_sock2]).await.unwrap();
 
         // Caps already populated from construction — send requests directly
         let req1_id = MessageId::Uint(1);
@@ -1576,7 +1638,7 @@ mod tests {
                 &serde_json::json!(["cap:in=media:;out=media:"]), &Limits::default()).await;
         });
 
-        let mut switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
+        let switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
 
         let req = Frame::req(MessageId::Uint(1), "cap:in=\"media:void\";op=unknown;out=\"media:void\"", vec![], "text/plain");
         let result = switch.send_to_master(req, None).await;
@@ -1636,7 +1698,7 @@ mod tests {
             }
         });
 
-        let mut switch = RelaySwitch::new(vec![engine_sock1, engine_sock2]).await.unwrap();
+        let switch = RelaySwitch::new(vec![engine_sock1, engine_sock2]).await.unwrap();
 
         // First request — should go to master 0 (first match)
         let req1_id = MessageId::Uint(1);
@@ -1685,7 +1747,7 @@ mod tests {
             seq.remove(&FlowKey { rid: rid.clone(), xid: xid_clone });
         });
 
-        let mut switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
+        let switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
 
         let req_id = MessageId::Uint(1);
         switch.send_to_master(Frame::req(req_id.clone(), "cap:in=\"media:void\";op=test;out=\"media:void\"", vec![], "text/plain"), None).await.unwrap();
@@ -1705,11 +1767,11 @@ mod tests {
         let switch = RelaySwitch::new(vec![]).await.unwrap();
 
         // Empty switch has no caps
-        let caps: Vec<String> = serde_json::from_slice(switch.capabilities()).unwrap();
+        let caps: Vec<String> = serde_json::from_slice(&switch.capabilities().await).unwrap();
         assert!(caps.is_empty(), "empty switch should have no caps");
 
         // No handler for any cap
-        assert_eq!(switch.find_master_for_cap("cap:in=media:;out=media:", None), None);
+        assert_eq!(switch.find_master_for_cap("cap:in=media:;out=media:", None).await, None);
     }
 
     // TEST433: Capability aggregation deduplicates caps
@@ -1733,7 +1795,7 @@ mod tests {
         let switch = RelaySwitch::new(vec![engine_sock1, engine_sock2]).await.unwrap();
 
         // Caps already populated during construction (plain JSON array)
-        let mut cap_list: Vec<String> = serde_json::from_slice(switch.capabilities()).unwrap();
+        let mut cap_list: Vec<String> = serde_json::from_slice(&switch.capabilities().await).unwrap();
         cap_list.sort();
 
         assert_eq!(cap_list.len(), 3);
@@ -1763,8 +1825,8 @@ mod tests {
         let switch = RelaySwitch::new(vec![engine_sock1, engine_sock2]).await.unwrap();
 
         // Limits already negotiated during construction
-        assert_eq!(switch.limits().max_frame, 1_000_000);
-        assert_eq!(switch.limits().max_chunk, 50_000);
+        assert_eq!(switch.limits().await.max_frame, 1_000_000);
+        assert_eq!(switch.limits().await.max_chunk, 50_000);
     }
 
     // TEST435: URN matching (exact vs accepts())
@@ -1796,7 +1858,7 @@ mod tests {
             }
         });
 
-        let mut switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
+        let switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
 
         // Exact match should work
         let req1_id = MessageId::Uint(1);
@@ -1844,13 +1906,13 @@ mod tests {
         let request = "cap:in=\"media:pdf\";op=generate_thumbnail;out=\"media:image;png;thumbnail\"";
 
         // Without preference: routes to master 1 (specific, closest-specificity)
-        assert_eq!(switch.find_master_for_cap(request, None), Some(1));
+        assert_eq!(switch.find_master_for_cap(request, None).await, Some(1));
 
         // With preference for generic cap: routes to master 0 (generic, via is_comparable)
-        assert_eq!(switch.find_master_for_cap(request, Some(generic_cap)), Some(0));
+        assert_eq!(switch.find_master_for_cap(request, Some(generic_cap)).await, Some(0));
 
         // With preference for specific cap: routes to master 1 (specific, matches preference)
-        assert_eq!(switch.find_master_for_cap(request, Some(specific_cap)), Some(1));
+        assert_eq!(switch.find_master_for_cap(request, Some(specific_cap)).await, Some(1));
     }
 
     // TEST438: find_master_for_cap with preference falls back to closest-specificity
@@ -1873,7 +1935,7 @@ mod tests {
 
         // Preference for an unrelated cap — no equivalent match, falls back to closest-specificity
         let unrelated = "cap:in=\"media:txt;textable\";op=generate_thumbnail;out=\"media:image;png;thumbnail\"";
-        assert_eq!(switch.find_master_for_cap(request, Some(unrelated)), Some(0));
+        assert_eq!(switch.find_master_for_cap(request, Some(unrelated)).await, Some(0));
     }
 
     // TEST439: Without preference, specific request does NOT match generic handler
@@ -1895,10 +1957,10 @@ mod tests {
         // Specific PDF request — without preference, generic handler can't match
         // because request pattern requires pdf tag which generic doesn't have
         let request = "cap:in=\"media:pdf\";op=generate_thumbnail;out=\"media:image;png;thumbnail\"";
-        assert_eq!(switch.find_master_for_cap(request, None), None);
+        assert_eq!(switch.find_master_for_cap(request, None).await, None);
 
         // With preference for generic — now is_comparable finds it
-        assert_eq!(switch.find_master_for_cap(request, Some(generic_cap)), Some(0));
+        assert_eq!(switch.find_master_for_cap(request, Some(generic_cap)).await, Some(0));
     }
 
     // =========================================================================
@@ -1919,8 +1981,8 @@ mod tests {
         let switch = RelaySwitch::new(vec![engine_sock]).await.unwrap();
 
         // Construction succeeded — caps are populated
-        assert_eq!(switch.find_master_for_cap("cap:in=media:;out=media:", None), Some(0));
-        assert_eq!(switch.find_master_for_cap("cap:in=\"media:void\";op=test;out=\"media:void\"", None), Some(0));
+        assert_eq!(switch.find_master_for_cap("cap:in=media:;out=media:", None).await, Some(0));
+        assert_eq!(switch.find_master_for_cap("cap:in=\"media:void\";op=test;out=\"media:void\"", None).await, Some(0));
     }
 
     // TEST488: RelaySwitch construction fails when master's identity verification fails
@@ -2022,16 +2084,16 @@ mod tests {
             slave.run(socket_reader, socket_writer, None).await.unwrap();
         });
 
-        let mut switch = RelaySwitch::new(vec![switch_sock]).await.unwrap();
+        let switch = RelaySwitch::new(vec![switch_sock]).await.unwrap();
 
         // Verify the switch has our echo cap registered
-        let caps_json: Vec<String> = serde_json::from_slice(switch.capabilities()).unwrap();
+        let caps_json: Vec<String> = serde_json::from_slice(&switch.capabilities().await).unwrap();
         assert!(caps_json.iter().any(|c| c.contains("echo")),
             "switch should have echo cap, got: {:?}", caps_json);
 
         // Build request frames using the helper
         let rid = MessageId::new_uuid();
-        let max_chunk = switch.limits().max_chunk;
+        let max_chunk = switch.limits().await.max_chunk;
         let frames = CapArgumentValue::build_request_frames(
             &rid,
             cap_urn_str,
@@ -2163,8 +2225,8 @@ mod tests {
         )]);
 
         let (switch_sock_a, ht_a, st_a) = wire_host(host_a).await;
-        let mut switch = RelaySwitch::new(vec![switch_sock_a]).await.unwrap();
-        assert_eq!(switch.masters.len(), 1);
+        let switch = RelaySwitch::new(vec![switch_sock_a]).await.unwrap();
+        assert_eq!(switch.masters.read().await.len(), 1);
 
         // Add handler B dynamically
         let cap_b = "cap:in=\"media:void\";op=beta;out=\"media:void\"";
@@ -2188,16 +2250,16 @@ mod tests {
         let (switch_sock_b, ht_b, st_b) = wire_host(host_b).await;
         let idx = switch.add_master(switch_sock_b).await.unwrap();
         assert_eq!(idx, 1);
-        assert_eq!(switch.masters.len(), 2);
+        assert_eq!(switch.masters.read().await.len(), 2);
 
         // Verify both caps are in aggregate capabilities
-        let caps_json: Vec<String> = serde_json::from_slice(switch.capabilities()).unwrap();
+        let caps_json: Vec<String> = serde_json::from_slice(&switch.capabilities().await).unwrap();
         assert!(caps_json.iter().any(|c| c.contains("alpha")));
         assert!(caps_json.iter().any(|c| c.contains("beta")));
 
         // Execute against beta (dynamically added master) using send_to_master + build_request_frames
         let rid = MessageId::new_uuid();
-        let max_chunk = switch.limits().max_chunk;
+        let max_chunk = switch.limits().await.max_chunk;
         let frames = CapArgumentValue::build_request_frames(&rid, cap_b, &[], max_chunk);
         for frame in frames {
             switch.send_to_master(frame, None).await.unwrap();
@@ -2334,8 +2396,8 @@ mod tests {
         let (switch_sock_exact, ht_exact, st_exact) = wire_host(host_exact).await;
         let (switch_sock_extra, ht_extra, st_extra) = wire_host(host_extra).await;
 
-        let mut switch = RelaySwitch::new(vec![switch_sock_exact, switch_sock_extra]).await.unwrap();
-        assert_eq!(switch.masters.len(), 2);
+        let switch = RelaySwitch::new(vec![switch_sock_exact, switch_sock_extra]).await.unwrap();
+        assert_eq!(switch.masters.read().await.len(), 2);
 
         // Test 1: Without preferred_cap, routes to exact match (closest specificity)
         let req_cap = "cap:in=\"media:void\";op=test;out=\"media:void\"";
