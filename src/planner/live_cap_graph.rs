@@ -238,6 +238,12 @@ impl LiveCapGraph {
             return;
         }
 
+        // Skip identity caps (passthrough caps that don't transform anything)
+        // These are is_equivalent to the CAP_IDENTITY constant
+        if cap.urn.is_equivalent(&crate::standard::caps::identity_urn()) {
+            return;
+        }
+
         // Parse media URNs
         let from_spec = match MediaUrn::from_string(in_spec_str) {
             Ok(u) => u,
