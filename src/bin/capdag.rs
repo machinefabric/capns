@@ -284,7 +284,7 @@ async fn main() {
     // Create CapDag registry
     tracing::info!("Creating CapDag registry...");
     let registry = match CapRegistry::new().await {
-        Ok(reg) => reg,
+        Ok(reg) => std::sync::Arc::new(reg),
         Err(e) => {
             tracing::error!("Error creating CapDag registry: {}", e);
             process::exit(1);
@@ -293,7 +293,7 @@ async fn main() {
 
     // Parse and validate
     tracing::info!("Parsing and validating DOT graph...");
-    let graph = match parse_dot_to_cap_dag(&dot_content, &registry).await {
+    let graph = match parse_dot_to_cap_dag(&dot_content, registry.as_ref()).await {
         Ok(g) => {
             tracing::info!("Validation successful");
             tracing::info!("  Nodes: {}", g.nodes.len());
@@ -331,7 +331,7 @@ async fn main() {
         let mut initial_inputs = HashMap::new();
         initial_inputs.insert(input_node.clone(), NodeData::FilePath(file.clone()));
 
-        match execute_dag(&graph, plugin_dir.clone(), registry_url.clone(), initial_inputs, dev_binaries.clone()).await {
+        match execute_dag(&graph, plugin_dir.clone(), registry_url.clone(), initial_inputs, dev_binaries.clone(), registry.clone()).await {
             Ok(outputs) => {
                 tracing::info!("Results:");
                 for (node, data) in outputs {

@@ -26,6 +26,7 @@ pub mod collection_input;
 pub mod plan;
 pub mod plan_builder;
 pub mod executor;
+pub mod live_cap_graph;
 
 // Re-exports - Shape types (cardinality + structure)
 pub use cardinality::{
@@ -50,10 +51,14 @@ pub use plan::{
     NodeExecutionResult, NodeId,
 };
 pub use plan_builder::{
-    CapPlanBuilder, ReachableTargetInfo, CapChainStepInfo, CapChainPathInfo,
+    CapPlanBuilder,
     ArgumentResolution, ArgumentInfo, StepArgumentRequirements, PathArgumentRequirements,
 };
 pub use executor::PlanExecutor;
+pub use live_cap_graph::{
+    LiveCapGraph, LiveCapEdge,
+    ReachableTargetInfo, CapChainStepInfo, CapChainPathInfo,
+};
 
 // =============================================================================
 // Error Type

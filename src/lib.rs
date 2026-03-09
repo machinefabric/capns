@@ -113,8 +113,10 @@ pub use planner::{
     CapExecutionPlan, CapNode, CapEdge, EdgeType, ExecutionNodeType, MergeStrategy,
     NodeExecutionResult, CapChainExecutionResult, NodeId,
     // Plan builder
-    CapPlanBuilder, ReachableTargetInfo, CapChainStepInfo, CapChainPathInfo,
+    CapPlanBuilder,
     ArgumentResolution, ArgumentInfo, StepArgumentRequirements, PathArgumentRequirements,
+    // Live cap graph (unified path finding)
+    LiveCapGraph, LiveCapEdge, ReachableTargetInfo, CapChainStepInfo, CapChainPathInfo,
     // Executor
     PlanExecutor,
 };

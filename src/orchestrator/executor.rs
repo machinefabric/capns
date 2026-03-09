@@ -22,7 +22,7 @@ use super::types::{ResolvedEdge, ResolvedGraph};
 use crate::{
     Frame, FrameType, FrameReader, FrameWriter, Limits,
     PluginHostRuntime, RelaySlave, RelaySwitch, PluginRepo,
-    CapManifest, CapUrn, handshake, DEFAULT_MAX_CHUNK,
+    CapManifest, CapUrn, CapRegistry, handshake, DEFAULT_MAX_CHUNK,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -568,8 +568,11 @@ impl ExecutionContext {
     ///
     /// The RelaySwitch starts with no masters. Use `add_master()` or
     /// `add_plugin_host()` to add masters before executing caps.
-    pub async fn new() -> Result<Self, ExecutionError> {
-        let switch = RelaySwitch::new(vec![])
+    ///
+    /// Requires a CapRegistry for the RelaySwitch to use when building
+    /// the LiveCapGraph for path finding queries.
+    pub async fn new(cap_registry: Arc<CapRegistry>) -> Result<Self, ExecutionError> {
+        let switch = RelaySwitch::new(vec![], cap_registry)
             .await
             .map_err(|e| ExecutionError::HostError(format!("RelaySwitch init: {}", e)))?;
 
@@ -1018,6 +1021,7 @@ pub async fn execute_dag(
     registry_url: String,
     initial_inputs: HashMap<String, NodeData>,
     dev_binaries: Vec<PathBuf>,
+    cap_registry: Arc<CapRegistry>,
 ) -> Result<HashMap<String, NodeData>, ExecutionError> {
     tracing::debug!(target: "execute_dag", "Starting...");
 
@@ -1037,7 +1041,7 @@ pub async fn execute_dag(
 
     // 2. Create execution context and add plugin host as master
     tracing::debug!(target: "execute_dag", "Creating execution context...");
-    let mut ctx = ExecutionContext::new().await?;
+    let mut ctx = ExecutionContext::new(cap_registry).await?;
     tracing::debug!(target: "execute_dag", "Adding plugin host...");
     ctx.add_plugin_host(plugins).await?;
     tracing::debug!(target: "execute_dag", "Plugin host added");
