@@ -1352,7 +1352,7 @@ const MODEL_WHISPER: &str = "hf:openai/whisper-base?include=*.json,*.safetensors
 // =============================================================================
 
 const MODEL_MLX_LLM: &str = "hf:mlx-community/Llama-3.2-3B-Instruct-4bit";
-const MODEL_MLX_VISION: &str = "hf:mlx-community/llava-1.5-7b-4bit";
+const MODEL_MLX_VISION: &str = "hf:mlx-community/SmolVLM-Instruct-4bit";
 const MODEL_MLX_EMBED: &str = "hf:mlx-community/all-MiniLM-L6-v2-4bit";
 
 // =============================================================================
