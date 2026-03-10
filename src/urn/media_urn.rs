@@ -184,7 +184,7 @@ pub const MEDIA_DECISION_ARRAY: &str = "media:bool;decision;list;textable";
 ///
 /// This is a newtype wrapper around `TaggedUrn` that enforces the "media"
 /// prefix and provides convenient accessors for common tags.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MediaUrn(TaggedUrn);
 
 impl MediaUrn {
@@ -346,7 +346,20 @@ impl MediaUrn {
     /// Check if a marker tag (tag with wildcard/no value) is present.
     /// A marker tag is stored as key="*" in the tagged URN.
     fn has_marker_tag(&self, tag_name: &str) -> bool {
-        self.0.tags.get(tag_name).map_or(false, |v| v == "*")
+        let result = self.0.tags.get(tag_name).map_or(false, |v| v == "*");
+        // VERBOSE DEBUG: Log when checking for "list" tag
+        if tag_name == "list" {
+            let tag_value = self.0.tags.get(tag_name);
+            tracing::trace!(
+                media_urn = %self.to_string(),
+                tag_name = tag_name,
+                tag_value = ?tag_value,
+                result = result,
+                all_tags = ?self.0.tags,
+                "[MediaUrn] VERBOSE: has_marker_tag('list') check"
+            );
+        }
+        result
     }
 
     /// Check if this represents JSON representation specifically.

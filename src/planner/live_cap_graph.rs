@@ -229,8 +229,11 @@ pub struct CapChainPathInfo {
     pub source_spec: MediaUrn,
     /// Target media URN
     pub target_spec: MediaUrn,
-    /// Total number of steps
+    /// Total number of steps (including cardinality transitions)
     pub total_steps: i32,
+    /// Number of cap steps only (excluding ForEach/Collect/WrapInList)
+    /// This is used for sorting - cardinality transitions don't count as "steps" for user display
+    pub cap_step_count: i32,
     /// Human-readable description
     pub description: String,
 }
@@ -314,9 +317,36 @@ impl LiveCapGraph {
             "[LiveCapGraph] Got caps from registry"
         );
 
+        // VERBOSE: Log all registry caps that have list outputs
+        for cap in &all_caps {
+            let out_spec = cap.urn.out_spec();
+            if out_spec.contains("list") {
+                tracing::info!(
+                    cap_urn = %cap.urn,
+                    out_spec = out_spec,
+                    "[LiveCapGraph] VERBOSE: Registry cap with 'list' in out_spec"
+                );
+            }
+        }
+
+        // VERBOSE: Log all plugin cap URNs
+        tracing::info!(
+            cap_urns_count = cap_urns.len(),
+            "[LiveCapGraph] VERBOSE: Starting to sync plugin cap URNs"
+        );
+        for (idx, cap_urn_str) in cap_urns.iter().enumerate() {
+            if cap_urn_str.contains("list") || cap_urn_str.contains("disbind") {
+                tracing::info!(
+                    idx = idx,
+                    cap_urn = cap_urn_str,
+                    "[LiveCapGraph] VERBOSE: Plugin cap URN with 'list' or 'disbind'"
+                );
+            }
+        }
+
         let mut matched_count = 0;
 
-        for cap_urn_str in cap_urns {
+        for (loop_idx, cap_urn_str) in cap_urns.iter().enumerate() {
             // Parse the cap URN
             let cap_urn = match CapUrn::from_string(cap_urn_str) {
                 Ok(u) => u,
@@ -337,21 +367,65 @@ impl LiveCapGraph {
 
             // Find matching Cap in registry using is_dispatchable
             // A registry cap matches if the plugin's cap can dispatch it
+            // IMPORTANT: Skip identity caps in registry - they match everything due to
+            // media: conforming to all media types, which causes wrong cap matching.
+            let identity_urn = crate::standard::caps::identity_urn();
             let matching_cap = all_caps.iter().find(|registry_cap| {
+                // Skip identity caps - they would match everything
+                if registry_cap.urn.is_equivalent(&identity_urn) {
+                    return false;
+                }
                 cap_urn.is_dispatchable(&registry_cap.urn)
             });
 
+            // VERBOSE: Log disbind cap matching attempts
+            if cap_urn_str.contains("disbind") {
+                tracing::info!(
+                    plugin_cap = %cap_urn,
+                    found_match = matching_cap.is_some(),
+                    "[LiveCapGraph] VERBOSE: Disbind cap matching result"
+                );
+                // Try to find why it might not match
+                for registry_cap in &all_caps {
+                    if registry_cap.urn.to_string().contains("disbind") {
+                        let is_disp = cap_urn.is_dispatchable(&registry_cap.urn);
+                        tracing::info!(
+                            plugin_cap = %cap_urn,
+                            registry_cap = %registry_cap.urn,
+                            is_dispatchable = is_disp,
+                            "[LiveCapGraph] VERBOSE: Disbind cap vs registry cap dispatchable check"
+                        );
+                    }
+                }
+            }
+
+            // VERBOSE: Log every match result
+            tracing::info!(
+                loop_idx = loop_idx,
+                cap_urn = %cap_urn,
+                has_match = matching_cap.is_some(),
+                "[LiveCapGraph] VERBOSE: Cap match result"
+            );
+
             match matching_cap {
                 Some(cap) => {
-                    tracing::debug!(
+                    // VERBOSE: Always log matched caps with list outputs
+                    let out_spec = cap.urn.out_spec();
+                    tracing::info!(
                         plugin_cap = %cap_urn,
                         registry_cap = %cap.urn,
                         in_spec = cap.urn.in_spec(),
-                        out_spec = cap.urn.out_spec(),
-                        "[LiveCapGraph] Matched cap, calling add_cap"
+                        out_spec = out_spec,
+                        out_spec_contains_list = out_spec.contains("list"),
+                        "[LiveCapGraph] VERBOSE: Matched cap - about to call add_cap"
                     );
                     self.add_cap(cap);
                     matched_count += 1;
+                    tracing::info!(
+                        plugin_cap = %cap_urn,
+                        edge_count_after = self.edges.len(),
+                        "[LiveCapGraph] VERBOSE: After add_cap"
+                    );
                 }
                 None => {
                     // Cap not in registry - this is an error condition.
@@ -428,6 +502,19 @@ impl LiveCapGraph {
         let from_canonical = from_spec.to_string();
         let to_canonical = to_spec.to_string();
         let cap_canonical = cap.urn.to_string();
+
+        // VERBOSE: Log when adding edge with list output
+        let to_spec_is_list = to_spec.is_list();
+        if to_canonical.contains("list") || to_spec_is_list {
+            tracing::info!(
+                cap_urn = %cap.urn,
+                out_spec_str = out_spec_str,
+                to_canonical = to_canonical,
+                to_spec_is_list = to_spec_is_list,
+                edge_idx = self.edges.len(),
+                "[LiveCapGraph] VERBOSE: add_cap creating edge with LIST output"
+            );
+        }
 
         // Determine cardinality from media URNs
         let input_cardinality = InputCardinality::from_media_urn(&from_canonical);
@@ -506,19 +593,59 @@ impl LiveCapGraph {
     /// results back into a list, the path finding will need to handle this dynamically
     /// or the executor will handle the implicit collection.
     fn insert_cardinality_transitions(&mut self) {
+        tracing::info!(
+            total_edges = self.edges.len(),
+            "[LiveCapGraph] VERBOSE: Starting insert_cardinality_transitions"
+        );
+
+        // VERBOSE: Log ALL edges and their is_list status
+        let mut list_edge_count = 0;
+        for (idx, edge) in self.edges.iter().enumerate() {
+            let is_list = edge.to_spec.is_list();
+            let to_spec_str = edge.to_spec.to_string();
+
+            // Log every edge that has "list" in its to_spec string OR is_list returns true
+            if to_spec_str.contains("list") || is_list {
+                list_edge_count += 1;
+                tracing::info!(
+                    edge_idx = idx,
+                    to_spec = %edge.to_spec,
+                    to_spec_str = to_spec_str,
+                    is_list_method = is_list,
+                    contains_list_str = to_spec_str.contains("list"),
+                    edge_type = ?std::mem::discriminant(&edge.edge_type),
+                    "[LiveCapGraph] VERBOSE: Edge with 'list' - is_list() result"
+                );
+            }
+        }
+        tracing::info!(
+            list_edge_count = list_edge_count,
+            "[LiveCapGraph] VERBOSE: Edges containing 'list' in to_spec"
+        );
+
         // Collect all unique list-typed output specs from existing edges
+        // Use BTreeSet for deterministic iteration order (sorted by MediaUrn)
         let list_outputs: Vec<MediaUrn> = self.edges
             .iter()
             .filter(|edge| edge.to_spec.is_list())
             .map(|edge| edge.to_spec.clone())
-            .collect::<std::collections::HashSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
 
         tracing::info!(
             list_output_count = list_outputs.len(),
+            edge_count = self.edges.len(),
             "[LiveCapGraph] insert_cardinality_transitions: found list-typed outputs"
         );
+
+        // VERBOSE: Log the actual list outputs
+        for list_out in &list_outputs {
+            tracing::info!(
+                list_output = %list_out,
+                "[LiveCapGraph] VERBOSE: List output that will get ForEach edge"
+            );
+        }
 
         if list_outputs.is_empty() {
             return;
@@ -585,13 +712,14 @@ impl LiveCapGraph {
     /// 3. After processing the singular items, we need to collect back to page;list
     fn insert_collect_edges_for_existing_lists(&mut self) {
         // Find all list specs that exist as cap outputs (these are "real" list types)
+        // Use BTreeSet for deterministic iteration order (sorted by MediaUrn)
         let existing_list_outputs: Vec<MediaUrn> = self.edges
             .iter()
             .filter(|edge| {
                 matches!(edge.edge_type, LiveCapEdgeType::Cap { .. }) && edge.to_spec.is_list()
             })
             .map(|edge| edge.to_spec.clone())
-            .collect::<std::collections::HashSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
 
@@ -747,6 +875,11 @@ impl LiveCapGraph {
         let mut current_path: Vec<CapChainStepInfo> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
 
+        tracing::info!(
+            "find_paths_to_exact_target: source={} target={} max_depth={} max_paths={}",
+            source, target, max_depth, max_paths
+        );
+
         self.dfs_find_paths(
             source,
             target,
@@ -756,6 +889,11 @@ impl LiveCapGraph {
             &mut all_paths,
             max_depth,
             max_paths,
+        );
+
+        tracing::info!(
+            "find_paths_to_exact_target: found {} paths (max_paths was {})",
+            all_paths.len(), max_paths
         );
 
         // Sort paths deterministically
@@ -789,11 +927,15 @@ impl LiveCapGraph {
                 .collect::<Vec<_>>()
                 .join(" → ");
 
+            // Count only cap steps (not ForEach/Collect/WrapInList) for sorting
+            let cap_step_count = current_path.iter().filter(|s| s.is_cap()).count() as i32;
+
             all_paths.push(CapChainPathInfo {
                 steps: current_path.clone(),
                 source_spec: source.clone(),
                 target_spec: target.clone(),
                 total_steps: current_path.len() as i32,
+                cap_step_count,
                 description,
             });
             return;
@@ -867,11 +1009,12 @@ impl LiveCapGraph {
     /// Compare two paths for deterministic ordering.
     ///
     /// Sort by:
-    /// 1. total_steps (ascending - shorter paths first)
+    /// 1. cap_step_count (ascending - fewer actual cap steps first)
+    ///    Note: ForEach/Collect/WrapInList don't count as "steps" for sorting
     /// 2. total specificity (descending - more specific first)
     /// 3. cap URNs lexicographically (for tie-breaking stability)
     fn compare_paths(a: &CapChainPathInfo, b: &CapChainPathInfo) -> Ordering {
-        a.total_steps.cmp(&b.total_steps)
+        a.cap_step_count.cmp(&b.cap_step_count)
             .then_with(|| {
                 // Higher specificity first
                 let spec_a: usize = a.steps.iter().map(|s| s.specificity()).sum();
