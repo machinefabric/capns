@@ -301,6 +301,28 @@ impl<E: CapExecutor> PlanExecutor<E> {
                     Some(output),
                 ))
             }
+
+            ExecutionNodeType::WrapInList { .. } => {
+                // WrapInList is a pass-through — find the predecessor's output
+                // and forward it unchanged. At this level the data doesn't change,
+                // only the type annotation (scalar → list-of-one).
+                let predecessor_output = self.plan.edges.iter()
+                    .find(|e| e.to_node == node.id)
+                    .and_then(|e| node_outputs.get(&e.from_node))
+                    .cloned();
+
+                Ok((
+                    NodeExecutionResult {
+                        node_id: node.id.clone(),
+                        success: true,
+                        binary_output: None,
+                        text_output: predecessor_output.as_ref().map(|v| v.to_string()),
+                        error: None,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    },
+                    predecessor_output,
+                ))
+            }
         }
     }
 

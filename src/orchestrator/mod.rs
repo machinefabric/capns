@@ -25,6 +25,7 @@ pub mod validation;
 pub mod parser;
 pub mod executor;
 pub mod plan_converter;
+pub mod cbor_util;
 
 // Re-export key types
 pub use types::{
@@ -37,6 +38,8 @@ pub use types::{
 pub use parser::parse_dot_to_cap_dag;
 
 pub use plan_converter::plan_to_resolved_graph;
+
+pub use cbor_util::{split_cbor_array, assemble_cbor_array, split_cbor_sequence, assemble_cbor_sequence, CborUtilError};
 
 pub use executor::{
     ExecutionError,

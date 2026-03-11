@@ -61,6 +61,10 @@ pub enum ParseOrchestrationError {
     #[error("Graph is not a DAG, contains cycle involving nodes: {cycle_nodes:?}")]
     NotADag { cycle_nodes: Vec<String> },
 
+    /// Graph contains unsupported or undecomposed control-flow nodes
+    #[error("Invalid graph: {message}")]
+    InvalidGraph { message: String },
+
     /// Cap URN parsing error
     #[error("Failed to parse Cap URN: {0}")]
     CapUrnParseError(String),

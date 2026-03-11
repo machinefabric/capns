@@ -81,6 +81,18 @@ pub enum ExecutionNodeType {
         output_count: usize,
     },
 
+    /// WrapInList: wraps a single scalar value into a list-of-one.
+    ///
+    /// Auto-inserted when a scalar output feeds into a list-expecting cap.
+    /// At execution time this is a pass-through — the data flows unchanged,
+    /// only the type annotation changes from scalar to list.
+    WrapInList {
+        /// Media URN of the incoming scalar item
+        item_media_urn: String,
+        /// Media URN of the outgoing list (item + list tag)
+        list_media_urn: String,
+    },
+
     /// Input slot: entry point for user-provided files
     InputSlot {
         /// Name of this input slot
@@ -194,6 +206,18 @@ impl CapNode {
                 output_media_urn: None,
             },
             description: Some("Fan-in: collect results into vector".to_string()),
+        }
+    }
+
+    /// Create a WrapInList node (1→n: wrap scalar in list-of-one)
+    pub fn wrap_in_list(id: &str, item_media_urn: &str, list_media_urn: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            node_type: ExecutionNodeType::WrapInList {
+                item_media_urn: item_media_urn.to_string(),
+                list_media_urn: list_media_urn.to_string(),
+            },
+            description: Some("WrapInList: wrap scalar in list-of-one".to_string()),
         }
     }
 
@@ -518,6 +542,299 @@ impl CapExecutionPlan {
         plan.add_edge(CapEdge::direct(cap_id, output_id));
 
         plan
+    }
+
+    /// Find the first ForEach node in the plan, if any.
+    /// Returns the node ID of the ForEach node.
+    pub fn find_first_foreach(&self) -> Option<&NodeId> {
+        // Use topological order to find the first ForEach node in execution order
+        let topo = self.topological_order().ok()?;
+        for node in topo {
+            if matches!(node.node_type, ExecutionNodeType::ForEach { .. }) {
+                return Some(&node.id);
+            }
+        }
+        None
+    }
+
+    /// Check whether this plan contains any ForEach or Collect nodes.
+    pub fn has_foreach_or_collect(&self) -> bool {
+        self.nodes.values().any(|n| {
+            matches!(n.node_type, ExecutionNodeType::ForEach { .. } | ExecutionNodeType::Collect { .. })
+        })
+    }
+
+    /// Extract a sub-plan containing all nodes from entry points up to (and including)
+    /// the specified target node. The target node becomes the source of a synthetic Output node.
+    ///
+    /// Used to extract the "prefix" before a ForEach node — everything needed to produce the
+    /// list that the ForEach will iterate over.
+    ///
+    /// The resulting plan has the same InputSlot(s) as the original and a new Output node
+    /// connected to `target_node_id`.
+    pub fn extract_prefix_to(&self, target_node_id: &str) -> Result<Self, PlannerError> {
+        if !self.nodes.contains_key(target_node_id) {
+            return Err(PlannerError::Internal(format!(
+                "Target node '{}' not found in plan", target_node_id
+            )));
+        }
+
+        // BFS backward from target to find all ancestor nodes (including target)
+        let mut ancestors = std::collections::HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(target_node_id.to_string());
+        ancestors.insert(target_node_id.to_string());
+
+        // Build reverse adjacency: to_node -> [from_node]
+        let mut reverse_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        for edge in &self.edges {
+            reverse_adj.entry(edge.to_node.as_str())
+                .or_default()
+                .push(edge.from_node.as_str());
+        }
+
+        while let Some(node_id) = queue.pop_front() {
+            if let Some(parents) = reverse_adj.get(node_id.as_str()) {
+                for &parent in parents {
+                    if ancestors.insert(parent.to_string()) {
+                        queue.push_back(parent.to_string());
+                    }
+                }
+            }
+        }
+
+        // Build the sub-plan with only ancestor nodes
+        let mut sub_plan = CapExecutionPlan::new(&format!("{} [prefix to {}]", self.name, target_node_id));
+
+        for node_id in &ancestors {
+            if let Some(node) = self.nodes.get(node_id) {
+                // Skip Output nodes from the original plan — we'll add our own
+                if matches!(node.node_type, ExecutionNodeType::Output { .. }) {
+                    continue;
+                }
+                sub_plan.add_node(node.clone());
+            }
+        }
+
+        // Add edges where both endpoints are in the ancestor set and not Output nodes
+        for edge in &self.edges {
+            if ancestors.contains(&edge.from_node) && ancestors.contains(&edge.to_node) {
+                let from_is_output = self.nodes.get(&edge.from_node)
+                    .map_or(false, |n| matches!(n.node_type, ExecutionNodeType::Output { .. }));
+                let to_is_output = self.nodes.get(&edge.to_node)
+                    .map_or(false, |n| matches!(n.node_type, ExecutionNodeType::Output { .. }));
+                if !from_is_output && !to_is_output {
+                    sub_plan.add_edge(edge.clone());
+                }
+            }
+        }
+
+        // Add synthetic Output node connected to the target
+        let output_id = format!("{}_prefix_output", target_node_id);
+        sub_plan.add_node(CapNode::output(&output_id, "prefix_result", target_node_id));
+        sub_plan.add_edge(CapEdge::direct(target_node_id, &output_id));
+
+        sub_plan.validate()?;
+        Ok(sub_plan)
+    }
+
+    /// Extract the ForEach body as a standalone execution plan.
+    ///
+    /// Creates a new plan with:
+    /// - A synthetic InputSlot with `item_media_urn` (the per-item type, without list tag)
+    /// - All nodes between `body_entry` and `body_exit` (inclusive)
+    /// - A synthetic Output connected to `body_exit`
+    ///
+    /// The result can be converted to a ResolvedGraph and executed independently per item.
+    pub fn extract_foreach_body(
+        &self,
+        foreach_node_id: &str,
+        item_media_urn: &str,
+    ) -> Result<Self, PlannerError> {
+        let foreach_node = self.nodes.get(foreach_node_id).ok_or_else(|| {
+            PlannerError::Internal(format!("ForEach node '{}' not found", foreach_node_id))
+        })?;
+
+        let (body_entry, body_exit) = match &foreach_node.node_type {
+            ExecutionNodeType::ForEach { body_entry, body_exit, .. } => {
+                (body_entry.clone(), body_exit.clone())
+            }
+            _ => {
+                return Err(PlannerError::Internal(format!(
+                    "Node '{}' is not a ForEach node", foreach_node_id
+                )));
+            }
+        };
+
+        // BFS forward from body_entry to find all reachable body nodes
+        // Stop at: Output nodes, Collect nodes, and nodes outside the body
+        let mut body_nodes = std::collections::HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(body_entry.clone());
+        body_nodes.insert(body_entry.clone());
+
+        // Build forward adjacency: from_node -> [(to_node, edge)]
+        let mut forward_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        for edge in &self.edges {
+            forward_adj.entry(edge.from_node.as_str())
+                .or_default()
+                .push(edge.to_node.as_str());
+        }
+
+        while let Some(node_id) = queue.pop_front() {
+            // Don't traverse past body_exit
+            if node_id == body_exit && node_id != body_entry {
+                continue;
+            }
+            if let Some(children) = forward_adj.get(node_id.as_str()) {
+                for &child in children {
+                    // Don't include Output or Collect nodes from the original plan
+                    if let Some(child_node) = self.nodes.get(child) {
+                        if matches!(child_node.node_type, ExecutionNodeType::Output { .. } | ExecutionNodeType::Collect { .. }) {
+                            // Include body_exit but stop here
+                            if child == body_exit {
+                                body_nodes.insert(child.to_string());
+                            }
+                            continue;
+                        }
+                    }
+                    if body_nodes.insert(child.to_string()) {
+                        queue.push_back(child.to_string());
+                    }
+                }
+            }
+        }
+
+        // Ensure body_exit is included
+        body_nodes.insert(body_exit.clone());
+
+        // Build the body sub-plan
+        let mut body_plan = CapExecutionPlan::new(
+            &format!("{} [foreach body {}]", self.name, foreach_node_id)
+        );
+
+        // Add synthetic InputSlot for the per-item input
+        let input_id = format!("{}_body_input", foreach_node_id);
+        body_plan.add_node(CapNode::input_slot(
+            &input_id,
+            "item_input",
+            item_media_urn,
+            InputCardinality::Single,
+        ));
+
+        // Add body nodes
+        for node_id in &body_nodes {
+            if let Some(node) = self.nodes.get(node_id) {
+                body_plan.add_node(node.clone());
+            }
+        }
+
+        // Add edge from synthetic input to body_entry
+        body_plan.add_edge(CapEdge::direct(&input_id, &body_entry));
+
+        // Add edges where both endpoints are body nodes
+        for edge in &self.edges {
+            if body_nodes.contains(&edge.from_node) && body_nodes.contains(&edge.to_node) {
+                // Skip iteration/collection edges — they connect to ForEach/Collect, not body internals
+                if matches!(edge.edge_type, EdgeType::Iteration | EdgeType::Collection) {
+                    continue;
+                }
+                body_plan.add_edge(edge.clone());
+            }
+        }
+
+        // Add synthetic Output connected to body_exit
+        let output_id = format!("{}_body_output", foreach_node_id);
+        body_plan.add_node(CapNode::output(&output_id, "item_result", &body_exit));
+        body_plan.add_edge(CapEdge::direct(&body_exit, &output_id));
+
+        body_plan.validate()?;
+        Ok(body_plan)
+    }
+
+    /// Extract a sub-plan from the specified source node to all reachable Output nodes.
+    ///
+    /// Used to extract the "suffix" after a Collect node — everything needed to process
+    /// the collected results into final output.
+    ///
+    /// The resulting plan has a synthetic InputSlot connected to `source_node_id` and
+    /// preserves the original Output nodes.
+    pub fn extract_suffix_from(
+        &self,
+        source_node_id: &str,
+        source_media_urn: &str,
+    ) -> Result<Self, PlannerError> {
+        if !self.nodes.contains_key(source_node_id) {
+            return Err(PlannerError::Internal(format!(
+                "Source node '{}' not found in plan", source_node_id
+            )));
+        }
+
+        // BFS forward from source to find all descendants (including source)
+        let mut descendants = std::collections::HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(source_node_id.to_string());
+        descendants.insert(source_node_id.to_string());
+
+        let mut forward_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        for edge in &self.edges {
+            forward_adj.entry(edge.from_node.as_str())
+                .or_default()
+                .push(edge.to_node.as_str());
+        }
+
+        while let Some(node_id) = queue.pop_front() {
+            if let Some(children) = forward_adj.get(node_id.as_str()) {
+                for &child in children {
+                    if descendants.insert(child.to_string()) {
+                        queue.push_back(child.to_string());
+                    }
+                }
+            }
+        }
+
+        let mut sub_plan = CapExecutionPlan::new(
+            &format!("{} [suffix from {}]", self.name, source_node_id)
+        );
+
+        // Add synthetic InputSlot to feed into source_node
+        let input_id = format!("{}_suffix_input", source_node_id);
+        sub_plan.add_node(CapNode::input_slot(
+            &input_id,
+            "collected_input",
+            source_media_urn,
+            InputCardinality::Single,
+        ));
+
+        // Add descendant nodes (skip the source node itself if it's a Collect —
+        // it's being replaced by the InputSlot)
+        for node_id in &descendants {
+            if node_id == source_node_id {
+                continue; // replaced by synthetic InputSlot
+            }
+            if let Some(node) = self.nodes.get(node_id) {
+                // Skip InputSlot nodes from the original plan
+                if matches!(node.node_type, ExecutionNodeType::InputSlot { .. }) {
+                    continue;
+                }
+                sub_plan.add_node(node.clone());
+            }
+        }
+
+        // Connect synthetic input to the successors of source_node
+        for edge in &self.edges {
+            if edge.from_node == source_node_id && descendants.contains(&edge.to_node) {
+                sub_plan.add_edge(CapEdge::direct(&input_id, &edge.to_node));
+            } else if descendants.contains(&edge.from_node)
+                && descendants.contains(&edge.to_node)
+                && edge.from_node != source_node_id
+            {
+                sub_plan.add_edge(edge.clone());
+            }
+        }
+
+        sub_plan.validate()?;
+        Ok(sub_plan)
     }
 
     /// Create a linear chain of caps (each output feeds into next input).
@@ -1173,5 +1490,279 @@ mod tests {
         assert!(plan.get_node("input_slot").is_some());
         assert!(plan.get_node("output").is_some());
         assert!(plan.get_node("nonexistent").is_none());
+    }
+
+    // Helper: build a plan with ForEach (closed with Collect)
+    // Topology: input_slot → cap_0(disbind) → foreach → body_cap_0 → body_cap_1 → collect → cap_post → output
+    fn build_foreach_plan_with_collect() -> CapExecutionPlan {
+        let mut plan = CapExecutionPlan::new("ForEach test plan");
+
+        // input_slot → cap_0 → foreach --iteration--> body_cap_0 → body_cap_1 --collection--> collect → cap_post → output
+        plan.add_node(CapNode::input_slot("input_slot", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;out=media:pdf-page;list"));  // disbind
+        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "body_cap_0", "body_cap_1"));
+        plan.add_node(CapNode::cap("body_cap_0", "cap:in=media:pdf-page;out=media:text;textable"));
+        plan.add_node(CapNode::cap("body_cap_1", "cap:in=media:text;textable;out=media:bool;decision;textable"));
+        plan.add_node(CapNode::collect("collect_0", vec!["body_cap_1".to_string()]));
+        plan.add_node(CapNode::cap("cap_post", "cap:in=media:bool;decision;list;textable;out=media:json;textable"));
+        plan.add_node(CapNode::output("output", "result", "cap_post"));
+
+        plan.add_edge(CapEdge::direct("input_slot", "cap_0"));
+        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(CapEdge::iteration("foreach_0", "body_cap_0"));
+        plan.add_edge(CapEdge::direct("body_cap_0", "body_cap_1"));
+        plan.add_edge(CapEdge::collection("body_cap_1", "collect_0"));
+        plan.add_edge(CapEdge::direct("collect_0", "cap_post"));
+        plan.add_edge(CapEdge::direct("cap_post", "output"));
+
+        plan
+    }
+
+    // Helper: build a plan with unclosed ForEach (no Collect)
+    // Topology: input_slot → cap_0(disbind) → foreach → body_cap_0 → output
+    fn build_foreach_plan_unclosed() -> CapExecutionPlan {
+        let mut plan = CapExecutionPlan::new("Unclosed ForEach test plan");
+
+        plan.add_node(CapNode::input_slot("input_slot", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;out=media:pdf-page;list"));
+        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "body_cap_0", "body_cap_0"));
+        plan.add_node(CapNode::cap("body_cap_0", "cap:in=media:pdf-page;out=media:bool;decision;textable"));
+        plan.add_node(CapNode::output("output", "result", "body_cap_0"));
+
+        plan.add_edge(CapEdge::direct("input_slot", "cap_0"));
+        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(CapEdge::iteration("foreach_0", "body_cap_0"));
+        plan.add_edge(CapEdge::direct("body_cap_0", "output"));
+
+        plan
+    }
+
+    // TEST750: find_first_foreach detects ForEach in a plan
+    #[test]
+    fn test750_find_first_foreach() {
+        let plan = build_foreach_plan_with_collect();
+        let foreach_id = plan.find_first_foreach();
+        assert_eq!(foreach_id, Some(&"foreach_0".to_string()));
+    }
+
+    // TEST751: find_first_foreach returns None for linear plans
+    #[test]
+    fn test751_find_first_foreach_linear() {
+        let plan = CapExecutionPlan::linear_chain(
+            &["cap:a", "cap:b"],
+            "media:pdf",
+            "media:png",
+            &["input_a", "input_b"],
+        );
+        assert_eq!(plan.find_first_foreach(), None);
+    }
+
+    // TEST752: has_foreach_or_collect detects ForEach/Collect
+    #[test]
+    fn test752_has_foreach_or_collect() {
+        let foreach_plan = build_foreach_plan_with_collect();
+        assert!(foreach_plan.has_foreach_or_collect());
+
+        let linear_plan = CapExecutionPlan::linear_chain(
+            &["cap:a"],
+            "media:pdf",
+            "media:png",
+            &["input_a"],
+        );
+        assert!(!linear_plan.has_foreach_or_collect());
+    }
+
+    // TEST753: extract_prefix_to extracts input_slot → cap_0 as a standalone plan
+    #[test]
+    fn test753_extract_prefix_to() {
+        let plan = build_foreach_plan_with_collect();
+
+        // Extract prefix up to cap_0 (the disbind cap that produces the list)
+        let prefix = plan.extract_prefix_to("cap_0").unwrap();
+
+        // Should have: input_slot, cap_0, and a synthetic output
+        assert_eq!(prefix.nodes.len(), 3);
+        assert!(prefix.get_node("input_slot").is_some());
+        assert!(prefix.get_node("cap_0").is_some());
+        assert!(prefix.get_node("cap_0_prefix_output").is_some());
+        assert_eq!(prefix.entry_nodes.len(), 1);
+        assert_eq!(prefix.output_nodes.len(), 1);
+        assert!(prefix.validate().is_ok());
+
+        // Verify topological order works (no cycles)
+        let order = prefix.topological_order().unwrap();
+        assert_eq!(order.len(), 3);
+    }
+
+    // TEST754: extract_prefix_to with nonexistent node returns error
+    #[test]
+    fn test754_extract_prefix_nonexistent() {
+        let plan = build_foreach_plan_with_collect();
+        let result = plan.extract_prefix_to("nonexistent");
+        assert!(result.is_err());
+    }
+
+    // TEST755: extract_foreach_body extracts body as standalone plan
+    #[test]
+    fn test755_extract_foreach_body() {
+        let plan = build_foreach_plan_with_collect();
+
+        let body = plan.extract_foreach_body("foreach_0", "media:pdf-page").unwrap();
+
+        // Should have: synthetic input, body_cap_0, body_cap_1, synthetic output
+        assert_eq!(body.nodes.len(), 4);
+        assert!(body.get_node("foreach_0_body_input").is_some());
+        assert!(body.get_node("body_cap_0").is_some());
+        assert!(body.get_node("body_cap_1").is_some());
+        assert!(body.get_node("foreach_0_body_output").is_some());
+        assert_eq!(body.entry_nodes.len(), 1);
+        assert_eq!(body.output_nodes.len(), 1);
+        assert!(body.validate().is_ok());
+
+        // Verify it does NOT contain ForEach or Collect nodes
+        assert!(!body.has_foreach_or_collect());
+
+        // Verify the synthetic InputSlot has the item media URN
+        if let Some(input_node) = body.get_node("foreach_0_body_input") {
+            match &input_node.node_type {
+                ExecutionNodeType::InputSlot { expected_media_urn, cardinality, .. } => {
+                    assert_eq!(expected_media_urn, "media:pdf-page");
+                    assert!(matches!(cardinality, InputCardinality::Single));
+                }
+                _ => panic!("Expected InputSlot node"),
+            }
+        }
+
+        // Verify topological order
+        let order = body.topological_order().unwrap();
+        assert_eq!(order.len(), 4);
+    }
+
+    // TEST756: extract_foreach_body for unclosed ForEach (single body cap)
+    #[test]
+    fn test756_extract_foreach_body_unclosed() {
+        let plan = build_foreach_plan_unclosed();
+
+        let body = plan.extract_foreach_body("foreach_0", "media:pdf-page").unwrap();
+
+        // Should have: synthetic input, body_cap_0, synthetic output
+        assert_eq!(body.nodes.len(), 3);
+        assert!(body.get_node("foreach_0_body_input").is_some());
+        assert!(body.get_node("body_cap_0").is_some());
+        assert!(body.get_node("foreach_0_body_output").is_some());
+        assert!(body.validate().is_ok());
+        assert!(!body.has_foreach_or_collect());
+    }
+
+    // TEST757: extract_foreach_body fails for non-ForEach node
+    #[test]
+    fn test757_extract_foreach_body_wrong_type() {
+        let plan = build_foreach_plan_with_collect();
+        let result = plan.extract_foreach_body("cap_0", "media:pdf-page");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not a ForEach node"), "got: {}", err);
+    }
+
+    // TEST758: extract_suffix_from extracts collect → cap_post → output
+    #[test]
+    fn test758_extract_suffix_from() {
+        let plan = build_foreach_plan_with_collect();
+
+        let suffix = plan.extract_suffix_from("collect_0", "media:bool;decision;list;textable").unwrap();
+
+        // Should have: synthetic input, cap_post, output
+        assert_eq!(suffix.nodes.len(), 3);
+        assert!(suffix.get_node("collect_0_suffix_input").is_some());
+        assert!(suffix.get_node("cap_post").is_some());
+        assert!(suffix.get_node("output").is_some());
+        assert_eq!(suffix.entry_nodes.len(), 1);
+        assert_eq!(suffix.output_nodes.len(), 1);
+        assert!(suffix.validate().is_ok());
+
+        // Should not contain ForEach/Collect
+        assert!(!suffix.has_foreach_or_collect());
+    }
+
+    // TEST759: extract_suffix_from fails for nonexistent node
+    #[test]
+    fn test759_extract_suffix_nonexistent() {
+        let plan = build_foreach_plan_with_collect();
+        let result = plan.extract_suffix_from("nonexistent", "media:whatever");
+        assert!(result.is_err());
+    }
+
+    // TEST760: Full decomposition roundtrip — prefix + body + suffix cover all cap nodes
+    #[test]
+    fn test760_decomposition_covers_all_caps() {
+        let plan = build_foreach_plan_with_collect();
+
+        // Get all original cap node IDs
+        let original_caps: std::collections::HashSet<String> = plan.nodes.values()
+            .filter(|n| n.is_cap())
+            .map(|n| n.id.clone())
+            .collect();
+        assert_eq!(original_caps.len(), 4); // cap_0, body_cap_0, body_cap_1, cap_post
+
+        let prefix = plan.extract_prefix_to("cap_0").unwrap();
+        let body = plan.extract_foreach_body("foreach_0", "media:pdf-page").unwrap();
+        let suffix = plan.extract_suffix_from("collect_0", "media:bool;decision;list;textable").unwrap();
+
+        // Collect cap nodes from each sub-plan
+        let prefix_caps: std::collections::HashSet<String> = prefix.nodes.values()
+            .filter(|n| n.is_cap())
+            .map(|n| n.id.clone())
+            .collect();
+        let body_caps: std::collections::HashSet<String> = body.nodes.values()
+            .filter(|n| n.is_cap())
+            .map(|n| n.id.clone())
+            .collect();
+        let suffix_caps: std::collections::HashSet<String> = suffix.nodes.values()
+            .filter(|n| n.is_cap())
+            .map(|n| n.id.clone())
+            .collect();
+
+        // Union of all sub-plan caps should equal original caps
+        let mut all_caps = prefix_caps;
+        all_caps.extend(body_caps);
+        all_caps.extend(suffix_caps);
+        assert_eq!(all_caps, original_caps,
+            "Decomposition should cover all cap nodes. Missing: {:?}",
+            original_caps.difference(&all_caps).collect::<Vec<_>>());
+    }
+
+    // TEST761: Prefix sub-plan can be topologically sorted (is a valid DAG)
+    #[test]
+    fn test761_prefix_is_dag() {
+        let plan = build_foreach_plan_with_collect();
+        let prefix = plan.extract_prefix_to("cap_0").unwrap();
+        assert!(prefix.topological_order().is_ok());
+    }
+
+    // TEST762: Body sub-plan can be topologically sorted (is a valid DAG)
+    #[test]
+    fn test762_body_is_dag() {
+        let plan = build_foreach_plan_with_collect();
+        let body = plan.extract_foreach_body("foreach_0", "media:pdf-page").unwrap();
+        assert!(body.topological_order().is_ok());
+    }
+
+    // TEST763: Suffix sub-plan can be topologically sorted (is a valid DAG)
+    #[test]
+    fn test763_suffix_is_dag() {
+        let plan = build_foreach_plan_with_collect();
+        let suffix = plan.extract_suffix_from("collect_0", "media:bool;decision;list;textable").unwrap();
+        assert!(suffix.topological_order().is_ok());
+    }
+
+    // TEST764: extract_prefix_to with InputSlot as target (trivial prefix)
+    #[test]
+    fn test764_extract_prefix_to_input_slot() {
+        let plan = build_foreach_plan_with_collect();
+        let prefix = plan.extract_prefix_to("input_slot").unwrap();
+
+        // Should have: input_slot + synthetic output
+        assert_eq!(prefix.nodes.len(), 2);
+        assert!(prefix.validate().is_ok());
     }
 }

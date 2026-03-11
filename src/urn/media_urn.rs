@@ -244,6 +244,55 @@ impl MediaUrn {
         Self(self.0.clone().without_tag(key))
     }
 
+    /// Create a new MediaUrn with the `list` marker tag added.
+    /// Returns a new URN representing a list of this media type.
+    pub fn with_list(&self) -> Self {
+        // with_tag cannot fail for marker value "*"
+        self.with_tag("list", "*").unwrap_or_else(|_| self.clone())
+    }
+
+    /// Create a new MediaUrn with the `list` marker tag removed.
+    /// Returns a new URN representing a scalar of this media type.
+    pub fn without_list(&self) -> Self {
+        self.without_tag("list")
+    }
+
+    /// Compute the least upper bound (most specific common type) of a set of MediaUrns.
+    ///
+    /// Returns the MediaUrn whose tag set is the intersection of all input tag sets:
+    /// only tags present in ALL inputs with matching values are kept.
+    ///
+    /// - Empty input → `media:` (universal type)
+    /// - Single input → returned as-is
+    /// - `[media:pdf, media:pdf]` → `media:pdf`
+    /// - `[media:pdf, media:png]` → `media:` (no common tags)
+    /// - `[media:json;textable, media:csv;textable]` → `media:textable`
+    /// - `[media:json;list;textable, media:json;textable]` → `media:json;textable`
+    pub fn least_upper_bound(urns: &[MediaUrn]) -> MediaUrn {
+        if urns.is_empty() {
+            return MediaUrn::from_string("media:").unwrap_or_else(|_| {
+                MediaUrn(TaggedUrn { prefix: "media".to_string(), tags: std::collections::BTreeMap::new() })
+            });
+        }
+        if urns.len() == 1 {
+            return urns[0].clone();
+        }
+
+        // Start with the first URN's tags, intersect with each subsequent URN
+        let mut common_tags = urns[0].0.tags.clone();
+
+        for urn in &urns[1..] {
+            common_tags.retain(|key, value| {
+                match urn.0.tags.get(key) {
+                    Some(other_value) if other_value == value => true,
+                    _ => false,
+                }
+            });
+        }
+
+        MediaUrn(TaggedUrn { prefix: "media".to_string(), tags: common_tags })
+    }
+
     /// Serialize just the tags portion (without "media:" prefix)
     ///
     /// Returns tags in canonical form with proper quoting and sorting.
@@ -346,20 +395,7 @@ impl MediaUrn {
     /// Check if a marker tag (tag with wildcard/no value) is present.
     /// A marker tag is stored as key="*" in the tagged URN.
     fn has_marker_tag(&self, tag_name: &str) -> bool {
-        let result = self.0.tags.get(tag_name).map_or(false, |v| v == "*");
-        // VERBOSE DEBUG: Log when checking for "list" tag
-        if tag_name == "list" {
-            let tag_value = self.0.tags.get(tag_name);
-            tracing::trace!(
-                media_urn = %self.to_string(),
-                tag_name = tag_name,
-                tag_value = ?tag_value,
-                result = result,
-                all_tags = ?self.0.tags,
-                "[MediaUrn] VERBOSE: has_marker_tag('list') check"
-            );
-        }
-        result
+        self.0.tags.get(tag_name).map_or(false, |v| v == "*")
     }
 
     /// Check if this represents JSON representation specifically.
@@ -763,26 +799,16 @@ mod debug_tests {
     use super::*;
     use crate::standard::media::{MEDIA_IDENTITY, MEDIA_STRING, MEDIA_OBJECT};
 
-    // TEST078: Debug test for conforms_to behavior between different media URN types
+    // TEST078: conforms_to behavior between MEDIA_OBJECT and MEDIA_STRING
     #[test]
-    fn debug_matching_behavior() {
-        tracing::debug!("MEDIA_IDENTITY = {}", MEDIA_IDENTITY);
-        tracing::debug!("MEDIA_STRING = {}", MEDIA_STRING);
-        tracing::debug!("MEDIA_OBJECT = {}", MEDIA_OBJECT);
-
+    fn test078_object_does_not_conform_to_string() {
         let str_urn = MediaUrn::from_string(MEDIA_STRING).unwrap();
         let obj_urn = MediaUrn::from_string(MEDIA_OBJECT).unwrap();
-        let _bin_urn = MediaUrn::from_string(MEDIA_IDENTITY).unwrap();
 
-        tracing::debug!("string.conforms_to(string) = {:?}", str_urn.conforms_to(&str_urn));
-        tracing::debug!("object.conforms_to(string) = {:?}", obj_urn.conforms_to(&str_urn));
-        tracing::debug!("object.conforms_to(object) = {:?}", obj_urn.conforms_to(&obj_urn));
-        tracing::debug!("string.conforms_to(object) = {:?}", str_urn.conforms_to(&obj_urn));
-
-        // MEDIA_OBJECT (media:record) should NOT conform to MEDIA_STRING (media:textable)
-        // because MEDIA_OBJECT lacks textable - records are not inherently textable.
+        assert!(str_urn.conforms_to(&str_urn).unwrap(), "string conforms to string");
+        assert!(obj_urn.conforms_to(&obj_urn).unwrap(), "object conforms to object");
         assert!(
-            !obj_urn.conforms_to(&str_urn).expect("MediaUrn prefix mismatch impossible"),
+            !obj_urn.conforms_to(&str_urn).unwrap(),
             "MEDIA_OBJECT should NOT conform to MEDIA_STRING (missing textable)"
         );
     }
@@ -989,5 +1015,114 @@ mod debug_tests {
         assert!(!void.is_text());
         assert!(void.is_binary(), "void has no textable tag, so is_binary is true");
         assert!(!void.is_numeric());
+    }
+
+    // TEST850: with_list adds list marker, without_list removes it
+    #[test]
+    fn test850_with_list_without_list() {
+        let pdf = MediaUrn::from_string("media:pdf").unwrap();
+        assert!(pdf.is_scalar());
+        assert!(!pdf.is_list());
+
+        let pdf_list = pdf.with_list();
+        assert!(pdf_list.is_list());
+        assert!(!pdf_list.is_scalar());
+        // The list URN should contain all original tags plus list
+        assert!(pdf_list.conforms_to(&pdf).unwrap(), "list version should still conform to scalar pattern");
+
+        let back_to_scalar = pdf_list.without_list();
+        assert!(back_to_scalar.is_scalar());
+        assert!(back_to_scalar.is_equivalent(&pdf).unwrap(), "removing list should restore original");
+    }
+
+    // TEST851: with_list is idempotent
+    #[test]
+    fn test851_with_list_idempotent() {
+        let list_urn = MediaUrn::from_string("media:json;list;textable").unwrap();
+        assert!(list_urn.is_list());
+
+        let double_list = list_urn.with_list();
+        assert!(double_list.is_list());
+        assert!(double_list.is_equivalent(&list_urn).unwrap(), "adding list to already-list should be no-op");
+    }
+
+    // TEST852: LUB of identical URNs returns the same URN
+    #[test]
+    fn test852_lub_identical() {
+        let pdf = MediaUrn::from_string("media:pdf").unwrap();
+        let lub = MediaUrn::least_upper_bound(&[pdf.clone(), pdf.clone()]);
+        assert!(lub.is_equivalent(&pdf).unwrap());
+    }
+
+    // TEST853: LUB of URNs with no common tags returns media: (universal)
+    #[test]
+    fn test853_lub_no_common_tags() {
+        let pdf = MediaUrn::from_string("media:pdf").unwrap();
+        let png = MediaUrn::from_string("media:png").unwrap();
+        let lub = MediaUrn::least_upper_bound(&[pdf, png]);
+        let universal = MediaUrn::from_string("media:").unwrap();
+        assert!(lub.is_equivalent(&universal).unwrap(),
+            "LUB of pdf and png should be media: but got {}", lub.to_string());
+    }
+
+    // TEST854: LUB keeps common tags, drops differing ones
+    #[test]
+    fn test854_lub_partial_overlap() {
+        let json_text = MediaUrn::from_string("media:json;textable").unwrap();
+        let csv_text = MediaUrn::from_string("media:csv;textable").unwrap();
+        let lub = MediaUrn::least_upper_bound(&[json_text, csv_text]);
+        let expected = MediaUrn::from_string("media:textable").unwrap();
+        assert!(lub.is_equivalent(&expected).unwrap(),
+            "LUB should be media:textable but got {}", lub.to_string());
+    }
+
+    // TEST855: LUB of list and non-list drops list tag
+    #[test]
+    fn test855_lub_list_vs_scalar() {
+        let json_list = MediaUrn::from_string("media:json;list;textable").unwrap();
+        let json_scalar = MediaUrn::from_string("media:json;textable").unwrap();
+        let lub = MediaUrn::least_upper_bound(&[json_list, json_scalar]);
+        let expected = MediaUrn::from_string("media:json;textable").unwrap();
+        assert!(lub.is_equivalent(&expected).unwrap(),
+            "LUB should drop list tag, got {}", lub.to_string());
+    }
+
+    // TEST856: LUB of empty input returns universal type
+    #[test]
+    fn test856_lub_empty() {
+        let lub = MediaUrn::least_upper_bound(&[]);
+        let universal = MediaUrn::from_string("media:").unwrap();
+        assert!(lub.is_equivalent(&universal).unwrap());
+    }
+
+    // TEST857: LUB of single input returns that input
+    #[test]
+    fn test857_lub_single() {
+        let pdf = MediaUrn::from_string("media:pdf").unwrap();
+        let lub = MediaUrn::least_upper_bound(&[pdf.clone()]);
+        assert!(lub.is_equivalent(&pdf).unwrap());
+    }
+
+    // TEST858: LUB with three+ inputs narrows correctly
+    #[test]
+    fn test858_lub_three_inputs() {
+        let a = MediaUrn::from_string("media:json;list;record;textable").unwrap();
+        let b = MediaUrn::from_string("media:csv;list;record;textable").unwrap();
+        let c = MediaUrn::from_string("media:ndjson;list;textable").unwrap();
+        let lub = MediaUrn::least_upper_bound(&[a, b, c]);
+        let expected = MediaUrn::from_string("media:list;textable").unwrap();
+        assert!(lub.is_equivalent(&expected).unwrap(),
+            "LUB should be media:list;textable but got {}", lub.to_string());
+    }
+
+    // TEST859: LUB with valued tags (non-marker) that differ
+    #[test]
+    fn test859_lub_valued_tags() {
+        let v1 = MediaUrn::from_string("media:image;format=png").unwrap();
+        let v2 = MediaUrn::from_string("media:image;format=jpeg").unwrap();
+        let lub = MediaUrn::least_upper_bound(&[v1, v2]);
+        let expected = MediaUrn::from_string("media:image").unwrap();
+        assert!(lub.is_equivalent(&expected).unwrap(),
+            "LUB should drop conflicting format tag, got {}", lub.to_string());
     }
 }

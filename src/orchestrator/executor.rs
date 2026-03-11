@@ -986,26 +986,45 @@ impl ExecutionContext {
             }
         }
 
-        // Decode CBOR response chunks → raw output bytes
-        let mut output_bytes = Vec::new();
-        let mut cursor = std::io::Cursor::new(&response_chunks);
-        while (cursor.position() as usize) < response_chunks.len() {
-            let value: ciborium::Value = ciborium::from_reader(&mut cursor).map_err(|e| {
-                ExecutionError::HostError(format!("CBOR decode response: {}", e))
-            })?;
-            match value {
-                ciborium::Value::Bytes(b) => output_bytes.extend(b),
-                ciborium::Value::Text(t) => output_bytes.extend(t.into_bytes()),
-                _ => {
-                    return Err(ExecutionError::HostError(format!(
-                        "Expected Bytes or Text in response, got {:?}",
-                        value
-                    )));
+        // Branch on list vs scalar output media URN.
+        //
+        // List outputs (media URN has `list` tag): response_chunks is an RFC 8742 CBOR
+        // sequence — concatenated self-delimiting CBOR values, one per list item.
+        // Store as-is; consumers use split_cbor_sequence() to iterate.
+        //
+        // Scalar outputs: decode CBOR values, extract inner Bytes/Text, concatenate
+        // into a flat output buffer (existing behavior).
+        let out_media_urn = crate::MediaUrn::from_string(&edges[0].out_media).ok();
+        let is_list_output = out_media_urn.as_ref().map_or(false, |u| u.is_list());
+
+        if is_list_output {
+            tracing::debug!(
+                target: "execute_fanin",
+                "List output ({}): storing {} bytes as CBOR sequence",
+                edges[0].out_media, response_chunks.len()
+            );
+            self.node_data.insert(to.clone(), response_chunks);
+        } else {
+            // Scalar output: decode CBOR values, extract inner bytes, concatenate.
+            let mut output_bytes = Vec::new();
+            let mut cursor = std::io::Cursor::new(&response_chunks);
+            while (cursor.position() as usize) < response_chunks.len() {
+                let value: ciborium::Value = ciborium::from_reader(&mut cursor).map_err(|e| {
+                    ExecutionError::HostError(format!("CBOR decode response: {}", e))
+                })?;
+                match value {
+                    ciborium::Value::Bytes(b) => output_bytes.extend(b),
+                    ciborium::Value::Text(t) => output_bytes.extend(t.into_bytes()),
+                    _ => {
+                        return Err(ExecutionError::HostError(format!(
+                            "Expected Bytes or Text in scalar response, got {:?}",
+                            value
+                        )));
+                    }
                 }
             }
+            self.node_data.insert(to.clone(), output_bytes);
         }
-
-        self.node_data.insert(to.clone(), output_bytes);
         Ok(())
     }
 }

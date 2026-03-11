@@ -123,6 +123,18 @@ impl CapPlanBuilder {
         let source_spec_str = path.source_spec.to_string();
         let target_spec_str = path.target_spec.to_string();
 
+        // Log all incoming path steps for debugging plan construction
+        tracing::info!(
+            "build_plan_from_path: '{}' with {} steps, {} → {}",
+            name, path.steps.len(), source_spec_str, target_spec_str
+        );
+        for (i, step) in path.steps.iter().enumerate() {
+            tracing::info!(
+                "  step[{}]: type={} from={} to={}",
+                i, step.title(), step.from_spec, step.to_spec
+            );
+        }
+
         let input_slot_id = "input_slot";
         plan.add_node(CapNode::input_slot(
             input_slot_id,
@@ -207,6 +219,11 @@ impl CapPlanBuilder {
                     plan.add_node(node);
                     plan.add_edge(CapEdge::direct(&prev_node_id, &node_id));
 
+                    tracing::info!(
+                        "  plan_builder: Cap step[{}] '{}' inside_body={} prev_node_id='{}'",
+                        i, node_id, is_inside_body, prev_node_id
+                    );
+
                     // Track body entry/exit for ForEach
                     if is_inside_body {
                         if body_entry.is_none() {
@@ -219,8 +236,62 @@ impl CapPlanBuilder {
                 }
 
                 CapChainStepType::ForEach { .. } => {
-                    // Mark that we're entering a ForEach body
-                    // The actual ForEach node will be created when we hit the matching Collect
+                    // If we're already inside a ForEach body, finalize the outer ForEach first.
+                    // This handles nested ForEach: e.g., disbind → ForEach → choose_bits → ForEach
+                    // where the body cap produces a list and the path walks through a second ForEach
+                    // to reach the scalar target.
+                    if let Some((outer_foreach_idx, outer_foreach_node_id)) = inside_foreach_body.take() {
+                        let has_outer_body_entry = body_entry.is_some();
+                        let outer_entry = body_entry.take().unwrap_or_else(|| prev_node_id.clone());
+                        let outer_exit = body_exit.take().unwrap_or_else(|| prev_node_id.clone());
+
+                        let outer_foreach_input = if outer_foreach_idx == 0 {
+                            input_slot_id.to_string()
+                        } else {
+                            format!("step_{}", outer_foreach_idx - 1)
+                        };
+
+                        tracing::info!(
+                            "  plan_builder: nested ForEach at step[{}] while inside ForEach '{}' at step[{}]: \
+                             finalizing outer ForEach with body_entry='{}' (explicit={}) body_exit='{}'",
+                            i, outer_foreach_node_id, outer_foreach_idx,
+                            outer_entry, has_outer_body_entry, outer_exit
+                        );
+
+                        if !has_outer_body_entry {
+                            return Err(PlannerError::InvalidPath(format!(
+                                "Nested ForEach at step[{}] but outer ForEach at step[{}] ('{}') has no body caps.",
+                                i, outer_foreach_idx, outer_foreach_node_id
+                            )));
+                        }
+
+                        if outer_foreach_input == outer_entry {
+                            return Err(PlannerError::InvalidPath(format!(
+                                "Outer ForEach at step[{}] ('{}') would create a cycle: \
+                                 foreach_input='{}' == body_entry='{}'.",
+                                outer_foreach_idx, outer_foreach_node_id, outer_foreach_input, outer_entry
+                            )));
+                        }
+
+                        // Create the outer ForEach node
+                        let foreach_node = CapNode::for_each(
+                            &outer_foreach_node_id,
+                            &outer_foreach_input,
+                            &outer_entry,
+                            &outer_exit,
+                        );
+                        plan.add_node(foreach_node);
+                        plan.add_edge(CapEdge::direct(&outer_foreach_input, &outer_foreach_node_id));
+                        plan.add_edge(CapEdge::iteration(&outer_foreach_node_id, &outer_entry));
+
+                        // The outer ForEach is now finalized. prev_node_id stays as body exit.
+                        prev_node_id = outer_exit;
+                    }
+
+                    tracing::info!(
+                        "  plan_builder: ForEach at step[{}], prev_node_id='{}'",
+                        i, prev_node_id
+                    );
                     inside_foreach_body = Some((i, node_id.clone()));
                     body_entry = None;
                     body_exit = None;
@@ -266,23 +337,98 @@ impl CapPlanBuilder {
                     }
                 }
 
-                CapChainStepType::WrapInList { .. } => {
-                    // WrapInList is simpler - it's a one-to-one transformation
-                    // We can represent it as a Collect with a single input
-                    let wrap_node = CapNode::collect(&node_id, vec![prev_node_id.clone()]);
+                CapChainStepType::WrapInList { item_spec, list_spec } => {
+                    // WrapInList wraps a scalar in a list-of-one. At execution time
+                    // this is a pass-through — the data flows unchanged.
+                    let is_inside_body = inside_foreach_body.is_some();
+                    tracing::info!(
+                        "  plan_builder: WrapInList at step[{}], inside_body={}, prev_node_id='{}'",
+                        i, is_inside_body, prev_node_id
+                    );
+
+                    let wrap_node = CapNode::wrap_in_list(
+                        &node_id,
+                        &item_spec.to_string(),
+                        &list_spec.to_string(),
+                    );
                     plan.add_node(wrap_node);
                     plan.add_edge(CapEdge::direct(&prev_node_id, &node_id));
+
+                    // If inside a ForEach body, WrapInList is part of the body
+                    // but doesn't set body_entry/body_exit (only Cap nodes do).
+                    // The data still flows through it.
                 }
             }
 
             prev_node_id = node_id;
         }
 
-        // Verify no unclosed ForEach
-        if inside_foreach_body.is_some() {
-            return Err(PlannerError::InvalidPath(
-                "ForEach step without matching Collect".to_string()
-            ));
+        // Handle unclosed ForEach - this is valid when the output is per-iteration
+        // (e.g., PDF -> pages -> process each -> multiple output files)
+        if let Some((foreach_idx, foreach_node_id)) = inside_foreach_body.take() {
+            let has_body_entry = body_entry.is_some();
+            let has_body_exit = body_exit.is_some();
+            let entry = body_entry.take().unwrap_or_else(|| prev_node_id.clone());
+            let exit = body_exit.take().unwrap_or_else(|| prev_node_id.clone());
+
+            // Find the node that feeds into the ForEach (the one before the ForEach step)
+            let foreach_input = if foreach_idx == 0 {
+                input_slot_id.to_string()
+            } else {
+                format!("step_{}", foreach_idx - 1)
+            };
+
+            tracing::info!(
+                "  plan_builder: unclosed ForEach '{}' at step[{}]: \
+                 foreach_input='{}' body_entry='{}' (explicit={}) body_exit='{}' (explicit={}) prev_node_id='{}'",
+                foreach_node_id, foreach_idx, foreach_input,
+                entry, has_body_entry, exit, has_body_exit, prev_node_id
+            );
+
+            // If the ForEach body has no Cap nodes, this is a terminal unwrap:
+            // the path walked through a ForEach edge to reach the scalar target type,
+            // but there's nothing to execute per-item. This happens when a prior ForEach
+            // body produces a list and the path traverses a second ForEach to the item type.
+            // E.g., path: disbind → ForEach(1) → choose_bits → ForEach(2)
+            // ForEach(1) is the real iteration; ForEach(2) just says "the body output is a list,
+            // target is the item." We skip it — the executor handles body list output via
+            // the unclosed ForEach mechanism.
+            if !has_body_entry {
+                tracing::info!(
+                    "  plan_builder: skipping terminal ForEach '{}' at step[{}] (no body caps). \
+                     This is a terminal unwrap — the preceding cap's list output reaches \
+                     the scalar target via this ForEach edge.",
+                    foreach_node_id, foreach_idx
+                );
+                // Don't create a ForEach node. prev_node_id stays as is.
+                // The plan's output will connect to the node before this ForEach.
+            } else {
+                // Validate: ForEach input must differ from body entry to avoid cycles
+                if foreach_input == entry {
+                    return Err(PlannerError::InvalidPath(format!(
+                        "ForEach at step[{}] ('{}') would create a cycle: \
+                         foreach_input='{}' == body_entry='{}'. \
+                         The cap that produces the list cannot also be the ForEach body.",
+                        foreach_idx, foreach_node_id, foreach_input, entry
+                    )));
+                }
+
+                // Create the ForEach node
+                let foreach_node = CapNode::for_each(
+                    &foreach_node_id,
+                    &foreach_input,
+                    &entry,
+                    &exit,
+                );
+                plan.add_node(foreach_node);
+                plan.add_edge(CapEdge::direct(&foreach_input, &foreach_node_id));
+
+                // Create iteration edge from ForEach to body entry
+                plan.add_edge(CapEdge::iteration(&foreach_node_id, &entry));
+
+                // Output connects to the body exit (each iteration produces output)
+                prev_node_id = exit;
+            }
         }
 
         let output_id = "output";
@@ -293,6 +439,31 @@ impl CapPlanBuilder {
             ("source_spec".to_string(), json!(source_spec_str)),
             ("target_spec".to_string(), json!(target_spec_str)),
         ]));
+
+        // Validate the plan is a DAG (no cycles) before returning.
+        // This catches structural bugs in plan construction that would
+        // cause find_first_foreach() to fail (it relies on topological_order).
+        plan.validate()?;
+        if let Err(e) = plan.topological_order() {
+            // Log full plan structure for diagnostics
+            tracing::error!(
+                "build_plan_from_path produced a cyclic plan: {}. \
+                 Nodes: {:?}, Edges: {:?}",
+                e,
+                plan.nodes.keys().collect::<Vec<_>>(),
+                plan.edges.iter().map(|e| format!("{}→{} ({:?})", e.from_node, e.to_node, e.edge_type)).collect::<Vec<_>>()
+            );
+            return Err(PlannerError::InvalidPath(format!(
+                "Plan construction produced a cycle (not a DAG): {}. \
+                 This is a bug in the plan builder.",
+                e
+            )));
+        }
+
+        tracing::info!(
+            "build_plan_from_path: successfully built plan '{}' with {} nodes, {} edges",
+            plan.name, plan.nodes.len(), plan.edges.len()
+        );
 
         Ok(plan)
     }

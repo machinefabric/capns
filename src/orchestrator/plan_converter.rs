@@ -10,7 +10,8 @@
 //! - InputSlot nodes become source data nodes
 //! - Cap nodes become edges from their input source to their output target
 //! - Output nodes mark terminal data nodes
-//! - ForEach/Collect patterns are preserved through edge grouping
+//! - ForEach/Collect/Merge/Split nodes are rejected — the caller must decompose
+//!   ForEach plans into sub-plans before conversion (see CapExecutionPlan::extract_*)
 
 use std::collections::HashMap;
 use crate::planner::{CapExecutionPlan, ExecutionNodeType};
@@ -57,11 +58,59 @@ pub async fn plan_to_resolved_graph(
                     }
                 }
             }
-            ExecutionNodeType::ForEach { .. } |
-            ExecutionNodeType::Collect { .. } |
-            ExecutionNodeType::Merge { .. } |
+            ExecutionNodeType::WrapInList { list_media_urn, .. } => {
+                // WrapInList is a pass-through at execution time — the data flows
+                // unchanged, only the type annotation changes. Register the node
+                // with the list media URN so downstream edges can find data at it.
+                nodes.insert(node_id.clone(), list_media_urn.clone());
+            }
+            ExecutionNodeType::ForEach { .. } => {
+                return Err(ParseOrchestrationError::InvalidGraph {
+                    message: format!(
+                        "Plan contains ForEach node '{}'. Decompose the plan using \
+                         extract_prefix_to/extract_foreach_body/extract_suffix_from \
+                         before converting to ResolvedGraph.",
+                        node_id
+                    ),
+                });
+            }
+            ExecutionNodeType::Collect { .. } => {
+                return Err(ParseOrchestrationError::InvalidGraph {
+                    message: format!(
+                        "Plan contains Collect node '{}'. Decompose the plan using \
+                         extract_prefix_to/extract_foreach_body/extract_suffix_from \
+                         before converting to ResolvedGraph.",
+                        node_id
+                    ),
+                });
+            }
+            ExecutionNodeType::Merge { .. } => {
+                return Err(ParseOrchestrationError::InvalidGraph {
+                    message: format!(
+                        "Plan contains Merge node '{}' which is not yet supported for execution.",
+                        node_id
+                    ),
+                });
+            }
             ExecutionNodeType::Split { .. } => {
-                // These are control-flow nodes; their media URNs are derived from context
+                return Err(ParseOrchestrationError::InvalidGraph {
+                    message: format!(
+                        "Plan contains Split node '{}' which is not yet supported for execution.",
+                        node_id
+                    ),
+                });
+            }
+        }
+    }
+
+    // Build a map from WrapInList nodes to their input predecessors.
+    // WrapInList is a pass-through: data at the predecessor flows through unchanged.
+    // When an edge's from_node is a WrapInList, we resolve it to the actual data source.
+    let mut wrap_predecessors: HashMap<String, String> = HashMap::new();
+    for edge in &plan.edges {
+        if let Some(to_node) = plan.nodes.get(&edge.to_node) {
+            if matches!(to_node.node_type, ExecutionNodeType::WrapInList { .. }) {
+                wrap_predecessors.insert(edge.to_node.clone(), edge.from_node.clone());
             }
         }
     }
@@ -83,10 +132,19 @@ pub async fn plan_to_resolved_graph(
             let in_media = cap.urn.in_spec().to_string();
             let out_media = cap.urn.out_spec().to_string();
 
+            // If the source is a WrapInList node, resolve through to the actual
+            // data source. WrapInList is transparent — data at the predecessor
+            // flows unchanged through it.
+            let from = if wrap_predecessors.contains_key(&edge.from_node) {
+                wrap_predecessors[&edge.from_node].clone()
+            } else {
+                edge.from_node.clone()
+            };
+
             // The cap's output is stored at the cap node itself
             // This allows the next edge (cap_0 → cap_1) to find data at cap_0
             resolved_edges.push(ResolvedEdge {
-                from: edge.from_node.clone(),
+                from,
                 to: edge.to_node.clone(),  // Store output at the cap node
                 cap_urn: cap_urn.clone(),
                 cap: cap.clone(),
@@ -175,5 +233,123 @@ mod tests {
         assert_eq!(graph.edges[1].from, "cap_0");
         assert_eq!(graph.edges[1].to, "cap_1");  // Output stored at cap_1
         assert_eq!(graph.edges[1].cap_urn, "cap:in=media:text;op=summarize;out=media:summary");
+    }
+
+    // TEST770: plan_to_resolved_graph rejects plans containing ForEach nodes
+    #[tokio::test]
+    async fn test770_rejects_foreach() {
+        let registry = MockRegistry::new();
+        registry.add_cap("cap:in=media:pdf;op=disbind;out=media:pdf-page").await;
+        registry.add_cap("cap:in=media:pdf-page;op=process;out=media:text").await;
+
+        let mut plan = CapExecutionPlan::new("foreach_plan");
+        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=disbind;out=media:pdf-page"));
+        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "cap_1", "cap_1"));
+        plan.add_node(CapNode::cap("cap_1", "cap:in=media:pdf-page;op=process;out=media:text"));
+        plan.add_node(CapNode::output("output", "result", "cap_1"));
+
+        plan.add_edge(CapEdge::direct("input", "cap_0"));
+        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(CapEdge::iteration("foreach_0", "cap_1"));
+        plan.add_edge(CapEdge::direct("cap_1", "output"));
+
+        let result = plan_to_resolved_graph(&plan, &registry).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("ForEach node"), "Expected ForEach rejection, got: {}", err);
+        assert!(err.contains("Decompose"), "Should mention decomposition, got: {}", err);
+    }
+
+    // TEST771: plan_to_resolved_graph rejects plans containing Collect nodes
+    #[tokio::test]
+    async fn test771_rejects_collect() {
+        let registry = MockRegistry::new();
+        registry.add_cap("cap:in=media:pdf;op=disbind;out=media:pdf-page").await;
+        registry.add_cap("cap:in=media:pdf-page;op=process;out=media:text").await;
+
+        let mut plan = CapExecutionPlan::new("collect_plan");
+        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=disbind;out=media:pdf-page"));
+        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "cap_1", "cap_1"));
+        plan.add_node(CapNode::cap("cap_1", "cap:in=media:pdf-page;op=process;out=media:text"));
+        plan.add_node(CapNode::collect("collect_0", vec!["cap_1".to_string()]));
+        plan.add_node(CapNode::output("output", "result", "collect_0"));
+
+        plan.add_edge(CapEdge::direct("input", "cap_0"));
+        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(CapEdge::iteration("foreach_0", "cap_1"));
+        plan.add_edge(CapEdge::collection("cap_1", "collect_0"));
+        plan.add_edge(CapEdge::direct("collect_0", "output"));
+
+        let result = plan_to_resolved_graph(&plan, &registry).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // Could hit either ForEach or Collect first depending on HashMap iteration order
+        assert!(err.contains("ForEach node") || err.contains("Collect node"),
+            "Expected ForEach or Collect rejection, got: {}", err);
+    }
+
+    // TEST772: Linear plans (no ForEach/Collect) still convert successfully
+    #[tokio::test]
+    async fn test772_linear_plan_still_works() {
+        let registry = MockRegistry::new();
+        registry.add_cap("cap:in=media:pdf;op=extract;out=media:text").await;
+
+        let mut plan = CapExecutionPlan::new("linear_plan");
+        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=extract;out=media:text"));
+        plan.add_node(CapNode::output("output", "result", "cap_0"));
+
+        plan.add_edge(CapEdge::direct("input", "cap_0"));
+        plan.add_edge(CapEdge::direct("cap_0", "output"));
+
+        let result = plan_to_resolved_graph(&plan, &registry).await;
+        assert!(result.is_ok(), "Linear plan should still convert: {:?}", result.err());
+        assert_eq!(result.unwrap().edges.len(), 1);
+    }
+
+    // TEST773: WrapInList nodes are handled as pass-through
+    // Plan: input → cap_0 → WrapInList → cap_1 → output
+    // The WrapInList is transparent — the resolved edge from WrapInList to cap_1
+    // should be rewritten to go from cap_0 to cap_1 directly.
+    #[tokio::test]
+    async fn test773_wrap_in_list_passthrough() {
+        let registry = MockRegistry::new();
+        registry.add_cap("cap:in=media:pdf;op=extract;out=media:text;textable").await;
+        registry.add_cap("cap:in=media:text;list;textable;op=embed;out=media:embedding-vector;textable;record").await;
+
+        let mut plan = CapExecutionPlan::new("wrap_plan");
+        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=extract;out=media:text;textable"));
+        plan.add_node(CapNode::wrap_in_list("wrap_0", "media:text;textable", "media:list;text;textable"));
+        plan.add_node(CapNode::cap("cap_1", "cap:in=media:text;list;textable;op=embed;out=media:embedding-vector;textable;record"));
+        plan.add_node(CapNode::output("output", "result", "cap_1"));
+
+        plan.add_edge(CapEdge::direct("input", "cap_0"));
+        plan.add_edge(CapEdge::direct("cap_0", "wrap_0"));
+        plan.add_edge(CapEdge::direct("wrap_0", "cap_1"));
+        plan.add_edge(CapEdge::direct("cap_1", "output"));
+
+        let result = plan_to_resolved_graph(&plan, &registry).await;
+        assert!(result.is_ok(), "Plan with WrapInList should convert: {:?}", result.err());
+
+        let graph = result.unwrap();
+        // Two resolved edges: input→cap_0, cap_0→cap_1 (WrapInList resolved through)
+        assert_eq!(graph.edges.len(), 2, "Expected 2 edges, got {}: {:?}",
+            graph.edges.len(), graph.edges.iter().map(|e| format!("{}→{}", e.from, e.to)).collect::<Vec<_>>());
+
+        // First edge: input → cap_0
+        assert_eq!(graph.edges[0].from, "input");
+        assert_eq!(graph.edges[0].to, "cap_0");
+
+        // Second edge: cap_0 → cap_1 (NOT wrap_0 → cap_1)
+        assert_eq!(graph.edges[1].from, "cap_0",
+            "WrapInList should be resolved through — edge should come from cap_0, not wrap_0");
+        assert_eq!(graph.edges[1].to, "cap_1");
+
+        // has_foreach_or_collect should be false (WrapInList is NOT ForEach/Collect)
+        assert!(!plan.has_foreach_or_collect(),
+            "Plan with only WrapInList should NOT trigger ForEach execution path");
     }
 }

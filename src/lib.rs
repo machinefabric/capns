@@ -126,6 +126,7 @@ pub use orchestrator::{
     ParseOrchestrationError, ResolvedEdge, ResolvedGraph, CapRegistryTrait,
     parse_dot_to_cap_dag, plan_to_resolved_graph, execute_dag, NodeData, ExecutionError,
     EdgeGroup, PluginManager, ExecutionContext,
+    split_cbor_array, assemble_cbor_array, split_cbor_sequence, assemble_cbor_sequence, CborUtilError,
 };
 
 // InputResolver — unified input resolution with media detection
