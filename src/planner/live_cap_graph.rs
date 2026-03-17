@@ -1299,7 +1299,7 @@ mod tests {
             "media:textable",
             "media:decision;bool;textable",
             "choose",
-            "Make Choice"
+            "Make a Decision"
         );
 
         // Sync caps - this should insert ForEach edge
@@ -1357,7 +1357,7 @@ mod tests {
             "media:textable",
             "media:decision;bool;textable",
             "choose",
-            "Make Choice"
+            "Make a Decision"
         );
         registry.add_caps_to_cache(vec![disbind.clone(), choose.clone()]);
 
