@@ -1025,7 +1025,8 @@ impl ExecutionContext {
                 pump_result = self.switch.read_from_masters_timeout(Duration::from_millis(200)) => {
                     match pump_result {
                         Ok(Some(frame)) => {
-                            last_activity = std::time::Instant::now();
+                            // Routed frame from masters — NOT specific to this cap's request.
+                            // Do NOT reset last_activity; only rx frames count for timeout.
                             tracing::debug!(
                                 "  [engine] {:?} id={:?} cap={:?}",
                                 frame.frame_type, frame.id, frame.cap
