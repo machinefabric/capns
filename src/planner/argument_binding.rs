@@ -472,13 +472,13 @@ impl ArgumentBindings {
 
 /// Input specification for cap chain execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapChainInput {
+pub struct StrandInput {
     pub files: Vec<CapInputFile>,
     pub expected_media_urn: String,
     pub cardinality: InputCardinality,
 }
 
-impl CapChainInput {
+impl StrandInput {
     pub fn single(file: CapInputFile) -> Self {
         let media_urn = file.media_urn.clone();
         Self {
@@ -665,26 +665,26 @@ mod tests {
         assert_eq!(result.source, ArgumentSource::PreviousOutput);
     }
 
-    // TEST799: Tests CapChainInput single constructor creates valid Single cardinality input
+    // TEST799: Tests StrandInput single constructor creates valid Single cardinality input
     // Verifies single() wraps one file with Single cardinality and validates correctly
     #[test]
-    fn test799_cap_chain_input_single() {
+    fn test799_machine_input_single() {
         let file = CapInputFile::new("/path/to/file.pdf".to_string(), "media:pdf".to_string());
-        let input = CapChainInput::single(file);
+        let input = StrandInput::single(file);
         assert_eq!(input.files.len(), 1);
         assert_eq!(input.cardinality, InputCardinality::Single);
         assert!(input.is_valid());
     }
 
-    // TEST800: Tests CapChainInput sequence constructor creates valid Sequence cardinality input
+    // TEST800: Tests StrandInput sequence constructor creates valid Sequence cardinality input
     // Verifies sequence() wraps multiple files with Sequence cardinality
     #[test]
-    fn test800_cap_chain_input_vector() {
+    fn test800_machine_input_vector() {
         let files = vec![
             CapInputFile::new("/path/1.pdf".to_string(), "media:pdf".to_string()),
             CapInputFile::new("/path/2.pdf".to_string(), "media:pdf".to_string()),
         ];
-        let input = CapChainInput::sequence(files, "media:pdf".to_string());
+        let input = StrandInput::sequence(files, "media:pdf".to_string());
         assert_eq!(input.files.len(), 2);
         assert_eq!(input.cardinality, InputCardinality::Sequence);
         assert!(input.is_valid());
@@ -815,15 +815,15 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // TEST803: Tests CapChainInput validation detects mismatched Single cardinality with multiple files
+    // TEST803: Tests StrandInput validation detects mismatched Single cardinality with multiple files
     // Verifies is_valid() returns false when Single cardinality has more than one file
     #[test]
-    fn test803_cap_chain_input_invalid_single() {
+    fn test803_machine_input_invalid_single() {
         let files = vec![
             CapInputFile::new("/path/1.pdf".to_string(), "media:pdf".to_string()),
             CapInputFile::new("/path/2.pdf".to_string(), "media:pdf".to_string()),
         ];
-        let input = CapChainInput {
+        let input = StrandInput {
             files,
             expected_media_urn: "media:pdf".to_string(),
             cardinality: InputCardinality::Single,

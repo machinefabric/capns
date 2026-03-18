@@ -1,6 +1,6 @@
-//! Convert CapExecutionPlan to ResolvedGraph
+//! Convert MachinePlan to ResolvedGraph
 //!
-//! This module bridges the planner's CapExecutionPlan (node-centric) to the
+//! This module bridges the planner's MachinePlan (node-centric) to the
 //! orchestrator's ResolvedGraph (edge-centric) format for execution via execute_dag.
 //!
 //! The planner creates execution plans where caps are nodes with edges representing
@@ -11,13 +11,13 @@
 //! - Cap nodes become edges from their input source to their output target
 //! - Output nodes mark terminal data nodes
 //! - ForEach/Collect/Merge/Split nodes are rejected — the caller must decompose
-//!   ForEach plans into sub-plans before conversion (see CapExecutionPlan::extract_*)
+//!   ForEach plans into sub-plans before conversion (see MachinePlan::extract_*)
 
 use std::collections::HashMap;
-use crate::planner::{CapExecutionPlan, ExecutionNodeType};
+use crate::planner::{MachinePlan, ExecutionNodeType};
 use super::types::{ResolvedEdge, ResolvedGraph, CapRegistryTrait, ParseOrchestrationError};
 
-/// Convert a CapExecutionPlan to a ResolvedGraph for execution.
+/// Convert a MachinePlan to a ResolvedGraph for execution.
 ///
 /// This transforms the node-centric plan (where caps are nodes) into the
 /// edge-centric graph (where caps are edge labels) that execute_dag expects.
@@ -29,7 +29,7 @@ use super::types::{ResolvedEdge, ResolvedGraph, CapRegistryTrait, ParseOrchestra
 /// # Returns
 /// A ResolvedGraph suitable for execute_dag, or an error if conversion fails
 pub async fn plan_to_resolved_graph(
-    plan: &CapExecutionPlan,
+    plan: &MachinePlan,
     registry: &dyn CapRegistryTrait,
 ) -> Result<ResolvedGraph, ParseOrchestrationError> {
     let mut nodes: HashMap<String, String> = HashMap::new();
@@ -116,7 +116,7 @@ pub async fn plan_to_resolved_graph(
     }
 
     // Second pass: convert edges that lead INTO Cap nodes into ResolvedEdges
-    // In CapExecutionPlan, data flows: source_node --edge--> cap_node
+    // In MachinePlan, data flows: source_node --edge--> cap_node
     // In ResolvedGraph, this becomes: source_node --cap_edge--> cap_node
     // The cap's output is stored AT the cap node (cap_0, cap_1, etc.)
     for edge in &plan.edges {
@@ -164,7 +164,7 @@ pub async fn plan_to_resolved_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::{CapExecutionPlan, CapNode, CapEdge, InputCardinality};
+    use crate::planner::{MachinePlan, MachineNode, MachinePlanEdge, InputCardinality};
     use crate::{Cap, CapUrn};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -200,22 +200,22 @@ mod tests {
         registry.add_cap("cap:in=media:pdf;op=extract;out=media:text").await;
         registry.add_cap("cap:in=media:text;op=summarize;out=media:summary").await;
 
-        let mut plan = CapExecutionPlan::new("test_chain");
+        let mut plan = MachinePlan::new("test_chain");
 
         // Add input slot
-        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
 
         // Add two caps in sequence
-        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=extract;out=media:text"));
-        plan.add_node(CapNode::cap("cap_1", "cap:in=media:text;op=summarize;out=media:summary"));
+        plan.add_node(MachineNode::cap("cap_0", "cap:in=media:pdf;op=extract;out=media:text"));
+        plan.add_node(MachineNode::cap("cap_1", "cap:in=media:text;op=summarize;out=media:summary"));
 
         // Add output
-        plan.add_node(CapNode::output("output", "result", "cap_1"));
+        plan.add_node(MachineNode::output("output", "result", "cap_1"));
 
         // Connect them
-        plan.add_edge(CapEdge::direct("input", "cap_0"));
-        plan.add_edge(CapEdge::direct("cap_0", "cap_1"));
-        plan.add_edge(CapEdge::direct("cap_1", "output"));
+        plan.add_edge(MachinePlanEdge::direct("input", "cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("cap_0", "cap_1"));
+        plan.add_edge(MachinePlanEdge::direct("cap_1", "output"));
 
         let graph = plan_to_resolved_graph(&plan, &registry).await.unwrap();
 
@@ -242,17 +242,17 @@ mod tests {
         registry.add_cap("cap:in=media:pdf;op=disbind;out=media:pdf-page").await;
         registry.add_cap("cap:in=media:pdf-page;op=process;out=media:text").await;
 
-        let mut plan = CapExecutionPlan::new("foreach_plan");
-        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
-        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=disbind;out=media:pdf-page"));
-        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "cap_1", "cap_1"));
-        plan.add_node(CapNode::cap("cap_1", "cap:in=media:pdf-page;op=process;out=media:text"));
-        plan.add_node(CapNode::output("output", "result", "cap_1"));
+        let mut plan = MachinePlan::new("foreach_plan");
+        plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(MachineNode::cap("cap_0", "cap:in=media:pdf;op=disbind;out=media:pdf-page"));
+        plan.add_node(MachineNode::for_each("foreach_0", "cap_0", "cap_1", "cap_1"));
+        plan.add_node(MachineNode::cap("cap_1", "cap:in=media:pdf-page;op=process;out=media:text"));
+        plan.add_node(MachineNode::output("output", "result", "cap_1"));
 
-        plan.add_edge(CapEdge::direct("input", "cap_0"));
-        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
-        plan.add_edge(CapEdge::iteration("foreach_0", "cap_1"));
-        plan.add_edge(CapEdge::direct("cap_1", "output"));
+        plan.add_edge(MachinePlanEdge::direct("input", "cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(MachinePlanEdge::iteration("foreach_0", "cap_1"));
+        plan.add_edge(MachinePlanEdge::direct("cap_1", "output"));
 
         let result = plan_to_resolved_graph(&plan, &registry).await;
         assert!(result.is_err());
@@ -268,19 +268,19 @@ mod tests {
         registry.add_cap("cap:in=media:pdf;op=disbind;out=media:pdf-page").await;
         registry.add_cap("cap:in=media:pdf-page;op=process;out=media:text").await;
 
-        let mut plan = CapExecutionPlan::new("collect_plan");
-        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
-        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=disbind;out=media:pdf-page"));
-        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "cap_1", "cap_1"));
-        plan.add_node(CapNode::cap("cap_1", "cap:in=media:pdf-page;op=process;out=media:text"));
-        plan.add_node(CapNode::collect("collect_0", vec!["cap_1".to_string()]));
-        plan.add_node(CapNode::output("output", "result", "collect_0"));
+        let mut plan = MachinePlan::new("collect_plan");
+        plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(MachineNode::cap("cap_0", "cap:in=media:pdf;op=disbind;out=media:pdf-page"));
+        plan.add_node(MachineNode::for_each("foreach_0", "cap_0", "cap_1", "cap_1"));
+        plan.add_node(MachineNode::cap("cap_1", "cap:in=media:pdf-page;op=process;out=media:text"));
+        plan.add_node(MachineNode::collect("collect_0", vec!["cap_1".to_string()]));
+        plan.add_node(MachineNode::output("output", "result", "collect_0"));
 
-        plan.add_edge(CapEdge::direct("input", "cap_0"));
-        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
-        plan.add_edge(CapEdge::iteration("foreach_0", "cap_1"));
-        plan.add_edge(CapEdge::collection("cap_1", "collect_0"));
-        plan.add_edge(CapEdge::direct("collect_0", "output"));
+        plan.add_edge(MachinePlanEdge::direct("input", "cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(MachinePlanEdge::iteration("foreach_0", "cap_1"));
+        plan.add_edge(MachinePlanEdge::collection("cap_1", "collect_0"));
+        plan.add_edge(MachinePlanEdge::direct("collect_0", "output"));
 
         let result = plan_to_resolved_graph(&plan, &registry).await;
         assert!(result.is_err());
@@ -296,13 +296,13 @@ mod tests {
         let registry = MockRegistry::new();
         registry.add_cap("cap:in=media:pdf;op=extract;out=media:text").await;
 
-        let mut plan = CapExecutionPlan::new("linear_plan");
-        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
-        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;op=extract;out=media:text"));
-        plan.add_node(CapNode::output("output", "result", "cap_0"));
+        let mut plan = MachinePlan::new("linear_plan");
+        plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(MachineNode::cap("cap_0", "cap:in=media:pdf;op=extract;out=media:text"));
+        plan.add_node(MachineNode::output("output", "result", "cap_0"));
 
-        plan.add_edge(CapEdge::direct("input", "cap_0"));
-        plan.add_edge(CapEdge::direct("cap_0", "output"));
+        plan.add_edge(MachinePlanEdge::direct("input", "cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("cap_0", "output"));
 
         let result = plan_to_resolved_graph(&plan, &registry).await;
         assert!(result.is_ok(), "Linear plan should still convert: {:?}", result.err());
@@ -319,17 +319,17 @@ mod tests {
         registry.add_cap(r#"cap:in=media:pdf;op=extract;out="media:text;textable""#).await;
         registry.add_cap(r#"cap:in="media:list;text;textable";op=embed;out="media:embedding-vector;record;textable""#).await;
 
-        let mut plan = CapExecutionPlan::new("wrap_plan");
-        plan.add_node(CapNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
-        plan.add_node(CapNode::cap("cap_0", r#"cap:in=media:pdf;op=extract;out="media:text;textable""#));
-        plan.add_node(CapNode::wrap_in_list("wrap_0", "media:text;textable", "media:list;text;textable"));
-        plan.add_node(CapNode::cap("cap_1", r#"cap:in="media:list;text;textable";op=embed;out="media:embedding-vector;record;textable""#));
-        plan.add_node(CapNode::output("output", "result", "cap_1"));
+        let mut plan = MachinePlan::new("wrap_plan");
+        plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(MachineNode::cap("cap_0", r#"cap:in=media:pdf;op=extract;out="media:text;textable""#));
+        plan.add_node(MachineNode::wrap_in_list("wrap_0", "media:text;textable", "media:list;text;textable"));
+        plan.add_node(MachineNode::cap("cap_1", r#"cap:in="media:list;text;textable";op=embed;out="media:embedding-vector;record;textable""#));
+        plan.add_node(MachineNode::output("output", "result", "cap_1"));
 
-        plan.add_edge(CapEdge::direct("input", "cap_0"));
-        plan.add_edge(CapEdge::direct("cap_0", "wrap_0"));
-        plan.add_edge(CapEdge::direct("wrap_0", "cap_1"));
-        plan.add_edge(CapEdge::direct("cap_1", "output"));
+        plan.add_edge(MachinePlanEdge::direct("input", "cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("cap_0", "wrap_0"));
+        plan.add_edge(MachinePlanEdge::direct("wrap_0", "cap_1"));
+        plan.add_edge(MachinePlanEdge::direct("cap_1", "output"));
 
         let result = plan_to_resolved_graph(&plan, &registry).await;
         assert!(result.is_ok(), "Plan with WrapInList should convert: {:?}", result.err());

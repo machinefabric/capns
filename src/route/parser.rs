@@ -1,6 +1,6 @@
 //! Route notation parser — pest-generated PEG parser
 //!
-//! Parses the route notation format into a `RouteGraph` using a formal
+//! Parses the machine notation format into a `Machine` using a formal
 //! PEG grammar defined in `route.pest`.
 //!
 //! ## Grammar (PEG / EBNF)
@@ -43,31 +43,31 @@ use pest_derive::Parser;
 use crate::urn::cap_urn::CapUrn;
 use crate::urn::media_urn::MediaUrn;
 
-use super::error::RouteNotationError;
-use super::graph::{RouteEdge, RouteGraph};
+use super::error::MachineSyntaxError;
+use super::graph::{MachineEdge, Machine};
 
 #[derive(Parser)]
 #[grammar = "route/route.pest"]
-pub struct RouteParser;
+pub struct MachineParser;
 
-/// Parse route notation into a `RouteGraph`.
+/// Parse machine notation into a `Machine`.
 ///
 /// Uses the pest-generated PEG parser to parse the input, then resolves
 /// cap URNs and derives media URNs from cap in/out specs.
 ///
 /// # Errors
 ///
-/// Returns `RouteNotationError` for any parse failure. Fails hard — no
+/// Returns `MachineSyntaxError` for any parse failure. Fails hard — no
 /// fallbacks, no guessing, no recovery.
-pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationError> {
+pub fn parse_machine(input: &str) -> Result<Machine, MachineSyntaxError> {
     let input = input.trim();
     if input.is_empty() {
-        return Err(RouteNotationError::Empty);
+        return Err(MachineSyntaxError::Empty);
     }
 
     // Phase 1: Parse with pest grammar
-    let pairs = RouteParser::parse(Rule::program, input).map_err(|e| {
-        RouteNotationError::ParseError {
+    let pairs = MachineParser::parse(Rule::program, input).map_err(|e| {
+        MachineSyntaxError::ParseError {
             details: format!("{}", e),
         }
     })?;
@@ -92,7 +92,7 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
                 let cap_urn_str = inner_pairs.next().unwrap().as_str();
 
                 let cap_urn = CapUrn::from_string(cap_urn_str).map_err(|e| {
-                    RouteNotationError::InvalidCapUrn {
+                    MachineSyntaxError::InvalidCapUrn {
                         alias: alias.clone(),
                         details: format!("{}", e),
                     }
@@ -130,7 +130,7 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
     let mut alias_map: BTreeMap<String, (CapUrn, usize)> = BTreeMap::new();
     for (alias, cap_urn, position) in &headers {
         if let Some((_, first_pos)) = alias_map.get(alias) {
-            return Err(RouteNotationError::DuplicateAlias {
+            return Err(MachineSyntaxError::DuplicateAlias {
                 alias: alias.clone(),
                 first_position: *first_pos,
             });
@@ -138,9 +138,9 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
         alias_map.insert(alias.clone(), (cap_urn.clone(), *position));
     }
 
-    // Phase 4: Resolve wirings into RouteEdges
+    // Phase 4: Resolve wirings into MachineEdges
     if wirings.is_empty() && !headers.is_empty() {
-        return Err(RouteNotationError::NoEdges);
+        return Err(MachineSyntaxError::NoEdges);
     }
 
     let mut node_media: HashMap<String, MediaUrn> = HashMap::new();
@@ -149,7 +149,7 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
     for (sources, cap_alias, target, is_loop, position) in &wirings {
         // Look up the cap alias
         let (cap_urn, _) = alias_map.get(cap_alias).ok_or_else(|| {
-            RouteNotationError::UndefinedAlias {
+            MachineSyntaxError::UndefinedAlias {
                 alias: cap_alias.clone(),
             }
         })?;
@@ -157,14 +157,14 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
         // Check node-alias collisions
         for src in sources {
             if alias_map.contains_key(src) {
-                return Err(RouteNotationError::NodeAliasCollision {
+                return Err(MachineSyntaxError::NodeAliasCollision {
                     name: src.clone(),
                     alias: src.clone(),
                 });
             }
         }
         if alias_map.contains_key(target) {
-            return Err(RouteNotationError::NodeAliasCollision {
+            return Err(MachineSyntaxError::NodeAliasCollision {
                 name: target.clone(),
                 alias: target.clone(),
             });
@@ -172,13 +172,13 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
 
         // Derive media URNs from cap's in=/out= specs
         let cap_in_media = cap_urn.in_media_urn().map_err(|e| {
-            RouteNotationError::InvalidMediaUrn {
+            MachineSyntaxError::InvalidMediaUrn {
                 alias: cap_alias.clone(),
                 details: format!("in= spec: {}", e),
             }
         })?;
         let cap_out_media = cap_urn.out_media_urn().map_err(|e| {
-            RouteNotationError::InvalidMediaUrn {
+            MachineSyntaxError::InvalidMediaUrn {
                 alias: cap_alias.clone(),
                 details: format!("out= spec: {}", e),
             }
@@ -209,7 +209,7 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
         // Assign target media URN
         assign_or_check_node(target, &cap_out_media, &mut node_media, *position)?;
 
-        edges.push(RouteEdge {
+        edges.push(MachineEdge {
             sources: source_urns,
             cap_urn: cap_urn.clone(),
             target: cap_out_media.clone(),
@@ -217,7 +217,7 @@ pub fn parse_route_notation(input: &str) -> Result<RouteGraph, RouteNotationErro
         });
     }
 
-    Ok(RouteGraph::new(edges))
+    Ok(Machine::new(edges))
 }
 
 /// Extract source node names from a source pair (single alias or group).
@@ -266,11 +266,11 @@ fn assign_or_check_node(
     media_urn: &MediaUrn,
     node_media: &mut HashMap<String, MediaUrn>,
     position: usize,
-) -> Result<(), RouteNotationError> {
+) -> Result<(), MachineSyntaxError> {
     if let Some(existing) = node_media.get(node) {
         let compatible = existing.is_comparable(media_urn).unwrap_or(false);
         if !compatible {
-            return Err(RouteNotationError::InvalidWiring {
+            return Err(MachineSyntaxError::InvalidWiring {
                 position,
                 details: format!(
                     "node '{}' has conflicting media types: existing '{}', new '{}'",
@@ -284,10 +284,10 @@ fn assign_or_check_node(
     Ok(())
 }
 
-impl RouteGraph {
-    /// Parse route notation into a `RouteGraph`.
-    pub fn from_string(input: &str) -> Result<Self, RouteNotationError> {
-        parse_route_notation(input)
+impl Machine {
+    /// Parse machine notation into a `Machine`.
+    pub fn from_string(input: &str) -> Result<Self, MachineSyntaxError> {
+        parse_machine(input)
     }
 }
 
@@ -306,16 +306,16 @@ mod tests {
     #[test]
     fn empty_input() {
         assert!(matches!(
-            parse_route_notation(""),
-            Err(RouteNotationError::Empty)
+            parse_machine(""),
+            Err(MachineSyntaxError::Empty)
         ));
     }
 
     #[test]
     fn whitespace_only() {
         assert!(matches!(
-            parse_route_notation("   \n  \t  "),
-            Err(RouteNotationError::Empty)
+            parse_machine("   \n  \t  "),
+            Err(MachineSyntaxError::Empty)
         ));
     }
 
@@ -327,8 +327,8 @@ mod tests {
     fn header_only_no_wirings() {
         let input = r#"[extract cap:in="media:pdf";op=extract;out="media:txt;textable"]"#;
         assert!(matches!(
-            RouteGraph::from_string(input),
-            Err(RouteNotationError::NoEdges)
+            Machine::from_string(input),
+            Err(MachineSyntaxError::NoEdges)
         ));
     }
 
@@ -340,8 +340,8 @@ mod tests {
             "[a -> ex -> b]"
         );
         assert!(matches!(
-            RouteGraph::from_string(input),
-            Err(RouteNotationError::DuplicateAlias { .. })
+            Machine::from_string(input),
+            Err(MachineSyntaxError::DuplicateAlias { .. })
         ));
     }
 
@@ -355,7 +355,7 @@ mod tests {
             r#"[extract cap:in="media:pdf";op=extract;out="media:txt;textable"]"#,
             "[doc -> extract -> text]"
         );
-        let graph = RouteGraph::from_string(input).unwrap();
+        let graph = Machine::from_string(input).unwrap();
         assert_eq!(graph.edge_count(), 1);
 
         let edge = &graph.edges()[0];
@@ -373,7 +373,7 @@ mod tests {
             "[doc -> extract -> text]",
             "[text -> embed -> vectors]"
         );
-        let graph = RouteGraph::from_string(input).unwrap();
+        let graph = Machine::from_string(input).unwrap();
         assert_eq!(graph.edge_count(), 2);
         assert!(graph.edges()[0].sources[0].is_equivalent(&media("media:pdf")).unwrap());
         assert!(graph.edges()[1].target
@@ -395,7 +395,7 @@ mod tests {
             "[doc -> outline -> outline_data]",
             "[doc -> thumb -> thumbnail]"
         );
-        let graph = RouteGraph::from_string(input).unwrap();
+        let graph = Machine::from_string(input).unwrap();
         assert_eq!(graph.edge_count(), 3);
         for edge in graph.edges() {
             assert_eq!(edge.sources.len(), 1);
@@ -417,7 +417,7 @@ mod tests {
             "[spec_input -> model_dl -> model_spec]",
             "[(thumbnail, model_spec) -> describe -> description]"
         );
-        let graph = RouteGraph::from_string(input).unwrap();
+        let graph = Machine::from_string(input).unwrap();
         assert_eq!(graph.edge_count(), 3);
         assert_eq!(graph.edges()[2].sources.len(), 2);
     }
@@ -430,7 +430,7 @@ mod tests {
             r#"[describe cap:in="media:image;png";op=describe_image;out="media:image-description;textable"]"#,
             "\n[(thumbnail, model_spec) -> describe -> description]"
         );
-        let graph = RouteGraph::from_string(input).expect("should parse with wildcard secondary");
+        let graph = Machine::from_string(input).expect("should parse with wildcard secondary");
         assert_eq!(graph.edges().len(), 1);
         // Secondary source gets wildcard media:
         assert_eq!(graph.edges()[0].sources.len(), 2);
@@ -448,7 +448,7 @@ mod tests {
             r#"[p2t cap:in="media:disbound-page;textable";op=page_to_text;out="media:txt;textable"]"#,
             "[pages -> LOOP p2t -> texts]"
         );
-        let graph = RouteGraph::from_string(input).unwrap();
+        let graph = Machine::from_string(input).unwrap();
         assert_eq!(graph.edge_count(), 1);
         assert!(graph.edges()[0].is_loop);
     }
@@ -461,8 +461,8 @@ mod tests {
     fn undefined_alias_fails() {
         let input = "[doc -> nonexistent -> text]";
         assert!(matches!(
-            RouteGraph::from_string(input),
-            Err(RouteNotationError::UndefinedAlias { alias }) if alias == "nonexistent"
+            Machine::from_string(input),
+            Err(MachineSyntaxError::UndefinedAlias { alias }) if alias == "nonexistent"
         ));
     }
 
@@ -477,8 +477,8 @@ mod tests {
             "[extract -> extract -> text]"
         );
         assert!(matches!(
-            RouteGraph::from_string(input),
-            Err(RouteNotationError::NodeAliasCollision { .. })
+            Machine::from_string(input),
+            Err(MachineSyntaxError::NodeAliasCollision { .. })
         ));
     }
 
@@ -495,8 +495,8 @@ mod tests {
             "[mid -> cap2 -> dst]"
         );
         assert!(matches!(
-            RouteGraph::from_string(input),
-            Err(RouteNotationError::InvalidWiring { .. })
+            Machine::from_string(input),
+            Err(MachineSyntaxError::InvalidWiring { .. })
         ));
     }
 
@@ -512,7 +512,7 @@ mod tests {
 [doc -> extract -> text]
 [text -> embed -> vectors]
 "#;
-        let graph = RouteGraph::from_string(input).unwrap();
+        let graph = Machine::from_string(input).unwrap();
         assert_eq!(graph.edge_count(), 2);
     }
 
@@ -530,8 +530,8 @@ mod tests {
             r#"[xt cap:in="media:pdf";op=extract;out="media:txt;textable"]"#,
             "[x -> xt -> y]"
         );
-        let g1 = RouteGraph::from_string(input1).unwrap();
-        let g2 = RouteGraph::from_string(input2).unwrap();
+        let g1 = Machine::from_string(input1).unwrap();
+        let g2 = Machine::from_string(input2).unwrap();
         assert!(g1.is_equivalent(&g2));
     }
 
@@ -541,13 +541,13 @@ mod tests {
 
     #[test]
     fn malformed_input_fails() {
-        let result = parse_route_notation("not valid route notation");
-        assert!(matches!(result, Err(RouteNotationError::ParseError { .. })));
+        let result = parse_machine("not valid machine notation");
+        assert!(matches!(result, Err(MachineSyntaxError::ParseError { .. })));
     }
 
     #[test]
     fn unterminated_bracket_fails() {
-        let result = parse_route_notation("[extract cap:in=media:pdf");
-        assert!(matches!(result, Err(RouteNotationError::ParseError { .. })));
+        let result = parse_machine("[extract cap:in=media:pdf");
+        assert!(matches!(result, Err(MachineSyntaxError::ParseError { .. })));
     }
 }

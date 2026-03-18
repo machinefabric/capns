@@ -11,7 +11,7 @@
 use capdag::{CapProgressFn, CapRegistry};
 use capdag::orchestrator::{
     execute_dag, NodeData,
-    parse_route_to_cap_dag,
+    parse_machine_to_cap_dag,
 };
 use serial_test::serial;
 use std::collections::HashMap;
@@ -736,7 +736,7 @@ fn generate_test_wav() -> Vec<u8> {
 }
 
 // =============================================================================
-// Route Notation Helpers
+// Machine Notation Helpers
 // =============================================================================
 
 /// Path to test scenario route files
@@ -746,13 +746,13 @@ fn scenarios_dir() -> PathBuf {
         .join("scenarios")
 }
 
-/// Load a route notation file and parse it into a resolved graph.
+/// Load a machine notation file and parse it into a resolved graph.
 /// Also generates a PNG diagram if mmdc is available.
 async fn load_and_parse_scenario(name: &str) -> (String, capdag::orchestrator::ResolvedGraph) {
-    let route_path = scenarios_dir().join(format!("{}.route", name));
+    let route_path = scenarios_dir().join(format!("{}.machine", name));
     let route = std::fs::read_to_string(&route_path)
         .unwrap_or_else(|e| panic!("Failed to read route file {}: {}", route_path.display(), e));
-    let graph = parse_route_to_cap_dag(&route, &*standard_registry())
+    let graph = parse_machine_to_cap_dag(&route, &*standard_registry())
         .await
         .unwrap_or_else(|e| panic!("Parse failed for {}: {}", name, e));
     generate_diagram(name, &graph);
@@ -760,7 +760,7 @@ async fn load_and_parse_scenario(name: &str) -> (String, capdag::orchestrator::R
 }
 
 /// Generate a PNG diagram from a resolved graph if mmdc is available.
-/// Writes to scenarios/{name}.png alongside the .route file.
+/// Writes to scenarios/{name}.png alongside the .machine file.
 fn generate_diagram(name: &str, graph: &capdag::orchestrator::ResolvedGraph) {
     static MMDC_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
         Command::new("mmdc").arg("--version").output().is_ok()
@@ -838,7 +838,7 @@ async fn ensure_model_downloaded(model_spec: &str, modelcartridge_bin: &PathBuf)
         "\n[model_spec -> download -> result]"
     );
 
-    let graph = parse_route_to_cap_dag(route, &*standard_registry())
+    let graph = parse_machine_to_cap_dag(route, &*standard_registry())
         .await
         .expect("Pre-download DAG parse failed");
 

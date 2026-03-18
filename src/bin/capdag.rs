@@ -1,9 +1,9 @@
 //! capdag: Route notation DAG executor for Cap pipelines
 //!
-//! A unified CLI for executing and validating route notation pipelines.
+//! A unified CLI for executing and validating machine notation pipelines.
 
-use capdag::orchestrator::{parse_route_to_cap_dag, execute_dag, NodeData};
-use capdag::route::RouteGraph;
+use capdag::orchestrator::{parse_machine_to_cap_dag, execute_dag, NodeData};
+use capdag::route::Machine;
 use capdag::{CapProgressFn, CapRegistry};
 use std::collections::HashMap;
 use std::env;
@@ -52,28 +52,28 @@ fn expand_dev_binary_path(path: &str) -> Vec<PathBuf> {
     }
 }
 
-/// Find input nodes in the route notation (root sources with no incoming edges).
+/// Find input nodes in the machine notation (root sources with no incoming edges).
 ///
-/// Parses the route notation into a RouteGraph and returns the node names
+/// Parses the machine notation into a Machine and returns the node names
 /// that are root sources (not produced by any cap).
 fn find_input_nodes(route_content: &str) -> Vec<String> {
-    let graph = match RouteGraph::from_string(route_content) {
+    let graph = match Machine::from_string(route_content) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("Failed to parse route notation for input node detection: {}", e);
+            eprintln!("Failed to parse machine notation for input node detection: {}", e);
             return vec![];
         }
     };
 
-    // Re-parse to get node names — RouteGraph discards them.
+    // Re-parse to get node names — Machine discards them.
     // Use the same pest extraction as the orchestrator.
     use pest::Parser;
-    use capdag::route::parser::{RouteParser, Rule};
+    use capdag::route::parser::{MachineParser, Rule};
 
-    let pairs = match RouteParser::parse(Rule::program, route_content.trim()) {
+    let pairs = match MachineParser::parse(Rule::program, route_content.trim()) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Failed to re-parse route notation: {}", e);
+            eprintln!("Failed to re-parse machine notation: {}", e);
             return vec![];
         }
     };
@@ -219,7 +219,7 @@ fn expand_input_path(path: &str) -> Vec<PathBuf> {
 fn print_usage(program: &str) {
     eprintln!(
         "Usage: {} [options] <route-file> [input-paths...]\n\n\
-         Execute a route notation pipeline on input files.\n\n\
+         Execute a machine notation pipeline on input files.\n\n\
          Options:\n\
            --mermaid                Output Mermaid diagram code and exit\n\
            --dev-bins <binary> ...  Use local plugin binaries\n\
@@ -229,10 +229,10 @@ fn print_usage(program: &str) {
            - Directory:     /path/to/pdfs/\n\
            - Glob pattern:  /path/to/*.pdf\n\n\
          Examples:\n\
-           {} --mermaid pipeline.route\n\
-           {} pipeline.route /tmp/test.pdf\n\
-           {} pipeline.route /tmp/pdfs/\n\
-           {} --dev-bins ./pdfcartridge pipeline.route /tmp/*.pdf",
+           {} --mermaid pipeline.machine\n\
+           {} pipeline.machine /tmp/test.pdf\n\
+           {} pipeline.machine /tmp/pdfs/\n\
+           {} --dev-bins ./pdfcartridge pipeline.machine /tmp/*.pdf",
         program, program, program, program, program
     );
 }
@@ -266,7 +266,7 @@ async fn main() {
                 arg_idx += 1;
                 while arg_idx < args.len()
                     && !args[arg_idx].starts_with("--")
-                    && !args[arg_idx].ends_with(".route")
+                    && !args[arg_idx].ends_with(".machine")
                 {
                     let expanded = expand_dev_binary_path(&args[arg_idx]);
                     if expanded.is_empty() {
@@ -308,8 +308,8 @@ async fn main() {
         }
     };
 
-    // Parse and validate route notation
-    let graph = match parse_route_to_cap_dag(&route_content, registry.as_ref()).await {
+    // Parse and validate machine notation
+    let graph = match parse_machine_to_cap_dag(&route_content, registry.as_ref()).await {
         Ok(g) => g,
         Err(e) => {
             eprintln!("Validation failed: {}", e);
@@ -326,7 +326,7 @@ async fn main() {
     // Find input nodes automatically
     let input_nodes = find_input_nodes(&route_content);
     if input_nodes.is_empty() {
-        eprintln!("No input nodes found in route notation");
+        eprintln!("No input nodes found in machine notation");
         process::exit(1);
     }
 
@@ -348,7 +348,7 @@ async fn main() {
     // For now, use the first input node for all files
     let input_node = &input_nodes[0];
 
-    eprintln!("=== capdag: Route Notation Execution ===\n");
+    eprintln!("=== capdag: Machine Notation Execution ===\n");
     eprintln!("Route file: {}", route_file);
     eprintln!("Input node: {}", input_node);
     eprintln!("Input files: {}", all_files.len());
@@ -356,7 +356,7 @@ async fn main() {
         eprintln!("  - {}", f.display());
     }
 
-    eprintln!("Parsing and validating route notation...");
+    eprintln!("Parsing and validating machine notation...");
     eprintln!("  Nodes: {}", graph.nodes.len());
     eprintln!("  Edges: {}", graph.edges.len());
 

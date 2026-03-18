@@ -3,9 +3,9 @@
 //! Route notation replaces the DOT file format for describing capability
 //! transformation paths. It provides:
 //!
-//! - A typed graph model (`RouteGraph`, `RouteEdge`) with semantic equivalence
+//! - A typed graph model (`Machine`, `MachineEdge`) with semantic equivalence
 //! - A compact textual format for serialization
-//! - Conversion from resolved paths (`CapChainPathInfo`)
+//! - Conversion from resolved paths (`Strand`)
 //!
 //! ## Format
 //!
@@ -29,6 +29,6 @@ pub mod graph;
 pub mod parser;
 pub mod serializer;
 
-pub use error::RouteNotationError;
-pub use graph::{RouteEdge, RouteGraph};
-pub use parser::parse_route_notation;
+pub use error::MachineSyntaxError;
+pub use graph::{MachineEdge, Machine};
+pub use parser::parse_machine;

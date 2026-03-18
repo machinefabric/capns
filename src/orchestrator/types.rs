@@ -1,4 +1,4 @@
-//! Types for route notation orchestration
+//! Types for machine notation orchestration
 //!
 //! This module defines the error types and IR structures used by the orchestrator.
 
@@ -10,12 +10,12 @@ use thiserror::Error;
 // Error Types
 // =============================================================================
 
-/// Errors that can occur during route notation parsing and orchestration
+/// Errors that can occur during machine notation parsing and orchestration
 #[derive(Debug, Error)]
 pub enum ParseOrchestrationError {
     /// Route notation parsing failed
     #[error("Route notation parse failed: {0}")]
-    RouteNotationParseFailed(String),
+    MachineSyntaxParseFailed(String),
 
     /// Cap URN not found in registry
     #[error("Cap URN '{cap_urn}' not found in registry")]

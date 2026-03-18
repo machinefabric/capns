@@ -1,12 +1,12 @@
 //! Route notation parsing and Cap URN resolution for orchestration
 //!
-//! Parses route notation and resolves cap URNs via a registry, validates
+//! Parses machine notation and resolves cap URNs via a registry, validates
 //! the graph, and produces a validated, executable DAG IR.
 
 use super::types::{CapRegistryTrait, ParseOrchestrationError, ResolvedEdge, ResolvedGraph};
 use super::validation::validate_dag;
 use crate::{InputStructure, MediaUrn};
-use crate::route::graph::RouteGraph;
+use crate::route::graph::Machine;
 use std::collections::HashMap;
 
 /// Check if two media URNs are on the same specialization chain.
@@ -47,7 +47,7 @@ fn check_structure_compatibility(
     Ok(())
 }
 
-/// Parse route notation and produce a validated orchestration graph.
+/// Parse machine notation and produce a validated orchestration graph.
 ///
 /// Route notation format:
 ///
@@ -63,28 +63,28 @@ fn check_structure_compatibility(
 /// # Errors
 ///
 /// Returns `ParseOrchestrationError` for any validation failure.
-pub async fn parse_route_to_cap_dag(
+pub async fn parse_machine_to_cap_dag(
     route: &str,
     registry: &dyn CapRegistryTrait,
 ) -> Result<ResolvedGraph, ParseOrchestrationError> {
-    // Step 1: Parse route notation into a RouteGraph.
+    // Step 1: Parse machine notation into a Machine.
     // This validates syntax, resolves aliases, checks media type consistency,
     // and derives media URNs from cap in/out specs.
-    let route_graph = RouteGraph::from_string(route)
-        .map_err(|e| ParseOrchestrationError::RouteNotationParseFailed(format!("{}", e)))?;
+    let machine = Machine::from_string(route)
+        .map_err(|e| ParseOrchestrationError::MachineSyntaxParseFailed(format!("{}", e)))?;
 
-    // Step 2: Extract node names from the route notation.
-    // RouteGraph discards node names (they're serialization concerns), but
+    // Step 2: Extract node names from the machine notation.
+    // Machine discards node names (they're serialization concerns), but
     // the executor uses them as data-flow keys.
     let wiring_info = extract_wiring_info(route)?;
 
     // Validate that wiring count matches edge count. These must align because
     // the route parser builds edges in wiring statement order.
-    if wiring_info.len() != route_graph.edges().len() {
-        return Err(ParseOrchestrationError::RouteNotationParseFailed(format!(
+    if wiring_info.len() != machine.edges().len() {
+        return Err(ParseOrchestrationError::MachineSyntaxParseFailed(format!(
             "internal error: {} wirings but {} edges — route parser edge ordering invariant violated",
             wiring_info.len(),
-            route_graph.edges().len()
+            machine.edges().len()
         )));
     }
 
@@ -94,7 +94,7 @@ pub async fn parse_route_to_cap_dag(
     let mut node_media: HashMap<String, MediaUrn> = HashMap::new();
     let mut resolved_edges = Vec::new();
 
-    for (edge_idx, edge) in route_graph.edges().iter().enumerate() {
+    for (edge_idx, edge) in machine.edges().iter().enumerate() {
         let cap_urn_str = edge.cap_urn.to_string();
         let cap = registry.lookup(&cap_urn_str).await?;
 
@@ -128,7 +128,7 @@ pub async fn parse_route_to_cap_dag(
                     match arg_media {
                         Some(media) => media,
                         None => {
-                            return Err(ParseOrchestrationError::RouteNotationParseFailed(format!(
+                            return Err(ParseOrchestrationError::MachineSyntaxParseFailed(format!(
                                 "fan-in secondary source '{}' (index {}) has no media type and \
                                  cap '{}' has no matching arg at index {}",
                                 src_name, i, cap_urn_str, arg_idx
@@ -198,17 +198,17 @@ struct WiringInfo {
     target_name: String,
 }
 
-/// Extract wiring node names from route notation via the pest parser.
+/// Extract wiring node names from machine notation via the pest parser.
 ///
-/// The RouteGraph model intentionally discards alias/node names (they're
+/// The Machine model intentionally discards alias/node names (they're
 /// serialization concerns). But the executor uses node names as data-flow
 /// keys. This function extracts them from the wiring statements in order.
 fn extract_wiring_info(route: &str) -> Result<Vec<WiringInfo>, ParseOrchestrationError> {
     use pest::Parser;
-    use crate::route::parser::{RouteParser, Rule};
+    use crate::route::parser::{MachineParser, Rule};
 
-    let pairs = RouteParser::parse(Rule::program, route.trim())
-        .map_err(|e| ParseOrchestrationError::RouteNotationParseFailed(format!("{}", e)))?;
+    let pairs = MachineParser::parse(Rule::program, route.trim())
+        .map_err(|e| ParseOrchestrationError::MachineSyntaxParseFailed(format!("{}", e)))?;
 
     let mut wirings: Vec<WiringInfo> = Vec::new();
 
@@ -343,7 +343,7 @@ mod tests {
             "[A -> extract -> B]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
 
         let graph = result.unwrap();
@@ -375,7 +375,7 @@ mod tests {
             "[B -> embed -> C]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
 
         let graph = result.unwrap();
@@ -409,7 +409,7 @@ mod tests {
             "[doc -> thumb -> thumbnail]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
 
         let graph = result.unwrap();
@@ -437,7 +437,7 @@ mod tests {
             "[(thumbnail, model_spec) -> describe -> description]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
 
         let graph = result.unwrap();
@@ -460,7 +460,7 @@ mod tests {
             "[pages -> LOOP p2t -> texts]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(), "Parse failed: {:?}", result.err());
 
         let graph = result.unwrap();
@@ -480,21 +480,21 @@ mod tests {
             "[A -> ex -> B]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(matches!(result, Err(ParseOrchestrationError::CapNotFound { .. })),
             "Expected CapNotFound, got {:?}", result);
     }
 
     // =========================================================================
-    // Invalid route notation
+    // Invalid machine notation
     // =========================================================================
 
     #[tokio::test]
-    async fn invalid_route_notation() {
+    async fn invalid_machine_notation() {
         let registry = MockRegistry::new();
-        let result = parse_route_to_cap_dag("not valid", &registry).await;
-        assert!(matches!(result, Err(ParseOrchestrationError::RouteNotationParseFailed(_))),
-            "Expected RouteNotationParseFailed, got {:?}", result);
+        let result = parse_machine_to_cap_dag("not valid", &registry).await;
+        assert!(matches!(result, Err(ParseOrchestrationError::MachineSyntaxParseFailed(_))),
+            "Expected MachineSyntaxParseFailed, got {:?}", result);
     }
 
     // =========================================================================
@@ -514,7 +514,7 @@ mod tests {
             "[C -> proc -> A]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(matches!(result, Err(ParseOrchestrationError::NotADag { .. })),
             "Expected NotADag for cyclic graph, got {:?}", result);
     }
@@ -540,10 +540,10 @@ mod tests {
             "[B -> transcribe -> C]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         // Route notation catches media conflicts during parsing, before orchestrator validation
-        assert!(matches!(result, Err(ParseOrchestrationError::RouteNotationParseFailed(_))),
-            "Expected RouteNotationParseFailed for pdf vs audio at shared node, got {:?}", result);
+        assert!(matches!(result, Err(ParseOrchestrationError::MachineSyntaxParseFailed(_))),
+            "Expected MachineSyntaxParseFailed for pdf vs audio at shared node, got {:?}", result);
     }
 
     // =========================================================================
@@ -565,7 +565,7 @@ mod tests {
             "[B -> embed_image -> C]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(),
             "Compatible media URNs (image;png vs image;png;bytes) should not conflict: {:?}",
             result.err());
@@ -590,7 +590,7 @@ mod tests {
             "[B -> process -> C]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(matches!(result, Err(ParseOrchestrationError::StructureMismatch { .. })),
             "Record to opaque structure mismatch must be detected: {:?}", result);
     }
@@ -612,7 +612,7 @@ mod tests {
             "[B -> transform -> C]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(),
             "Record to record should be accepted: {:?}", result.err());
     }
@@ -634,7 +634,7 @@ mod tests {
             "[B -> format -> C]"
         );
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(),
             "Opaque to opaque should be accepted: {:?}", result.err());
     }
@@ -653,7 +653,7 @@ mod tests {
 [doc -> extract -> text]
 "#;
 
-        let result = parse_route_to_cap_dag(route, &registry).await;
+        let result = parse_machine_to_cap_dag(route, &registry).await;
         assert!(result.is_ok(), "Multi-line parse failed: {:?}", result.err());
     }
 }

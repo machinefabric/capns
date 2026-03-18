@@ -22,25 +22,25 @@ use super::{
         CapInputFile, resolve_binding,
     },
     plan::{
-        CapChainExecutionResult, CapExecutionPlan, CapNode, EdgeType,
+        MachineResult, MachinePlan, MachineNode, EdgeType,
         ExecutionNodeType, NodeExecutionResult, NodeId,
     },
 };
 
 /// Generic plan executor parameterized by a cap execution backend.
-pub struct PlanExecutor<E: CapExecutor> {
+pub struct MachineExecutor<E: CapExecutor> {
     executor: E,
-    plan: CapExecutionPlan,
+    plan: MachinePlan,
     input_files: Vec<CapInputFile>,
     slot_values: HashMap<String, Vec<u8>>,
     settings_provider: Option<Box<dyn CapSettingsProvider>>,
 }
 
-impl<E: CapExecutor> PlanExecutor<E> {
+impl<E: CapExecutor> MachineExecutor<E> {
     /// Create a new plan executor.
     pub fn new(
         executor: E,
-        plan: CapExecutionPlan,
+        plan: MachinePlan,
         input_files: Vec<CapInputFile>,
     ) -> Self {
         Self {
@@ -65,7 +65,7 @@ impl<E: CapExecutor> PlanExecutor<E> {
     }
 
     /// Execute the plan and return the result.
-    pub async fn execute(&self) -> PlannerResult<CapChainExecutionResult> {
+    pub async fn execute(&self) -> PlannerResult<MachineResult> {
         let start = Instant::now();
 
         self.plan.validate().map_err(|e| PlannerError::Internal(e.to_string()))?;
@@ -84,7 +84,7 @@ impl<E: CapExecutor> PlanExecutor<E> {
             match result {
                 Ok((exec_result, output)) => {
                     if !exec_result.success {
-                        return Ok(CapChainExecutionResult {
+                        return Ok(MachineResult {
                             success: false,
                             node_results,
                             outputs: HashMap::new(),
@@ -103,7 +103,7 @@ impl<E: CapExecutor> PlanExecutor<E> {
                     node_results.insert(node.id.clone(), exec_result);
                 }
                 Err(e) => {
-                    return Ok(CapChainExecutionResult {
+                    return Ok(MachineResult {
                         success: false,
                         node_results,
                         outputs: HashMap::new(),
@@ -121,7 +121,7 @@ impl<E: CapExecutor> PlanExecutor<E> {
             }
         }
 
-        Ok(CapChainExecutionResult {
+        Ok(MachineResult {
             success: true,
             node_results,
             outputs,
@@ -133,7 +133,7 @@ impl<E: CapExecutor> PlanExecutor<E> {
     /// Execute a single node.
     async fn execute_node(
         &self,
-        node: &CapNode,
+        node: &MachineNode,
         _node_results: &HashMap<NodeId, NodeExecutionResult>,
         node_outputs: &HashMap<NodeId, serde_json::Value>,
     ) -> PlannerResult<(NodeExecutionResult, Option<serde_json::Value>)> {
@@ -550,7 +550,7 @@ pub fn extract_json_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::plan::{CapExecutionPlan, EdgeType};
+    use crate::planner::plan::{MachinePlan, EdgeType};
 
     // TEST804: Tests basic JSON path extraction with dot notation for nested objects
     // Verifies that simple paths like "data.message" correctly extract values from nested JSON structures

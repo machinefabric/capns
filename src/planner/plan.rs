@@ -134,7 +134,7 @@ impl Default for MergeStrategy {
 
 /// A node in the execution DAG
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapNode {
+pub struct MachineNode {
     /// Unique identifier for this node
     pub id: NodeId,
     /// The type of node and its specific configuration
@@ -144,7 +144,7 @@ pub struct CapNode {
     pub description: Option<String>,
 }
 
-impl CapNode {
+impl MachineNode {
     /// Create a cap execution node
     pub fn cap(id: &str, cap_urn: &str) -> Self {
         Self {
@@ -302,7 +302,7 @@ impl Default for EdgeType {
 
 /// An edge in the execution plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapEdge {
+pub struct MachinePlanEdge {
     /// Source node
     pub from_node: NodeId,
     /// Target node
@@ -312,7 +312,7 @@ pub struct CapEdge {
     pub edge_type: EdgeType,
 }
 
-impl CapEdge {
+impl MachinePlanEdge {
     /// Create a direct edge
     pub fn direct(from: &str, to: &str) -> Self {
         Self {
@@ -361,15 +361,15 @@ impl CapEdge {
 
 /// The structured execution plan for a cap chain
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapExecutionPlan {
+pub struct MachinePlan {
     /// Human-readable name for this execution plan
     pub name: String,
 
     /// All nodes in the DAG
-    pub nodes: HashMap<NodeId, CapNode>,
+    pub nodes: HashMap<NodeId, MachineNode>,
 
     /// Edges describing data flow
-    pub edges: Vec<CapEdge>,
+    pub edges: Vec<MachinePlanEdge>,
 
     /// Entry point nodes (InputSlots)
     pub entry_nodes: Vec<NodeId>,
@@ -382,7 +382,7 @@ pub struct CapExecutionPlan {
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
-impl CapExecutionPlan {
+impl MachinePlan {
     /// Create an empty plan
     pub fn new(name: &str) -> Self {
         Self {
@@ -396,7 +396,7 @@ impl CapExecutionPlan {
     }
 
     /// Add a node to the plan
-    pub fn add_node(&mut self, node: CapNode) {
+    pub fn add_node(&mut self, node: MachineNode) {
         let id = node.id.clone();
 
         // Track entry/output nodes
@@ -414,12 +414,12 @@ impl CapExecutionPlan {
     }
 
     /// Add an edge to the plan
-    pub fn add_edge(&mut self, edge: CapEdge) {
+    pub fn add_edge(&mut self, edge: MachinePlanEdge) {
         self.edges.push(edge);
     }
 
     /// Get a node by ID
-    pub fn get_node(&self, id: &str) -> Option<&CapNode> {
+    pub fn get_node(&self, id: &str) -> Option<&MachineNode> {
         self.nodes.get(id)
     }
 
@@ -465,7 +465,7 @@ impl CapExecutionPlan {
     }
 
     /// Get topological ordering of nodes
-    pub fn topological_order(&self) -> Result<Vec<&CapNode>, PlannerError> {
+    pub fn topological_order(&self) -> Result<Vec<&MachineNode>, PlannerError> {
         let mut in_degree: HashMap<&str, usize> = HashMap::new();
         let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
 
@@ -487,7 +487,7 @@ impl CapExecutionPlan {
             .map(|(&id, _)| id)
             .collect();
 
-        let mut result: Vec<&CapNode> = Vec::new();
+        let mut result: Vec<&MachineNode> = Vec::new();
 
         while let Some(node_id) = queue.pop_front() {
             if let Some(node) = self.nodes.get(node_id) {
@@ -522,7 +522,7 @@ impl CapExecutionPlan {
 
         // Add input slot
         let input_id = "input_slot";
-        plan.add_node(CapNode::input_slot(
+        plan.add_node(MachineNode::input_slot(
             input_id,
             "input",
             input_media,
@@ -533,13 +533,13 @@ impl CapExecutionPlan {
         let cap_id = "cap_0";
         let mut bindings = ArgumentBindings::new();
         bindings.add_file_path(file_path_arg_name);
-        plan.add_node(CapNode::cap_with_bindings(cap_id, cap_urn, bindings));
-        plan.add_edge(CapEdge::direct(input_id, cap_id));
+        plan.add_node(MachineNode::cap_with_bindings(cap_id, cap_urn, bindings));
+        plan.add_edge(MachinePlanEdge::direct(input_id, cap_id));
 
         // Add output node
         let output_id = "output";
-        plan.add_node(CapNode::output(output_id, "result", cap_id));
-        plan.add_edge(CapEdge::direct(cap_id, output_id));
+        plan.add_node(MachineNode::output(output_id, "result", cap_id));
+        plan.add_edge(MachinePlanEdge::direct(cap_id, output_id));
 
         plan
     }
@@ -604,7 +604,7 @@ impl CapExecutionPlan {
         }
 
         // Build the sub-plan with only ancestor nodes
-        let mut sub_plan = CapExecutionPlan::new(&format!("{} [prefix to {}]", self.name, target_node_id));
+        let mut sub_plan = MachinePlan::new(&format!("{} [prefix to {}]", self.name, target_node_id));
 
         for node_id in &ancestors {
             if let Some(node) = self.nodes.get(node_id) {
@@ -631,8 +631,8 @@ impl CapExecutionPlan {
 
         // Add synthetic Output node connected to the target
         let output_id = format!("{}_prefix_output", target_node_id);
-        sub_plan.add_node(CapNode::output(&output_id, "prefix_result", target_node_id));
-        sub_plan.add_edge(CapEdge::direct(target_node_id, &output_id));
+        sub_plan.add_node(MachineNode::output(&output_id, "prefix_result", target_node_id));
+        sub_plan.add_edge(MachinePlanEdge::direct(target_node_id, &output_id));
 
         sub_plan.validate()?;
         Ok(sub_plan)
@@ -709,13 +709,13 @@ impl CapExecutionPlan {
         body_nodes.insert(body_exit.clone());
 
         // Build the body sub-plan
-        let mut body_plan = CapExecutionPlan::new(
+        let mut body_plan = MachinePlan::new(
             &format!("{} [foreach body {}]", self.name, foreach_node_id)
         );
 
         // Add synthetic InputSlot for the per-item input
         let input_id = format!("{}_body_input", foreach_node_id);
-        body_plan.add_node(CapNode::input_slot(
+        body_plan.add_node(MachineNode::input_slot(
             &input_id,
             "item_input",
             item_media_urn,
@@ -730,7 +730,7 @@ impl CapExecutionPlan {
         }
 
         // Add edge from synthetic input to body_entry
-        body_plan.add_edge(CapEdge::direct(&input_id, &body_entry));
+        body_plan.add_edge(MachinePlanEdge::direct(&input_id, &body_entry));
 
         // Add edges where both endpoints are body nodes
         for edge in &self.edges {
@@ -745,8 +745,8 @@ impl CapExecutionPlan {
 
         // Add synthetic Output connected to body_exit
         let output_id = format!("{}_body_output", foreach_node_id);
-        body_plan.add_node(CapNode::output(&output_id, "item_result", &body_exit));
-        body_plan.add_edge(CapEdge::direct(&body_exit, &output_id));
+        body_plan.add_node(MachineNode::output(&output_id, "item_result", &body_exit));
+        body_plan.add_edge(MachinePlanEdge::direct(&body_exit, &output_id));
 
         body_plan.validate()?;
         Ok(body_plan)
@@ -793,13 +793,13 @@ impl CapExecutionPlan {
             }
         }
 
-        let mut sub_plan = CapExecutionPlan::new(
+        let mut sub_plan = MachinePlan::new(
             &format!("{} [suffix from {}]", self.name, source_node_id)
         );
 
         // Add synthetic InputSlot to feed into source_node
         let input_id = format!("{}_suffix_input", source_node_id);
-        sub_plan.add_node(CapNode::input_slot(
+        sub_plan.add_node(MachineNode::input_slot(
             &input_id,
             "collected_input",
             source_media_urn,
@@ -824,7 +824,7 @@ impl CapExecutionPlan {
         // Connect synthetic input to the successors of source_node
         for edge in &self.edges {
             if edge.from_node == source_node_id && descendants.contains(&edge.to_node) {
-                sub_plan.add_edge(CapEdge::direct(&input_id, &edge.to_node));
+                sub_plan.add_edge(MachinePlanEdge::direct(&input_id, &edge.to_node));
             } else if descendants.contains(&edge.from_node)
                 && descendants.contains(&edge.to_node)
                 && edge.from_node != source_node_id
@@ -848,7 +848,7 @@ impl CapExecutionPlan {
 
         // Add input slot
         let input_id = "input_slot";
-        plan.add_node(CapNode::input_slot(
+        plan.add_node(MachineNode::input_slot(
             input_id,
             "input",
             input_media,
@@ -865,15 +865,15 @@ impl CapExecutionPlan {
             if let Some(arg_name) = file_path_arg_names.get(i) {
                 bindings.add_file_path(arg_name);
             }
-            plan.add_node(CapNode::cap_with_bindings(&cap_id, urn, bindings));
-            plan.add_edge(CapEdge::direct(&prev_id, &cap_id));
+            plan.add_node(MachineNode::cap_with_bindings(&cap_id, urn, bindings));
+            plan.add_edge(MachinePlanEdge::direct(&prev_id, &cap_id));
             prev_id = cap_id;
         }
 
         // Add output node
         let output_id = "output";
-        plan.add_node(CapNode::output(output_id, "result", &prev_id));
-        plan.add_edge(CapEdge::direct(&prev_id, output_id));
+        plan.add_node(MachineNode::output(output_id, "result", &prev_id));
+        plan.add_edge(MachinePlanEdge::direct(&prev_id, output_id));
 
         plan
     }
@@ -903,7 +903,7 @@ pub struct NodeExecutionResult {
 
 /// Overall result of executing a cap chain
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapChainExecutionResult {
+pub struct MachineResult {
     /// Whether the entire chain executed successfully
     pub success: bool,
 
@@ -920,7 +920,7 @@ pub struct CapChainExecutionResult {
     pub total_duration_ms: u64,
 }
 
-impl CapChainExecutionResult {
+impl MachineResult {
     /// Get the primary output (first output node's result)
     pub fn primary_output(&self) -> Option<&serde_json::Value> {
         self.outputs.values().next()
@@ -936,7 +936,7 @@ mod tests {
     // Verifies that single_cap() generates a valid plan with input_slot, cap node, and output node
     #[test]
     fn test920_single_cap_plan() {
-        let plan = CapExecutionPlan::single_cap(
+        let plan = MachinePlan::single_cap(
             "cap:test",
             "media:pdf",
             "media:png",
@@ -952,7 +952,7 @@ mod tests {
     // Verifies that linear_chain() correctly links multiple caps with proper edges and topological order
     #[test]
     fn test921_linear_chain_plan() {
-        let plan = CapExecutionPlan::linear_chain(
+        let plan = MachinePlan::linear_chain(
             &["cap:a", "cap:b", "cap:c"],
             "media:pdf",
             "media:png",
@@ -970,7 +970,7 @@ mod tests {
     // Verifies that plans without capabilities are valid and handle zero nodes correctly
     #[test]
     fn test922_empty_plan() {
-        let plan = CapExecutionPlan::new("empty");
+        let plan = MachinePlan::new("empty");
         assert_eq!(plan.nodes.len(), 0);
         assert!(plan.validate().is_ok());
     }
@@ -979,7 +979,7 @@ mod tests {
     // Verifies that arbitrary JSON metadata can be associated with a plan for context preservation
     #[test]
     fn test923_plan_with_metadata() {
-        let mut plan = CapExecutionPlan::new("test");
+        let mut plan = MachinePlan::new("test");
         let mut metadata = HashMap::new();
         metadata.insert("source".to_string(), json!("pdf"));
         metadata.insert("version".to_string(), json!(1));
@@ -996,12 +996,12 @@ mod tests {
     // Verifies that validate() returns an error when an edge references a missing to_node
     #[test]
     fn test924_validate_invalid_edge() {
-        let mut plan = CapExecutionPlan::new("invalid");
+        let mut plan = MachinePlan::new("invalid");
         plan.nodes.insert(
             "node_0".to_string(),
-            CapNode::cap("node_0", "cap:test"),
+            MachineNode::cap("node_0", "cap:test"),
         );
-        plan.edges.push(CapEdge::direct("node_0", "nonexistent"));
+        plan.edges.push(MachinePlanEdge::direct("node_0", "nonexistent"));
 
         let result = plan.validate();
         assert!(result.is_err());
@@ -1014,17 +1014,17 @@ mod tests {
     #[test]
     fn test925_topological_order_diamond() {
         // Diamond: A -> B, A -> C, B -> D, C -> D
-        let mut plan = CapExecutionPlan::new("diamond");
+        let mut plan = MachinePlan::new("diamond");
 
-        plan.nodes.insert("A".to_string(), CapNode::cap("A", "cap:a"));
-        plan.nodes.insert("B".to_string(), CapNode::cap("B", "cap:b"));
-        plan.nodes.insert("C".to_string(), CapNode::cap("C", "cap:c"));
-        plan.nodes.insert("D".to_string(), CapNode::cap("D", "cap:d"));
+        plan.nodes.insert("A".to_string(), MachineNode::cap("A", "cap:a"));
+        plan.nodes.insert("B".to_string(), MachineNode::cap("B", "cap:b"));
+        plan.nodes.insert("C".to_string(), MachineNode::cap("C", "cap:c"));
+        plan.nodes.insert("D".to_string(), MachineNode::cap("D", "cap:d"));
 
-        plan.edges.push(CapEdge::direct("A", "B"));
-        plan.edges.push(CapEdge::direct("A", "C"));
-        plan.edges.push(CapEdge::direct("B", "D"));
-        plan.edges.push(CapEdge::direct("C", "D"));
+        plan.edges.push(MachinePlanEdge::direct("A", "B"));
+        plan.edges.push(MachinePlanEdge::direct("A", "C"));
+        plan.edges.push(MachinePlanEdge::direct("B", "D"));
+        plan.edges.push(MachinePlanEdge::direct("C", "D"));
 
         let order = plan.topological_order().unwrap();
         assert_eq!(order.len(), 4);
@@ -1040,15 +1040,15 @@ mod tests {
     #[test]
     fn test926_topological_order_detects_cycle() {
         // Cycle: A -> B -> C -> A
-        let mut plan = CapExecutionPlan::new("cyclic");
+        let mut plan = MachinePlan::new("cyclic");
 
-        plan.nodes.insert("A".to_string(), CapNode::cap("A", "cap:a"));
-        plan.nodes.insert("B".to_string(), CapNode::cap("B", "cap:b"));
-        plan.nodes.insert("C".to_string(), CapNode::cap("C", "cap:c"));
+        plan.nodes.insert("A".to_string(), MachineNode::cap("A", "cap:a"));
+        plan.nodes.insert("B".to_string(), MachineNode::cap("B", "cap:b"));
+        plan.nodes.insert("C".to_string(), MachineNode::cap("C", "cap:c"));
 
-        plan.edges.push(CapEdge::direct("A", "B"));
-        plan.edges.push(CapEdge::direct("B", "C"));
-        plan.edges.push(CapEdge::direct("C", "A"));
+        plan.edges.push(MachinePlanEdge::direct("A", "B"));
+        plan.edges.push(MachinePlanEdge::direct("B", "C"));
+        plan.edges.push(MachinePlanEdge::direct("C", "A"));
 
         let result = plan.topological_order();
         assert!(result.is_err());
@@ -1056,23 +1056,23 @@ mod tests {
         assert!(error.contains("Cycle detected"));
     }
 
-    // TEST728: Tests CapNode helper methods for identifying node types (cap, fan-out, fan-in)
+    // TEST728: Tests MachineNode helper methods for identifying node types (cap, fan-out, fan-in)
     // Verifies is_cap(), is_fan_out(), is_fan_in(), and cap_urn() correctly classify node types
     #[test]
     fn test728_cap_node_helpers() {
-        let cap_node = CapNode::cap("test", "cap:test");
+        let cap_node = MachineNode::cap("test", "cap:test");
         assert!(cap_node.is_cap());
         assert!(!cap_node.is_fan_out());
         assert!(!cap_node.is_fan_in());
         assert_eq!(cap_node.cap_urn(), Some("cap:test"));
 
-        let foreach_node = CapNode::for_each("foreach", "input", "body", "body");
+        let foreach_node = MachineNode::for_each("foreach", "input", "body", "body");
         assert!(!foreach_node.is_cap());
         assert!(foreach_node.is_fan_out());
         assert!(!foreach_node.is_fan_in());
         assert_eq!(foreach_node.cap_urn(), None);
 
-        let collect_node = CapNode::collect("collect", vec!["a".to_string()]);
+        let collect_node = MachineNode::collect("collect", vec!["a".to_string()]);
         assert!(!collect_node.is_cap());
         assert!(!collect_node.is_fan_out());
         assert!(collect_node.is_fan_in());
@@ -1082,27 +1082,27 @@ mod tests {
     // Verifies that edge constructors produce correct EdgeType variants
     #[test]
     fn test729_edge_types() {
-        let direct = CapEdge::direct("a", "b");
+        let direct = MachinePlanEdge::direct("a", "b");
         assert!(matches!(direct.edge_type, EdgeType::Direct));
 
-        let iteration = CapEdge::iteration("foreach", "body");
+        let iteration = MachinePlanEdge::iteration("foreach", "body");
         assert!(matches!(iteration.edge_type, EdgeType::Iteration));
 
-        let collection = CapEdge::collection("body", "collect");
+        let collection = MachinePlanEdge::collection("body", "collect");
         assert!(matches!(collection.edge_type, EdgeType::Collection));
 
-        let json_field = CapEdge::json_field("a", "b", "data");
+        let json_field = MachinePlanEdge::json_field("a", "b", "data");
         assert!(matches!(json_field.edge_type, EdgeType::JsonField { field } if field == "data"));
     }
 
-    // TEST927: Tests CapChainExecutionResult structure for successful execution outcomes
+    // TEST927: Tests MachineResult structure for successful execution outcomes
     // Verifies that success status, outputs, and primary_output() accessor work correctly
     #[test]
     fn test927_execution_result() {
         let mut outputs = HashMap::new();
         outputs.insert("output".to_string(), json!({"result": "success"}));
 
-        let result = CapChainExecutionResult {
+        let result = MachineResult {
             success: true,
             node_results: HashMap::new(),
             outputs,
@@ -1118,12 +1118,12 @@ mod tests {
     // Verifies that validate() returns an error when an edge references a missing from_node
     #[test]
     fn test928_validate_invalid_from_node() {
-        let mut plan = CapExecutionPlan::new("invalid");
+        let mut plan = MachinePlan::new("invalid");
         plan.nodes.insert(
             "node_0".to_string(),
-            CapNode::cap("node_0", "cap:test"),
+            MachineNode::cap("node_0", "cap:test"),
         );
-        plan.edges.push(CapEdge::direct("nonexistent", "node_0"));
+        plan.edges.push(MachinePlanEdge::direct("nonexistent", "node_0"));
 
         let result = plan.validate();
         assert!(result.is_err());
@@ -1135,10 +1135,10 @@ mod tests {
     // Verifies that validate() returns an error when entry_nodes contains a non-existent node ID
     #[test]
     fn test929_validate_invalid_entry_node() {
-        let mut plan = CapExecutionPlan::new("invalid_entry");
+        let mut plan = MachinePlan::new("invalid_entry");
         plan.nodes.insert(
             "cap_0".to_string(),
-            CapNode::cap("cap_0", "cap:test"),
+            MachineNode::cap("cap_0", "cap:test"),
         );
         // Manually add invalid entry node reference
         plan.entry_nodes.push("nonexistent_entry".to_string());
@@ -1153,10 +1153,10 @@ mod tests {
     // Verifies that validate() returns an error when output_nodes contains a non-existent node ID
     #[test]
     fn test930_validate_invalid_output_node() {
-        let mut plan = CapExecutionPlan::new("invalid_output");
+        let mut plan = MachinePlan::new("invalid_output");
         plan.nodes.insert(
             "cap_0".to_string(),
-            CapNode::cap("cap_0", "cap:test"),
+            MachineNode::cap("cap_0", "cap:test"),
         );
         // Manually add invalid output node reference
         plan.output_nodes.push("nonexistent_output".to_string());
@@ -1172,10 +1172,10 @@ mod tests {
     #[test]
     fn test734_topological_order_self_loop() {
         // Self-loop: A -> A
-        let mut plan = CapExecutionPlan::new("self_loop");
+        let mut plan = MachinePlan::new("self_loop");
 
-        plan.nodes.insert("A".to_string(), CapNode::cap("A", "cap:a"));
-        plan.edges.push(CapEdge::direct("A", "A"));
+        plan.nodes.insert("A".to_string(), MachineNode::cap("A", "cap:a"));
+        plan.edges.push(MachinePlanEdge::direct("A", "A"));
 
         let result = plan.topological_order();
         assert!(result.is_err());
@@ -1188,16 +1188,16 @@ mod tests {
     #[test]
     fn test735_topological_order_multiple_entry_points() {
         // Multiple entry points: A -> C, B -> C, C -> D
-        let mut plan = CapExecutionPlan::new("multi_entry");
+        let mut plan = MachinePlan::new("multi_entry");
 
-        plan.nodes.insert("A".to_string(), CapNode::cap("A", "cap:a"));
-        plan.nodes.insert("B".to_string(), CapNode::cap("B", "cap:b"));
-        plan.nodes.insert("C".to_string(), CapNode::cap("C", "cap:c"));
-        plan.nodes.insert("D".to_string(), CapNode::cap("D", "cap:d"));
+        plan.nodes.insert("A".to_string(), MachineNode::cap("A", "cap:a"));
+        plan.nodes.insert("B".to_string(), MachineNode::cap("B", "cap:b"));
+        plan.nodes.insert("C".to_string(), MachineNode::cap("C", "cap:c"));
+        plan.nodes.insert("D".to_string(), MachineNode::cap("D", "cap:d"));
 
-        plan.edges.push(CapEdge::direct("A", "C"));
-        plan.edges.push(CapEdge::direct("B", "C"));
-        plan.edges.push(CapEdge::direct("C", "D"));
+        plan.edges.push(MachinePlanEdge::direct("A", "C"));
+        plan.edges.push(MachinePlanEdge::direct("B", "C"));
+        plan.edges.push(MachinePlanEdge::direct("C", "D"));
 
         let order = plan.topological_order().unwrap();
         assert_eq!(order.len(), 4);
@@ -1222,22 +1222,22 @@ mod tests {
         //   |     |     |
         //   v     v     v
         //   C --> E --> F
-        let mut plan = CapExecutionPlan::new("complex");
+        let mut plan = MachinePlan::new("complex");
 
         for name in ["A", "B", "C", "D", "E", "F"] {
             plan.nodes.insert(
                 name.to_string(),
-                CapNode::cap(name, &format!("cap:{}", name.to_lowercase())),
+                MachineNode::cap(name, &format!("cap:{}", name.to_lowercase())),
             );
         }
 
-        plan.edges.push(CapEdge::direct("A", "B"));
-        plan.edges.push(CapEdge::direct("A", "C"));
-        plan.edges.push(CapEdge::direct("B", "D"));
-        plan.edges.push(CapEdge::direct("B", "E"));
-        plan.edges.push(CapEdge::direct("C", "E"));
-        plan.edges.push(CapEdge::direct("D", "F"));
-        plan.edges.push(CapEdge::direct("E", "F"));
+        plan.edges.push(MachinePlanEdge::direct("A", "B"));
+        plan.edges.push(MachinePlanEdge::direct("A", "C"));
+        plan.edges.push(MachinePlanEdge::direct("B", "D"));
+        plan.edges.push(MachinePlanEdge::direct("B", "E"));
+        plan.edges.push(MachinePlanEdge::direct("C", "E"));
+        plan.edges.push(MachinePlanEdge::direct("D", "F"));
+        plan.edges.push(MachinePlanEdge::direct("E", "F"));
 
         let order = plan.topological_order().unwrap();
         assert_eq!(order.len(), 6);
@@ -1263,7 +1263,7 @@ mod tests {
     // Verifies that a single-element chain produces a valid plan with input_slot, cap, and output
     #[test]
     fn test737_linear_chain_single_cap() {
-        let plan = CapExecutionPlan::linear_chain(
+        let plan = MachinePlan::linear_chain(
             &["cap:only"],
             "media:pdf",
             "media:png",
@@ -1278,7 +1278,7 @@ mod tests {
     // Verifies that an empty chain produces a plan with zero nodes and edges
     #[test]
     fn test738_linear_chain_empty() {
-        let plan = CapExecutionPlan::linear_chain(
+        let plan = MachinePlan::linear_chain(
             &[],
             "media:pdf",
             "media:png",
@@ -1324,11 +1324,11 @@ mod tests {
         assert_eq!(result.error, Some("Cap execution failed".to_string()));
     }
 
-    // TEST932: Tests CapChainExecutionResult structure for failed chain execution
+    // TEST932: Tests MachineResult structure for failed chain execution
     // Verifies that failure status, error message, and absence of outputs are correctly represented
     #[test]
     fn test932_execution_result_failure() {
-        let result = CapChainExecutionResult {
+        let result = MachineResult {
             success: false,
             node_results: HashMap::new(),
             outputs: HashMap::new(),
@@ -1380,11 +1380,11 @@ mod tests {
         assert!(json.contains("for_each"));
     }
 
-    // TEST744: Tests CapExecutionPlan serialization and deserialization to/from JSON
+    // TEST744: Tests MachinePlan serialization and deserialization to/from JSON
     // Verifies that complete plans with nodes and edges correctly round-trip through JSON
     #[test]
     fn test744_plan_serialization() {
-        let plan = CapExecutionPlan::single_cap(
+        let plan = MachinePlan::single_cap(
             "cap:test",
             "media:pdf",
             "media:png",
@@ -1396,7 +1396,7 @@ mod tests {
         assert!(json.contains("input_slot"));
         assert!(json.contains("output"));
 
-        let deserialized: CapExecutionPlan = serde_json::from_str(&json).unwrap();
+        let deserialized: MachinePlan = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.nodes.len(), plan.nodes.len());
         assert_eq!(deserialized.edges.len(), plan.edges.len());
     }
@@ -1415,10 +1415,10 @@ mod tests {
     }
 
     // TEST746: Tests creation of Output node type that references a source node
-    // Verifies that CapNode::output() correctly constructs an Output node with name and source
+    // Verifies that MachineNode::output() correctly constructs an Output node with name and source
     #[test]
     fn test746_cap_node_output() {
-        let output = CapNode::output("out", "result", "source");
+        let output = MachineNode::output("out", "result", "source");
         match &output.node_type {
             ExecutionNodeType::Output { output_name, source_node } => {
                 assert_eq!(output_name, "result");
@@ -1432,10 +1432,10 @@ mod tests {
     // Verifies that Merge nodes with multiple input nodes and a strategy can be added to plans
     #[test]
     fn test747_cap_node_merge() {
-        let mut plan = CapExecutionPlan::new("merge_test");
+        let mut plan = MachinePlan::new("merge_test");
 
         // Create merge node manually
-        let merge_node = CapNode {
+        let merge_node = MachineNode {
             id: "merge".to_string(),
             node_type: ExecutionNodeType::Merge {
                 input_nodes: vec!["a".to_string(), "b".to_string()],
@@ -1444,11 +1444,11 @@ mod tests {
             description: Some("Merge outputs".to_string()),
         };
 
-        plan.nodes.insert("a".to_string(), CapNode::cap("a", "cap:a"));
-        plan.nodes.insert("b".to_string(), CapNode::cap("b", "cap:b"));
+        plan.nodes.insert("a".to_string(), MachineNode::cap("a", "cap:a"));
+        plan.nodes.insert("b".to_string(), MachineNode::cap("b", "cap:b"));
         plan.nodes.insert("merge".to_string(), merge_node);
-        plan.edges.push(CapEdge::direct("a", "merge"));
-        plan.edges.push(CapEdge::direct("b", "merge"));
+        plan.edges.push(MachinePlanEdge::direct("a", "merge"));
+        plan.edges.push(MachinePlanEdge::direct("b", "merge"));
 
         assert!(plan.validate().is_ok());
     }
@@ -1457,7 +1457,7 @@ mod tests {
     // Verifies that Split nodes correctly specify an input node and output count
     #[test]
     fn test748_cap_node_split() {
-        let split_node = CapNode {
+        let split_node = MachineNode {
             id: "split".to_string(),
             node_type: ExecutionNodeType::Split {
                 input_node: "input".to_string(),
@@ -1479,7 +1479,7 @@ mod tests {
     // Verifies that existing nodes are found and non-existent nodes return None
     #[test]
     fn test749_get_node() {
-        let plan = CapExecutionPlan::single_cap(
+        let plan = MachinePlan::single_cap(
             "cap:test",
             "media:pdf",
             "media:png",
@@ -1494,45 +1494,45 @@ mod tests {
 
     // Helper: build a plan with ForEach (closed with Collect)
     // Topology: input_slot → cap_0(disbind) → foreach → body_cap_0 → body_cap_1 → collect → cap_post → output
-    fn build_foreach_plan_with_collect() -> CapExecutionPlan {
-        let mut plan = CapExecutionPlan::new("ForEach test plan");
+    fn build_foreach_plan_with_collect() -> MachinePlan {
+        let mut plan = MachinePlan::new("ForEach test plan");
 
         // input_slot → cap_0 → foreach --iteration--> body_cap_0 → body_cap_1 --collection--> collect → cap_post → output
-        plan.add_node(CapNode::input_slot("input_slot", "input", "media:pdf", InputCardinality::Single));
-        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;out=media:pdf-page;list"));  // disbind
-        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "body_cap_0", "body_cap_1"));
-        plan.add_node(CapNode::cap("body_cap_0", "cap:in=media:pdf-page;out=media:text;textable"));
-        plan.add_node(CapNode::cap("body_cap_1", "cap:in=media:text;textable;out=media:bool;decision;textable"));
-        plan.add_node(CapNode::collect("collect_0", vec!["body_cap_1".to_string()]));
-        plan.add_node(CapNode::cap("cap_post", "cap:in=media:bool;decision;list;textable;out=media:json;textable"));
-        plan.add_node(CapNode::output("output", "result", "cap_post"));
+        plan.add_node(MachineNode::input_slot("input_slot", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(MachineNode::cap("cap_0", "cap:in=media:pdf;out=media:pdf-page;list"));  // disbind
+        plan.add_node(MachineNode::for_each("foreach_0", "cap_0", "body_cap_0", "body_cap_1"));
+        plan.add_node(MachineNode::cap("body_cap_0", "cap:in=media:pdf-page;out=media:text;textable"));
+        plan.add_node(MachineNode::cap("body_cap_1", "cap:in=media:text;textable;out=media:bool;decision;textable"));
+        plan.add_node(MachineNode::collect("collect_0", vec!["body_cap_1".to_string()]));
+        plan.add_node(MachineNode::cap("cap_post", "cap:in=media:bool;decision;list;textable;out=media:json;textable"));
+        plan.add_node(MachineNode::output("output", "result", "cap_post"));
 
-        plan.add_edge(CapEdge::direct("input_slot", "cap_0"));
-        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
-        plan.add_edge(CapEdge::iteration("foreach_0", "body_cap_0"));
-        plan.add_edge(CapEdge::direct("body_cap_0", "body_cap_1"));
-        plan.add_edge(CapEdge::collection("body_cap_1", "collect_0"));
-        plan.add_edge(CapEdge::direct("collect_0", "cap_post"));
-        plan.add_edge(CapEdge::direct("cap_post", "output"));
+        plan.add_edge(MachinePlanEdge::direct("input_slot", "cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(MachinePlanEdge::iteration("foreach_0", "body_cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("body_cap_0", "body_cap_1"));
+        plan.add_edge(MachinePlanEdge::collection("body_cap_1", "collect_0"));
+        plan.add_edge(MachinePlanEdge::direct("collect_0", "cap_post"));
+        plan.add_edge(MachinePlanEdge::direct("cap_post", "output"));
 
         plan
     }
 
     // Helper: build a plan with unclosed ForEach (no Collect)
     // Topology: input_slot → cap_0(disbind) → foreach → body_cap_0 → output
-    fn build_foreach_plan_unclosed() -> CapExecutionPlan {
-        let mut plan = CapExecutionPlan::new("Unclosed ForEach test plan");
+    fn build_foreach_plan_unclosed() -> MachinePlan {
+        let mut plan = MachinePlan::new("Unclosed ForEach test plan");
 
-        plan.add_node(CapNode::input_slot("input_slot", "input", "media:pdf", InputCardinality::Single));
-        plan.add_node(CapNode::cap("cap_0", "cap:in=media:pdf;out=media:pdf-page;list"));
-        plan.add_node(CapNode::for_each("foreach_0", "cap_0", "body_cap_0", "body_cap_0"));
-        plan.add_node(CapNode::cap("body_cap_0", "cap:in=media:pdf-page;out=media:bool;decision;textable"));
-        plan.add_node(CapNode::output("output", "result", "body_cap_0"));
+        plan.add_node(MachineNode::input_slot("input_slot", "input", "media:pdf", InputCardinality::Single));
+        plan.add_node(MachineNode::cap("cap_0", "cap:in=media:pdf;out=media:pdf-page;list"));
+        plan.add_node(MachineNode::for_each("foreach_0", "cap_0", "body_cap_0", "body_cap_0"));
+        plan.add_node(MachineNode::cap("body_cap_0", "cap:in=media:pdf-page;out=media:bool;decision;textable"));
+        plan.add_node(MachineNode::output("output", "result", "body_cap_0"));
 
-        plan.add_edge(CapEdge::direct("input_slot", "cap_0"));
-        plan.add_edge(CapEdge::direct("cap_0", "foreach_0"));
-        plan.add_edge(CapEdge::iteration("foreach_0", "body_cap_0"));
-        plan.add_edge(CapEdge::direct("body_cap_0", "output"));
+        plan.add_edge(MachinePlanEdge::direct("input_slot", "cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("cap_0", "foreach_0"));
+        plan.add_edge(MachinePlanEdge::iteration("foreach_0", "body_cap_0"));
+        plan.add_edge(MachinePlanEdge::direct("body_cap_0", "output"));
 
         plan
     }
@@ -1548,7 +1548,7 @@ mod tests {
     // TEST935: find_first_foreach returns None for linear plans
     #[test]
     fn test935_find_first_foreach_linear() {
-        let plan = CapExecutionPlan::linear_chain(
+        let plan = MachinePlan::linear_chain(
             &["cap:a", "cap:b"],
             "media:pdf",
             "media:png",
@@ -1563,7 +1563,7 @@ mod tests {
         let foreach_plan = build_foreach_plan_with_collect();
         assert!(foreach_plan.has_foreach_or_collect());
 
-        let linear_plan = CapExecutionPlan::linear_chain(
+        let linear_plan = MachinePlan::linear_chain(
             &["cap:a"],
             "media:pdf",
             "media:png",

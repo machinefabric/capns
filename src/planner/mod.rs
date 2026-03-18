@@ -37,27 +37,27 @@ pub use cardinality::{
     // Combined shape
     MediaShape, ShapeCompatibility,
     // Per-cap shape info and chain analysis
-    CapShapeInfo, ShapeChainAnalysis,
+    CapShapeInfo, StrandShapeAnalysis,
 };
 pub use argument_binding::{
     ArgumentBinding, ArgumentBindings, ArgumentResolutionContext, ArgumentSource,
-    CapChainInput, CapFileMetadata, CapInputFile, ResolvedArgument, SourceEntityType,
+    StrandInput, CapFileMetadata, CapInputFile, ResolvedArgument, SourceEntityType,
     resolve_binding,
 };
 pub use collection_input::{CapInputCollection, CollectionFile};
 pub use plan::{
-    CapChainExecutionResult, CapEdge, CapExecutionPlan, CapNode,
+    MachineResult, MachinePlanEdge, MachinePlan, MachineNode,
     EdgeType, ExecutionNodeType, MergeStrategy,
     NodeExecutionResult, NodeId,
 };
 pub use plan_builder::{
-    CapPlanBuilder,
+    MachinePlanBuilder,
     ArgumentResolution, ArgumentInfo, StepArgumentRequirements, PathArgumentRequirements,
 };
-pub use executor::PlanExecutor;
+pub use executor::MachineExecutor;
 pub use live_cap_graph::{
-    LiveCapGraph, LiveCapEdge, LiveCapEdgeType,
-    ReachableTargetInfo, CapChainStepInfo, CapChainStepType, CapChainPathInfo,
+    LiveCapGraph, LiveMachinePlanEdge, LiveMachinePlanEdgeType,
+    ReachableTargetInfo, StrandStep, StrandStepType, Strand,
 };
 
 // =============================================================================

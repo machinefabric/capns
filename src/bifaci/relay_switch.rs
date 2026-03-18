@@ -56,7 +56,7 @@
 use crate::bifaci::frame::{FlowKey, Frame, FrameType, Limits, MessageId, SeqAssigner};
 use crate::bifaci::io::{CborError, FrameReader, FrameWriter, identity_nonce};
 use crate::cap::registry::CapRegistry;
-use crate::planner::live_cap_graph::{LiveCapGraph, ReachableTargetInfo, CapChainPathInfo};
+use crate::planner::live_cap_graph::{LiveCapGraph, ReachableTargetInfo, Strand};
 use crate::urn::media_urn::MediaUrn;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -479,7 +479,7 @@ impl RelaySwitch {
         target: &MediaUrn,
         max_depth: usize,
         max_paths: usize,
-    ) -> Vec<CapChainPathInfo> {
+    ) -> Vec<Strand> {
         let graph = self.live_cap_graph.read().await;
         graph.find_paths_to_exact_target(source, target, max_depth, max_paths)
     }

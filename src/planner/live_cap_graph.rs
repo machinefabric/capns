@@ -1,7 +1,7 @@
 //! LiveCapGraph — Precomputed capability graph for path finding
 //!
 //! This module provides a live, incrementally-updated graph of capabilities
-//! for efficient path finding and reachability queries. Unlike CapPlanBuilder
+//! for efficient path finding and reachability queries. Unlike MachinePlanBuilder
 //! which rebuilds the graph for each query, LiveCapGraph maintains a persistent
 //! graph structure that is updated when capabilities change.
 //!
@@ -37,7 +37,7 @@ use crate::Cap;
 /// Most edges represent actual capabilities, but some are synthetic edges
 /// that represent cardinality transitions (fan-out, collect, wrap-in-list).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LiveCapEdgeType {
+pub enum LiveMachinePlanEdgeType {
     /// A real capability that transforms media
     Cap {
         cap_urn: CapUrn,
@@ -63,13 +63,13 @@ pub enum LiveCapEdgeType {
 ///
 /// URNs are stored as typed values, not strings, for efficient order-theoretic operations.
 #[derive(Debug, Clone)]
-pub struct LiveCapEdge {
+pub struct LiveMachinePlanEdge {
     /// Input media type (what this edge consumes)
     pub from_spec: MediaUrn,
     /// Output media type (what this edge produces)
     pub to_spec: MediaUrn,
     /// Type of edge (cap or cardinality transition)
-    pub edge_type: LiveCapEdgeType,
+    pub edge_type: LiveMachinePlanEdgeType,
     /// Input cardinality (derived from from_spec)
     pub input_cardinality: InputCardinality,
     /// Output cardinality (derived from to_spec)
@@ -85,7 +85,7 @@ pub struct LiveCapEdge {
 #[derive(Debug)]
 pub struct LiveCapGraph {
     /// All edges in the graph
-    edges: Vec<LiveCapEdge>,
+    edges: Vec<LiveMachinePlanEdge>,
     /// Index: from_spec (canonical string) → edge indices
     /// Uses canonical string as key because MediaUrn doesn't implement Hash
     outgoing: HashMap<String, Vec<usize>>,
@@ -110,35 +110,35 @@ pub struct ReachableTargetInfo {
     pub path_count: i32,
 }
 
-impl LiveCapEdge {
+impl LiveMachinePlanEdge {
     /// Get the title for this edge (for display purposes)
     pub fn title(&self) -> String {
         match &self.edge_type {
-            LiveCapEdgeType::Cap { cap_title, .. } => cap_title.clone(),
-            LiveCapEdgeType::ForEach => "ForEach (iterate over list)".to_string(),
-            LiveCapEdgeType::Collect => "Collect (gather results)".to_string(),
-            LiveCapEdgeType::WrapInList => "WrapInList (create single-item list)".to_string(),
+            LiveMachinePlanEdgeType::Cap { cap_title, .. } => cap_title.clone(),
+            LiveMachinePlanEdgeType::ForEach => "ForEach (iterate over list)".to_string(),
+            LiveMachinePlanEdgeType::Collect => "Collect (gather results)".to_string(),
+            LiveMachinePlanEdgeType::WrapInList => "WrapInList (create single-item list)".to_string(),
         }
     }
 
     /// Get the specificity of this edge (for ordering purposes)
     pub fn specificity(&self) -> usize {
         match &self.edge_type {
-            LiveCapEdgeType::Cap { specificity, .. } => *specificity,
+            LiveMachinePlanEdgeType::Cap { specificity, .. } => *specificity,
             // Cardinality transitions have no specificity preference
-            LiveCapEdgeType::ForEach | LiveCapEdgeType::Collect | LiveCapEdgeType::WrapInList => 0,
+            LiveMachinePlanEdgeType::ForEach | LiveMachinePlanEdgeType::Collect | LiveMachinePlanEdgeType::WrapInList => 0,
         }
     }
 
     /// Check if this is a cap edge (not a cardinality transition)
     pub fn is_cap(&self) -> bool {
-        matches!(self.edge_type, LiveCapEdgeType::Cap { .. })
+        matches!(self.edge_type, LiveMachinePlanEdgeType::Cap { .. })
     }
 
     /// Get the cap URN if this is a cap edge
     pub fn cap_urn(&self) -> Option<&CapUrn> {
         match &self.edge_type {
-            LiveCapEdgeType::Cap { cap_urn, .. } => Some(cap_urn),
+            LiveMachinePlanEdgeType::Cap { cap_urn, .. } => Some(cap_urn),
             _ => None,
         }
     }
@@ -146,7 +146,7 @@ impl LiveCapEdge {
 
 /// Type of step in a capability chain path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CapChainStepType {
+pub enum StrandStepType {
     /// A real capability step
     Cap {
         cap_urn: CapUrn,
@@ -178,30 +178,30 @@ pub enum CapChainStepType {
 
 /// Information about a single step in a capability chain path.
 #[derive(Debug, Clone)]
-pub struct CapChainStepInfo {
+pub struct StrandStep {
     /// Type of step (cap or cardinality transition)
-    pub step_type: CapChainStepType,
+    pub step_type: StrandStepType,
     /// Input media type for this step
     pub from_spec: MediaUrn,
     /// Output media type for this step
     pub to_spec: MediaUrn,
 }
 
-impl CapChainStepInfo {
+impl StrandStep {
     /// Get the title for this step (for display purposes)
     pub fn title(&self) -> String {
         match &self.step_type {
-            CapChainStepType::Cap { title, .. } => title.clone(),
-            CapChainStepType::ForEach { .. } => "ForEach".to_string(),
-            CapChainStepType::Collect { .. } => "Collect".to_string(),
-            CapChainStepType::WrapInList { .. } => "WrapInList".to_string(),
+            StrandStepType::Cap { title, .. } => title.clone(),
+            StrandStepType::ForEach { .. } => "ForEach".to_string(),
+            StrandStepType::Collect { .. } => "Collect".to_string(),
+            StrandStepType::WrapInList { .. } => "WrapInList".to_string(),
         }
     }
 
     /// Get the specificity of this step (for ordering purposes)
     pub fn specificity(&self) -> usize {
         match &self.step_type {
-            CapChainStepType::Cap { specificity, .. } => *specificity,
+            StrandStepType::Cap { specificity, .. } => *specificity,
             _ => 0,
         }
     }
@@ -209,22 +209,22 @@ impl CapChainStepInfo {
     /// Get the cap URN if this is a cap step
     pub fn cap_urn(&self) -> Option<&CapUrn> {
         match &self.step_type {
-            CapChainStepType::Cap { cap_urn, .. } => Some(cap_urn),
+            StrandStepType::Cap { cap_urn, .. } => Some(cap_urn),
             _ => None,
         }
     }
 
     /// Check if this is a cap step
     pub fn is_cap(&self) -> bool {
-        matches!(self.step_type, CapChainStepType::Cap { .. })
+        matches!(self.step_type, StrandStepType::Cap { .. })
     }
 }
 
 /// Information about a complete capability chain path.
 #[derive(Debug, Clone)]
-pub struct CapChainPathInfo {
+pub struct Strand {
     /// Steps in the path, in order
-    pub steps: Vec<CapChainStepInfo>,
+    pub steps: Vec<StrandStep>,
     /// Source media URN
     pub source_spec: MediaUrn,
     /// Target media URN
@@ -238,20 +238,20 @@ pub struct CapChainPathInfo {
     pub description: String,
 }
 
-impl CapChainPathInfo {
+impl Strand {
     /// Convert this resolved path to a route graph.
     ///
     /// Cap steps become edges; ForEach sets `is_loop` on the next cap;
     /// Collect and WrapInList are elided (implicit in transitions).
-    pub fn to_route_graph(&self) -> crate::route::RouteGraph {
-        crate::route::RouteGraph::from_path(self)
+    pub fn knit(&self) -> crate::route::Machine {
+        crate::route::Machine::from_path(self)
     }
 
-    /// Serialize this resolved path to canonical one-line route notation.
+    /// Serialize this resolved path to canonical one-line machine notation.
     ///
     /// This is the primary identifier for accessibility and comparison.
-    pub fn to_route_notation(&self) -> String {
-        self.to_route_graph().to_route_notation()
+    pub fn to_machine_notation(&self) -> String {
+        self.knit().to_machine_notation()
     }
 }
 
@@ -455,10 +455,10 @@ impl LiveCapGraph {
 
         // Create edge
         let edge_idx = self.edges.len();
-        let edge = LiveCapEdge {
+        let edge = LiveMachinePlanEdge {
             from_spec,
             to_spec,
-            edge_type: LiveCapEdgeType::Cap {
+            edge_type: LiveMachinePlanEdgeType::Cap {
                 cap_urn: cap.urn.clone(),
                 cap_title: cap.title.clone(),
                 specificity: cap.urn.specificity(),
@@ -480,7 +480,7 @@ impl LiveCapGraph {
     ///
     /// Uses `conforms_to()` matching: returns edges where the source
     /// conforms to the edge's from_spec requirement.
-    fn get_outgoing_edges(&self, source: &MediaUrn) -> Vec<&LiveCapEdge> {
+    fn get_outgoing_edges(&self, source: &MediaUrn) -> Vec<&LiveMachinePlanEdge> {
         self.edges
             .iter()
             .filter(|edge| {
@@ -493,10 +493,10 @@ impl LiveCapGraph {
                 // Cardinality must match for Cap edges
                 // ForEach edges handle list→singular, Collect edges handle singular→list
                 let cardinality_compatible = match &edge.edge_type {
-                    LiveCapEdgeType::Cap { .. } => edge_expects_list == source_is_list,
-                    LiveCapEdgeType::ForEach => source_is_list && !edge.to_spec.is_list(),
-                    LiveCapEdgeType::Collect => !source_is_list && edge.to_spec.is_list(),
-                    LiveCapEdgeType::WrapInList => !source_is_list && edge.to_spec.is_list(),
+                    LiveMachinePlanEdgeType::Cap { .. } => edge_expects_list == source_is_list,
+                    LiveMachinePlanEdgeType::ForEach => source_is_list && !edge.to_spec.is_list(),
+                    LiveMachinePlanEdgeType::Collect => !source_is_list && edge.to_spec.is_list(),
+                    LiveMachinePlanEdgeType::WrapInList => !source_is_list && edge.to_spec.is_list(),
                 };
 
                 if !cardinality_compatible {
@@ -571,10 +571,10 @@ impl LiveCapGraph {
 
             // Add ForEach edge: list → item
             let foreach_edge_idx = self.edges.len();
-            let foreach_edge = LiveCapEdge {
+            let foreach_edge = LiveMachinePlanEdge {
                 from_spec: list_spec.clone(),
                 to_spec: item_spec.clone(),
-                edge_type: LiveCapEdgeType::ForEach,
+                edge_type: LiveMachinePlanEdgeType::ForEach,
                 input_cardinality: InputCardinality::Sequence,
                 output_cardinality: InputCardinality::Single,
             };
@@ -611,7 +611,7 @@ impl LiveCapGraph {
         let existing_list_outputs: Vec<MediaUrn> = self.edges
             .iter()
             .filter(|edge| {
-                matches!(edge.edge_type, LiveCapEdgeType::Cap { .. }) && edge.to_spec.is_list()
+                matches!(edge.edge_type, LiveMachinePlanEdgeType::Cap { .. }) && edge.to_spec.is_list()
             })
             .map(|edge| edge.to_spec.clone())
             .collect::<std::collections::BTreeSet<_>>()
@@ -627,7 +627,7 @@ impl LiveCapGraph {
             // Check if we have any cap that outputs the singular version
             // (this would be the result of processing each item)
             let has_singular_output = self.edges.iter().any(|edge| {
-                matches!(edge.edge_type, LiveCapEdgeType::Cap { .. }) &&
+                matches!(edge.edge_type, LiveMachinePlanEdgeType::Cap { .. }) &&
                 !edge.to_spec.is_list() &&
                 edge.to_spec.is_equivalent(&item_spec).unwrap_or(false)
             });
@@ -635,7 +635,7 @@ impl LiveCapGraph {
             // Also check if we have any caps that could process the item
             // and produce something we'd want to collect
             let has_item_consumer = self.edges.iter().any(|edge| {
-                matches!(edge.edge_type, LiveCapEdgeType::Cap { .. }) &&
+                matches!(edge.edge_type, LiveMachinePlanEdgeType::Cap { .. }) &&
                 item_spec.conforms_to(&edge.from_spec).unwrap_or(false)
             });
 
@@ -651,7 +651,7 @@ impl LiveCapGraph {
 
             // Check if this collect edge already exists
             let already_exists = self.edges.iter().any(|edge| {
-                matches!(&edge.edge_type, LiveCapEdgeType::Collect) &&
+                matches!(&edge.edge_type, LiveMachinePlanEdgeType::Collect) &&
                 edge.from_spec.is_equivalent(&item_spec).unwrap_or(false) &&
                 edge.to_spec.is_equivalent(&list_spec).unwrap_or(false)
             });
@@ -662,10 +662,10 @@ impl LiveCapGraph {
 
             // Add Collect edge: item → list
             let collect_edge_idx = self.edges.len();
-            let collect_edge = LiveCapEdge {
+            let collect_edge = LiveMachinePlanEdge {
                 from_spec: item_spec.clone(),
                 to_spec: list_spec.clone(),
-                edge_type: LiveCapEdgeType::Collect,
+                edge_type: LiveMachinePlanEdgeType::Collect,
                 input_cardinality: InputCardinality::Single,
                 output_cardinality: InputCardinality::Sequence,
             };
@@ -760,14 +760,14 @@ impl LiveCapGraph {
         target: &MediaUrn,
         max_depth: usize,
         max_paths: usize,
-    ) -> Vec<CapChainPathInfo> {
+    ) -> Vec<Strand> {
         // Check if source already satisfies target
         if source.is_equivalent(target).unwrap_or(false) {
             return vec![];
         }
 
-        let mut all_paths: Vec<CapChainPathInfo> = Vec::new();
-        let mut current_path: Vec<CapChainStepInfo> = Vec::new();
+        let mut all_paths: Vec<Strand> = Vec::new();
+        let mut current_path: Vec<StrandStep> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
 
         tracing::info!(
@@ -803,9 +803,9 @@ impl LiveCapGraph {
         source: &MediaUrn,
         target: &MediaUrn,
         current: &MediaUrn,
-        current_path: &mut Vec<CapChainStepInfo>,
+        current_path: &mut Vec<StrandStep>,
         visited: &mut HashSet<String>,
-        all_paths: &mut Vec<CapChainPathInfo>,
+        all_paths: &mut Vec<Strand>,
         max_depth: usize,
         max_paths: usize,
     ) {
@@ -825,7 +825,7 @@ impl LiveCapGraph {
             // Count only cap steps (not ForEach/Collect/WrapInList) for sorting
             let cap_step_count = current_path.iter().filter(|s| s.is_cap()).count() as i32;
 
-            all_paths.push(CapChainPathInfo {
+            all_paths.push(Strand {
                 steps: current_path.clone(),
                 source_spec: source.clone(),
                 target_spec: target.clone(),
@@ -850,34 +850,34 @@ impl LiveCapGraph {
             if !visited.contains(&next_canonical) {
                 // Convert edge type to step type
                 let step_type = match &edge.edge_type {
-                    LiveCapEdgeType::Cap { cap_urn, cap_title, specificity } => {
-                        CapChainStepType::Cap {
+                    LiveMachinePlanEdgeType::Cap { cap_urn, cap_title, specificity } => {
+                        StrandStepType::Cap {
                             cap_urn: cap_urn.clone(),
                             title: cap_title.clone(),
                             specificity: *specificity,
                         }
                     }
-                    LiveCapEdgeType::ForEach => {
-                        CapChainStepType::ForEach {
+                    LiveMachinePlanEdgeType::ForEach => {
+                        StrandStepType::ForEach {
                             list_spec: edge.from_spec.clone(),
                             item_spec: edge.to_spec.clone(),
                         }
                     }
-                    LiveCapEdgeType::Collect => {
-                        CapChainStepType::Collect {
+                    LiveMachinePlanEdgeType::Collect => {
+                        StrandStepType::Collect {
                             item_spec: edge.from_spec.clone(),
                             list_spec: edge.to_spec.clone(),
                         }
                     }
-                    LiveCapEdgeType::WrapInList => {
-                        CapChainStepType::WrapInList {
+                    LiveMachinePlanEdgeType::WrapInList => {
+                        StrandStepType::WrapInList {
                             item_spec: edge.from_spec.clone(),
                             list_spec: edge.to_spec.clone(),
                         }
                     }
                 };
 
-                current_path.push(CapChainStepInfo {
+                current_path.push(StrandStep {
                     step_type,
                     from_spec: edge.from_spec.clone(),
                     to_spec: edge.to_spec.clone(),
@@ -908,7 +908,7 @@ impl LiveCapGraph {
     ///    Note: ForEach/Collect/WrapInList don't count as "steps" for sorting
     /// 2. total specificity (descending - more specific first)
     /// 3. cap URNs lexicographically (for tie-breaking stability)
-    fn compare_paths(a: &CapChainPathInfo, b: &CapChainPathInfo) -> Ordering {
+    fn compare_paths(a: &Strand, b: &Strand) -> Ordering {
         a.cap_step_count.cmp(&b.cap_step_count)
             .then_with(|| {
                 // Higher specificity first
@@ -919,12 +919,12 @@ impl LiveCapGraph {
             .then_with(|| {
                 // Lexicographic by step type (only for tie-breaking)
                 // For cap steps, use cap URN; for cardinality steps, use type name
-                let step_key = |s: &CapChainStepInfo| -> String {
+                let step_key = |s: &StrandStep| -> String {
                     match &s.step_type {
-                        CapChainStepType::Cap { cap_urn, .. } => cap_urn.to_string(),
-                        CapChainStepType::ForEach { .. } => "foreach".to_string(),
-                        CapChainStepType::Collect { .. } => "collect".to_string(),
-                        CapChainStepType::WrapInList { .. } => "wrapinlist".to_string(),
+                        StrandStepType::Cap { cap_urn, .. } => cap_urn.to_string(),
+                        StrandStepType::ForEach { .. } => "foreach".to_string(),
+                        StrandStepType::Collect { .. } => "collect".to_string(),
+                        StrandStepType::WrapInList { .. } => "wrapinlist".to_string(),
                     }
                 };
                 let keys_a: Vec<String> = a.steps.iter().map(step_key).collect();
@@ -1307,7 +1307,7 @@ mod tests {
 
         // Verify ForEach edge was inserted
         let foreach_edges: Vec<_> = graph.edges.iter()
-            .filter(|e| matches!(e.edge_type, LiveCapEdgeType::ForEach))
+            .filter(|e| matches!(e.edge_type, LiveMachinePlanEdgeType::ForEach))
             .collect();
 
         assert!(!foreach_edges.is_empty(), "Should have inserted ForEach edge(s)");
@@ -1329,7 +1329,7 @@ mod tests {
 
         // Should find at least one path that goes through ForEach
         let path_with_foreach = paths.iter().any(|p| {
-            p.steps.iter().any(|s| matches!(s.step_type, CapChainStepType::ForEach { .. }))
+            p.steps.iter().any(|s| matches!(s.step_type, StrandStepType::ForEach { .. }))
         });
 
         assert!(

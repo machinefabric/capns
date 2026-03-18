@@ -1,6 +1,6 @@
 //! Route notation serializer — deterministic canonical form
 //!
-//! Converts a `RouteGraph` to its route notation string representation.
+//! Converts a `Machine` to its machine notation string representation.
 //! The output is deterministic: the same graph always produces the same string.
 //!
 //! ## Alias Generation
@@ -24,26 +24,26 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
-use crate::planner::live_cap_graph::{CapChainPathInfo, CapChainStepType};
+use crate::planner::live_cap_graph::{Strand, StrandStepType};
 use crate::urn::media_urn::MediaUrn;
 
-use super::graph::{RouteEdge, RouteGraph};
+use super::graph::{MachineEdge, Machine};
 
-impl RouteGraph {
-    /// Convert a `CapChainPathInfo` (resolved linear path) into a `RouteGraph`.
+impl Machine {
+    /// Convert a `Strand` (resolved linear path) into a `Machine`.
     ///
     /// The conversion:
-    /// - Each `Cap` step becomes a `RouteEdge` with a single source
+    /// - Each `Cap` step becomes a `MachineEdge` with a single source
     /// - `ForEach` steps set `is_loop: true` on the next Cap edge
     /// - `Collect` and `WrapInList` steps are elided (implicit in transitions)
-    pub fn from_path(path: &CapChainPathInfo) -> Self {
+    pub fn from_path(path: &Strand) -> Self {
         let mut edges = Vec::new();
         let mut pending_loop = false;
 
         for step in &path.steps {
             match &step.step_type {
-                CapChainStepType::Cap { cap_urn, .. } => {
-                    edges.push(RouteEdge {
+                StrandStepType::Cap { cap_urn, .. } => {
+                    edges.push(MachineEdge {
                         sources: vec![step.from_spec.clone()],
                         cap_urn: cap_urn.clone(),
                         target: step.to_spec.clone(),
@@ -51,10 +51,10 @@ impl RouteGraph {
                     });
                     pending_loop = false;
                 }
-                CapChainStepType::ForEach { .. } => {
+                StrandStepType::ForEach { .. } => {
                     pending_loop = true;
                 }
-                CapChainStepType::Collect { .. } | CapChainStepType::WrapInList { .. } => {
+                StrandStepType::Collect { .. } | StrandStepType::WrapInList { .. } => {
                     // Elided — cardinality transitions are implicit
                 }
             }
@@ -63,12 +63,12 @@ impl RouteGraph {
         Self::new(edges)
     }
 
-    /// Serialize this route graph to canonical one-line route notation.
+    /// Serialize this route graph to canonical one-line machine notation.
     ///
     /// The output is deterministic: same graph → same string. This is the
     /// primary serialization format for accessibility identifiers and
     /// comparison.
-    pub fn to_route_notation(&self) -> String {
+    pub fn to_machine_notation(&self) -> String {
         if self.edges().is_empty() {
             return String::new();
         }
@@ -113,8 +113,8 @@ impl RouteGraph {
         output
     }
 
-    /// Serialize to multi-line route notation (one statement per line).
-    pub fn to_route_notation_multiline(&self) -> String {
+    /// Serialize to multi-line machine notation (one statement per line).
+    pub fn to_machine_notation_multiline(&self) -> String {
         if self.edges().is_empty() {
             return String::new();
         }
@@ -250,8 +250,8 @@ mod tests {
         CapUrn::from_string(s).unwrap()
     }
 
-    fn edge(sources: &[&str], cap_str: &str, target: &str, is_loop: bool) -> RouteEdge {
-        RouteEdge {
+    fn edge(sources: &[&str], cap_str: &str, target: &str, is_loop: bool) -> MachineEdge {
+        MachineEdge {
             sources: sources.iter().map(|s| media(s)).collect(),
             cap_urn: cap(cap_str),
             target: media(target),
@@ -265,13 +265,13 @@ mod tests {
 
     #[test]
     fn serialize_single_edge() {
-        let g = RouteGraph::new(vec![edge(
+        let g = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
-        let notation = g.to_route_notation();
+        let notation = g.to_machine_notation();
         assert!(notation.contains("[extract "));
         assert!(notation.contains("-> extract ->"));
         assert!(notation.contains("[n0 ->"));
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn serialize_two_edge_chain() {
-        let g = RouteGraph::new(vec![
+        let g = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -294,7 +294,7 @@ mod tests {
                 false,
             ),
         ]);
-        let notation = g.to_route_notation();
+        let notation = g.to_machine_notation();
         // Should have 2 headers and 2 wirings
         let bracket_count = notation.matches('[').count();
         assert_eq!(bracket_count, 4); // 2 headers + 2 wirings
@@ -302,8 +302,8 @@ mod tests {
 
     #[test]
     fn serialize_empty_graph() {
-        let g = RouteGraph::empty();
-        assert_eq!(g.to_route_notation(), "");
+        let g = Machine::empty();
+        assert_eq!(g.to_machine_notation(), "");
     }
 
     // =========================================================================
@@ -312,14 +312,14 @@ mod tests {
 
     #[test]
     fn roundtrip_single_edge() {
-        let original = RouteGraph::new(vec![edge(
+        let original = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
-        let notation = original.to_route_notation();
-        let reparsed = RouteGraph::from_string(&notation).unwrap();
+        let notation = original.to_machine_notation();
+        let reparsed = Machine::from_string(&notation).unwrap();
         assert!(
             original.is_equivalent(&reparsed),
             "Round-trip failed:\n  original: {:?}\n  notation: {}\n  reparsed: {:?}",
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn roundtrip_two_edge_chain() {
-        let original = RouteGraph::new(vec![
+        let original = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -343,8 +343,8 @@ mod tests {
                 false,
             ),
         ]);
-        let notation = original.to_route_notation();
-        let reparsed = RouteGraph::from_string(&notation).unwrap();
+        let notation = original.to_machine_notation();
+        let reparsed = Machine::from_string(&notation).unwrap();
         assert!(
             original.is_equivalent(&reparsed),
             "Round-trip failed:\n  notation: {}\n  original edges: {}\n  reparsed edges: {}",
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn roundtrip_fan_out() {
-        let original = RouteGraph::new(vec![
+        let original = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract_metadata;out=\"media:file-metadata;record;textable\"",
@@ -374,8 +374,8 @@ mod tests {
                 false,
             ),
         ]);
-        let notation = original.to_route_notation();
-        let reparsed = RouteGraph::from_string(&notation).unwrap();
+        let notation = original.to_machine_notation();
+        let reparsed = Machine::from_string(&notation).unwrap();
         assert!(
             original.is_equivalent(&reparsed),
             "Fan-out round-trip failed:\n  notation: {}",
@@ -385,14 +385,14 @@ mod tests {
 
     #[test]
     fn roundtrip_loop_edge() {
-        let original = RouteGraph::new(vec![edge(
+        let original = Machine::new(vec![edge(
             &["media:disbound-page;textable"],
             "cap:in=\"media:disbound-page;textable\";op=page_to_text;out=\"media:txt;textable\"",
             "media:txt;textable",
             true,
         )]);
-        let notation = original.to_route_notation();
-        let reparsed = RouteGraph::from_string(&notation).unwrap();
+        let notation = original.to_machine_notation();
+        let reparsed = Machine::from_string(&notation).unwrap();
         assert!(original.is_equivalent(&reparsed));
         assert!(reparsed.edges()[0].is_loop);
     }
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn serialization_is_deterministic() {
-        let g = RouteGraph::new(vec![
+        let g = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -417,14 +417,14 @@ mod tests {
                 false,
             ),
         ]);
-        let n1 = g.to_route_notation();
-        let n2 = g.to_route_notation();
+        let n1 = g.to_machine_notation();
+        let n2 = g.to_machine_notation();
         assert_eq!(n1, n2, "Serialization must be deterministic");
     }
 
     #[test]
     fn reordered_edges_produce_same_notation() {
-        let g1 = RouteGraph::new(vec![
+        let g1 = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -439,7 +439,7 @@ mod tests {
             ),
         ]);
         // Same edges, reversed order
-        let g2 = RouteGraph::new(vec![
+        let g2 = Machine::new(vec![
             edge(
                 &["media:txt;textable"],
                 "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
@@ -454,8 +454,8 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            g1.to_route_notation(),
-            g2.to_route_notation(),
+            g1.to_machine_notation(),
+            g2.to_machine_notation(),
             "Same graph with reordered edges must produce identical notation"
         );
     }
@@ -466,17 +466,17 @@ mod tests {
 
     #[test]
     fn multiline_format() {
-        let g = RouteGraph::new(vec![edge(
+        let g = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
-        let multi = g.to_route_notation_multiline();
+        let multi = g.to_machine_notation_multiline();
         assert!(multi.contains('\n'), "Multi-line format must contain newlines");
 
         // Should still round-trip
-        let reparsed = RouteGraph::from_string(&multi).unwrap();
+        let reparsed = Machine::from_string(&multi).unwrap();
         assert!(g.is_equivalent(&reparsed));
     }
 
@@ -486,33 +486,33 @@ mod tests {
 
     #[test]
     fn alias_from_op_tag() {
-        let g = RouteGraph::new(vec![edge(
+        let g = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
-        let notation = g.to_route_notation();
+        let notation = g.to_machine_notation();
         // Should use "extract" as alias (from op= tag)
         assert!(notation.contains("[extract "), "Expected 'extract' alias, got: {}", notation);
     }
 
     #[test]
     fn alias_fallback_without_op_tag() {
-        let g = RouteGraph::new(vec![edge(
+        let g = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
-        let notation = g.to_route_notation();
+        let notation = g.to_machine_notation();
         // Should use fallback alias "edge_N"
         assert!(notation.contains("edge_"), "Expected fallback alias, got: {}", notation);
     }
 
     #[test]
     fn duplicate_op_tags_disambiguated() {
-        let g = RouteGraph::new(vec![
+        let g = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -526,7 +526,7 @@ mod tests {
                 false,
             ),
         ]);
-        let notation = g.to_route_notation();
+        let notation = g.to_machine_notation();
         // Should have "extract" and "extract_1"
         assert!(notation.contains("extract_1") || notation.contains("extract_2"),
             "Duplicate ops must be disambiguated: {}", notation);
@@ -538,11 +538,11 @@ mod tests {
 
     #[test]
     fn from_path_simple() {
-        use crate::planner::live_cap_graph::{CapChainStepInfo, CapChainStepType};
+        use crate::planner::live_cap_graph::{StrandStep, StrandStepType};
 
-        let path = CapChainPathInfo {
-            steps: vec![CapChainStepInfo {
-                step_type: CapChainStepType::Cap {
+        let path = Strand {
+            steps: vec![StrandStep {
+                step_type: StrandStepType::Cap {
                     cap_urn: cap("cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\""),
                     title: "Extract Text".to_string(),
                     specificity: 5,
@@ -557,27 +557,27 @@ mod tests {
             description: "Extract Text".to_string(),
         };
 
-        let graph = RouteGraph::from_path(&path);
+        let graph = Machine::from_path(&path);
         assert_eq!(graph.edge_count(), 1);
         assert!(!graph.edges()[0].is_loop);
     }
 
     #[test]
     fn from_path_with_foreach() {
-        use crate::planner::live_cap_graph::{CapChainStepInfo, CapChainStepType};
+        use crate::planner::live_cap_graph::{StrandStep, StrandStepType};
 
-        let path = CapChainPathInfo {
+        let path = Strand {
             steps: vec![
-                CapChainStepInfo {
-                    step_type: CapChainStepType::ForEach {
+                StrandStep {
+                    step_type: StrandStepType::ForEach {
                         list_spec: media("media:disbound-page;list;textable"),
                         item_spec: media("media:disbound-page;textable"),
                     },
                     from_spec: media("media:disbound-page;list;textable"),
                     to_spec: media("media:disbound-page;textable"),
                 },
-                CapChainStepInfo {
-                    step_type: CapChainStepType::Cap {
+                StrandStep {
+                    step_type: StrandStepType::Cap {
                         cap_urn: cap("cap:in=\"media:disbound-page;textable\";op=page_to_text;out=\"media:txt;textable\""),
                         title: "Page to Text".to_string(),
                         specificity: 4,
@@ -585,8 +585,8 @@ mod tests {
                     from_spec: media("media:disbound-page;textable"),
                     to_spec: media("media:txt;textable"),
                 },
-                CapChainStepInfo {
-                    step_type: CapChainStepType::Collect {
+                StrandStep {
+                    step_type: StrandStepType::Collect {
                         item_spec: media("media:txt;textable"),
                         list_spec: media("media:list;txt;textable"),
                     },
@@ -601,7 +601,7 @@ mod tests {
             description: "ForEach → Page to Text → Collect".to_string(),
         };
 
-        let graph = RouteGraph::from_path(&path);
+        let graph = Machine::from_path(&path);
         // ForEach + Cap + Collect → 1 edge with is_loop=true
         assert_eq!(graph.edge_count(), 1);
         assert!(graph.edges()[0].is_loop, "ForEach step must set is_loop on next Cap edge");
@@ -609,12 +609,12 @@ mod tests {
 
     #[test]
     fn from_path_collect_elided() {
-        use crate::planner::live_cap_graph::{CapChainStepInfo, CapChainStepType};
+        use crate::planner::live_cap_graph::{StrandStep, StrandStepType};
 
-        let path = CapChainPathInfo {
+        let path = Strand {
             steps: vec![
-                CapChainStepInfo {
-                    step_type: CapChainStepType::Cap {
+                StrandStep {
+                    step_type: StrandStepType::Cap {
                         cap_urn: cap("cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\""),
                         title: "Extract".to_string(),
                         specificity: 5,
@@ -622,8 +622,8 @@ mod tests {
                     from_spec: media("media:pdf"),
                     to_spec: media("media:txt;textable"),
                 },
-                CapChainStepInfo {
-                    step_type: CapChainStepType::WrapInList {
+                StrandStep {
+                    step_type: StrandStepType::WrapInList {
                         item_spec: media("media:txt;textable"),
                         list_spec: media("media:list;txt;textable"),
                     },
@@ -638,7 +638,7 @@ mod tests {
             description: "Extract → WrapInList".to_string(),
         };
 
-        let graph = RouteGraph::from_path(&path);
+        let graph = Machine::from_path(&path);
         // WrapInList is elided — only the Cap edge remains
         assert_eq!(graph.edge_count(), 1);
         assert!(!graph.edges()[0].is_loop);

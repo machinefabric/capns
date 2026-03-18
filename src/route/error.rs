@@ -1,12 +1,12 @@
-//! Error types for route notation parsing and serialization
+//! Error types for machine notation parsing and serialization
 
 use thiserror::Error;
 
-/// Errors that can occur during route notation parsing
+/// Errors that can occur during machine notation parsing
 #[derive(Debug, Error)]
-pub enum RouteNotationError {
+pub enum MachineSyntaxError {
     /// Input string is empty or contains only whitespace
-    #[error("route notation is empty")]
+    #[error("machine notation is empty")]
     Empty,
 
     /// A statement bracket `[` was opened but never closed with `]`

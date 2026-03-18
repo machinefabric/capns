@@ -1,12 +1,12 @@
-//! Orchestrator: Route Notation Parser with CapDag Orchestration
+//! Orchestrator: Machine Notation Parser with CapDag Orchestration
 //!
-//! This module parses route notation and resolves cap URNs via a registry,
+//! This module parses machine notation and resolves cap URNs via a registry,
 //! validates the graph, and produces a validated, executable DAG IR.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use capdag::orchestrator::{parse_route_to_cap_dag, CapRegistryTrait};
+//! use capdag::orchestrator::{parse_machine_to_cap_dag, CapRegistryTrait};
 //! use capdag::CapRegistry;
 //!
 //! let route = r#"
@@ -15,7 +15,7 @@
 //! "#;
 //!
 //! let registry = CapRegistry::new().await?;
-//! let graph = parse_route_to_cap_dag(route, &registry).await?;
+//! let graph = parse_machine_to_cap_dag(route, &registry).await?;
 //! ```
 
 pub mod types;
@@ -33,7 +33,7 @@ pub use types::{
     CapRegistryTrait,
 };
 
-pub use parser::parse_route_to_cap_dag;
+pub use parser::parse_machine_to_cap_dag;
 
 pub use plan_converter::plan_to_resolved_graph;
 

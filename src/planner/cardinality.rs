@@ -436,7 +436,7 @@ impl CardinalityPattern {
 
 /// Analyze shape chain for a sequence of caps (cardinality + structure)
 #[derive(Debug, Clone)]
-pub struct ShapeChainAnalysis {
+pub struct StrandShapeAnalysis {
     /// Per-cap shape info
     pub cap_infos: Vec<CapShapeInfo>,
     /// Points where fan-out is needed (index into cap_infos)
@@ -449,7 +449,7 @@ pub struct ShapeChainAnalysis {
     pub error: Option<String>,
 }
 
-impl ShapeChainAnalysis {
+impl StrandShapeAnalysis {
     /// Analyze a chain of caps for shape transitions (cardinality + structure)
     ///
     /// This validates both:
@@ -709,12 +709,12 @@ mod tests {
     // TEST711: Tests shape chain analysis for simple linear one-to-one capability chains
     // Verifies chains with no fan-out are valid and require no transformation
     #[test]
-    fn test711_shape_chain_analysis_simple_linear() {
+    fn test711_strand_shape_analysis_simple_linear() {
         let infos = vec![
             CapShapeInfo::from_cap_specs("cap:pdf-to-png", "media:pdf", "media:png"),
             CapShapeInfo::from_cap_specs("cap:resize", "media:png", "media:png"),
         ];
-        let analysis = ShapeChainAnalysis::analyze(infos);
+        let analysis = StrandShapeAnalysis::analyze(infos);
         assert!(analysis.is_valid);
         assert!(analysis.fan_out_points.is_empty());
         assert!(!analysis.requires_transformation());
@@ -723,12 +723,12 @@ mod tests {
     // TEST712: Tests shape chain analysis detects fan-out points in capability chains
     // Verifies chains with one-to-many transitions are marked for transformation
     #[test]
-    fn test712_shape_chain_analysis_with_fan_out() {
+    fn test712_strand_shape_analysis_with_fan_out() {
         let infos = vec![
             CapShapeInfo::from_cap_specs("cap:pdf-to-pages", "media:pdf", "media:list;png"),
             CapShapeInfo::from_cap_specs("cap:thumbnail", "media:png", "media:png"),
         ];
-        let analysis = ShapeChainAnalysis::analyze(infos);
+        let analysis = StrandShapeAnalysis::analyze(infos);
         assert!(analysis.is_valid);
         assert_eq!(analysis.fan_out_points, vec![1]);
         assert!(analysis.requires_transformation());
@@ -737,8 +737,8 @@ mod tests {
     // TEST713: Tests shape chain analysis handles empty capability chains correctly
     // Verifies empty chains are valid and require no transformation
     #[test]
-    fn test713_shape_chain_analysis_empty() {
-        let analysis = ShapeChainAnalysis::analyze(vec![]);
+    fn test713_strand_shape_analysis_empty() {
+        let analysis = StrandShapeAnalysis::analyze(vec![]);
         assert!(analysis.is_valid);
         assert!(!analysis.requires_transformation());
     }
@@ -943,29 +943,29 @@ mod tests {
         assert_eq!(one_to_many.cardinality_pattern(), CardinalityPattern::OneToMany);
     }
 
-    // ==================== ShapeChainAnalysis Tests ====================
+    // ==================== StrandShapeAnalysis Tests ====================
 
     // TEST750: Tests shape chain analysis for valid chain with matching structures
     #[test]
-    fn test750_shape_chain_valid() {
+    fn test750_strand_shape_valid() {
         let infos = vec![
             CapShapeInfo::from_cap_specs("cap:resize", "media:png", "media:png"),
             CapShapeInfo::from_cap_specs("cap:compress", "media:png", "media:png"),
         ];
-        let analysis = ShapeChainAnalysis::analyze(infos);
+        let analysis = StrandShapeAnalysis::analyze(infos);
         assert!(analysis.is_valid);
         assert!(analysis.error.is_none());
     }
 
     // TEST751: Tests shape chain analysis detects structure mismatch
     #[test]
-    fn test751_shape_chain_structure_mismatch() {
+    fn test751_strand_shape_structure_mismatch() {
         let infos = vec![
             CapShapeInfo::from_cap_specs("cap:extract", "media:pdf", "media:textable"),
             // This cap expects record but gets opaque - should fail
             CapShapeInfo::from_cap_specs("cap:parse", "media:json;record", "media:data;record"),
         ];
-        let analysis = ShapeChainAnalysis::analyze(infos);
+        let analysis = StrandShapeAnalysis::analyze(infos);
         assert!(!analysis.is_valid);
         assert!(analysis.error.is_some());
         assert!(analysis.error.as_ref().unwrap().contains("Shape mismatch"));
@@ -973,12 +973,12 @@ mod tests {
 
     // TEST752: Tests shape chain analysis with fan-out (matching structures)
     #[test]
-    fn test752_shape_chain_with_fanout() {
+    fn test752_strand_shape_with_fanout() {
         let infos = vec![
             CapShapeInfo::from_cap_specs("cap:disbind", "media:pdf", "media:page;list;textable"),
             CapShapeInfo::from_cap_specs("cap:process", "media:textable", "media:result;textable"),
         ];
-        let analysis = ShapeChainAnalysis::analyze(infos);
+        let analysis = StrandShapeAnalysis::analyze(infos);
         assert!(analysis.is_valid);
         assert!(analysis.requires_transformation());
         assert_eq!(analysis.fan_out_points, vec![1]);
@@ -986,7 +986,7 @@ mod tests {
 
     // TEST753: Tests shape chain analysis correctly handles list-to-list record flow
     #[test]
-    fn test753_shape_chain_list_record_to_list_record() {
+    fn test753_strand_shape_list_record_to_list_record() {
         let infos = vec![
             CapShapeInfo::from_cap_specs(
                 "cap:parse_csv",
@@ -999,7 +999,7 @@ mod tests {
                 "media:result;list;record"
             ),
         ];
-        let analysis = ShapeChainAnalysis::analyze(infos);
+        let analysis = StrandShapeAnalysis::analyze(infos);
         assert!(analysis.is_valid);
         assert!(!analysis.requires_transformation());
     }

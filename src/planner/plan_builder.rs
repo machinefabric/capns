@@ -6,7 +6,7 @@
 //!
 //! NOTE: Path finding has been moved to `LiveCapGraph`. Use `LiveCapGraph` for
 //! `get_reachable_targets()` and `find_paths_to_exact_target()`, then pass the
-//! resulting `CapChainPathInfo` to `build_plan_from_path()` here.
+//! resulting `Strand` to `build_plan_from_path()` here.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,9 +16,9 @@ use serde_json::json;
 use crate::{Cap, CapRegistry, MediaUrn, MediaUrnRegistry, MediaValidation};
 use super::argument_binding::{ArgumentBinding, ArgumentBindings};
 use super::cardinality::InputCardinality;
-use super::plan::{CapEdge, CapExecutionPlan, CapNode};
+use super::plan::{MachinePlanEdge, MachinePlan, MachineNode};
 use super::PlannerError;
-use super::live_cap_graph::CapChainPathInfo;
+use super::live_cap_graph::Strand;
 
 type PlannerResult<T> = Result<T, PlannerError>;
 
@@ -26,14 +26,14 @@ type PlannerResult<T> = Result<T, PlannerError>;
 ///
 /// NOTE: Path finding methods have been moved to `LiveCapGraph`.
 /// This builder handles plan construction from pre-computed paths.
-pub struct CapPlanBuilder {
+pub struct MachinePlanBuilder {
     /// Cap registry for looking up cap definitions
     cap_registry: Arc<CapRegistry>,
     /// Media URN registry for resolving media specs
     media_registry: Arc<MediaUrnRegistry>,
 }
 
-impl CapPlanBuilder {
+impl MachinePlanBuilder {
     /// Create a new plan builder with the given registries.
     pub fn new(cap_registry: Arc<CapRegistry>, media_registry: Arc<MediaUrnRegistry>) -> Self {
         Self {
@@ -83,7 +83,7 @@ impl CapPlanBuilder {
     /// Build a plan from a pre-defined path.
     /// Looks up cap definitions to find file-path argument names by media URN type.
     ///
-    /// Takes a `CapChainPathInfo` from LiveCapGraph which uses typed URNs.
+    /// Takes a `Strand` from LiveCapGraph which uses typed URNs.
     /// Handles both capability steps and cardinality transition steps (ForEach/Collect/WrapInList).
     ///
     /// ForEach/Collect pairs define iteration boundaries:
@@ -93,12 +93,12 @@ impl CapPlanBuilder {
     pub async fn build_plan_from_path(
         &self,
         name: &str,
-        path: &CapChainPathInfo,
+        path: &Strand,
         input_cardinality: InputCardinality,
-    ) -> PlannerResult<CapExecutionPlan> {
-        use super::live_cap_graph::CapChainStepType;
+    ) -> PlannerResult<MachinePlan> {
+        use super::live_cap_graph::StrandStepType;
 
-        let mut plan = CapExecutionPlan::new(name);
+        let mut plan = MachinePlan::new(name);
 
         let caps = self.cap_registry.get_cached_caps().await
             .map_err(|e| PlannerError::RegistryError(format!("Failed to get caps: {}", e)))?;
@@ -136,7 +136,7 @@ impl CapPlanBuilder {
         }
 
         let input_slot_id = "input_slot";
-        plan.add_node(CapNode::input_slot(
+        plan.add_node(MachineNode::input_slot(
             input_slot_id,
             "input",
             &source_spec_str,
@@ -159,7 +159,7 @@ impl CapPlanBuilder {
             let node_id = format!("step_{}", i);
 
             match &step.step_type {
-                CapChainStepType::Cap { cap_urn, .. } => {
+                StrandStepType::Cap { cap_urn, .. } => {
                     let cap_urn_str = cap_urn.to_string();
                     let mut bindings = ArgumentBindings::new();
 
@@ -215,9 +215,9 @@ impl CapPlanBuilder {
                         }
                     }
 
-                    let node = CapNode::cap_with_bindings(&node_id, &cap_urn_str, bindings);
+                    let node = MachineNode::cap_with_bindings(&node_id, &cap_urn_str, bindings);
                     plan.add_node(node);
-                    plan.add_edge(CapEdge::direct(&prev_node_id, &node_id));
+                    plan.add_edge(MachinePlanEdge::direct(&prev_node_id, &node_id));
 
                     tracing::info!(
                         "  plan_builder: Cap step[{}] '{}' inside_body={} prev_node_id='{}'",
@@ -235,7 +235,7 @@ impl CapPlanBuilder {
                     }
                 }
 
-                CapChainStepType::ForEach { .. } => {
+                StrandStepType::ForEach { .. } => {
                     // If we're already inside a ForEach body, finalize the outer ForEach first.
                     // This handles nested ForEach: e.g., disbind → ForEach → make_multiple_decisions → ForEach
                     // where the body cap produces a list and the path walks through a second ForEach
@@ -274,15 +274,15 @@ impl CapPlanBuilder {
                         }
 
                         // Create the outer ForEach node
-                        let foreach_node = CapNode::for_each(
+                        let foreach_node = MachineNode::for_each(
                             &outer_foreach_node_id,
                             &outer_foreach_input,
                             &outer_entry,
                             &outer_exit,
                         );
                         plan.add_node(foreach_node);
-                        plan.add_edge(CapEdge::direct(&outer_foreach_input, &outer_foreach_node_id));
-                        plan.add_edge(CapEdge::iteration(&outer_foreach_node_id, &outer_entry));
+                        plan.add_edge(MachinePlanEdge::direct(&outer_foreach_input, &outer_foreach_node_id));
+                        plan.add_edge(MachinePlanEdge::iteration(&outer_foreach_node_id, &outer_entry));
 
                         // The outer ForEach is now finalized. prev_node_id stays as body exit.
                         prev_node_id = outer_exit;
@@ -299,7 +299,7 @@ impl CapPlanBuilder {
                     continue;
                 }
 
-                CapChainStepType::Collect { .. } => {
+                StrandStepType::Collect { .. } => {
                     // We've reached the end of a ForEach body
                     if let Some((foreach_idx, foreach_node_id)) = inside_foreach_body.take() {
                         let entry = body_entry.take().unwrap_or_else(|| prev_node_id.clone());
@@ -313,23 +313,23 @@ impl CapPlanBuilder {
                         };
 
                         // Create the ForEach node now that we know the body boundaries
-                        let foreach_node = CapNode::for_each(
+                        let foreach_node = MachineNode::for_each(
                             &foreach_node_id,
                             &foreach_input,
                             &entry,
                             &exit,
                         );
                         plan.add_node(foreach_node);
-                        plan.add_edge(CapEdge::direct(&foreach_input, &foreach_node_id));
+                        plan.add_edge(MachinePlanEdge::direct(&foreach_input, &foreach_node_id));
 
                         // Create iteration edge from ForEach to body entry
-                        plan.add_edge(CapEdge::iteration(&foreach_node_id, &entry));
+                        plan.add_edge(MachinePlanEdge::iteration(&foreach_node_id, &entry));
 
                         // Create the Collect node
-                        let collect_node = CapNode::collect(&node_id, vec![exit.clone()]);
+                        let collect_node = MachineNode::collect(&node_id, vec![exit.clone()]);
                         plan.add_node(collect_node);
                         // Collection edge from body exit to Collect
-                        plan.add_edge(CapEdge::collection(&exit, &node_id));
+                        plan.add_edge(MachinePlanEdge::collection(&exit, &node_id));
                     } else {
                         return Err(PlannerError::InvalidPath(
                             "Collect step without matching ForEach".to_string()
@@ -337,7 +337,7 @@ impl CapPlanBuilder {
                     }
                 }
 
-                CapChainStepType::WrapInList { item_spec, list_spec } => {
+                StrandStepType::WrapInList { item_spec, list_spec } => {
                     // WrapInList wraps a scalar in a list-of-one. At execution time
                     // this is a pass-through — the data flows unchanged.
                     let is_inside_body = inside_foreach_body.is_some();
@@ -346,13 +346,13 @@ impl CapPlanBuilder {
                         i, is_inside_body, prev_node_id
                     );
 
-                    let wrap_node = CapNode::wrap_in_list(
+                    let wrap_node = MachineNode::wrap_in_list(
                         &node_id,
                         &item_spec.to_string(),
                         &list_spec.to_string(),
                     );
                     plan.add_node(wrap_node);
-                    plan.add_edge(CapEdge::direct(&prev_node_id, &node_id));
+                    plan.add_edge(MachinePlanEdge::direct(&prev_node_id, &node_id));
 
                     // If inside a ForEach body, WrapInList is part of the body
                     // but doesn't set body_entry/body_exit (only Cap nodes do).
@@ -414,17 +414,17 @@ impl CapPlanBuilder {
                 }
 
                 // Create the ForEach node
-                let foreach_node = CapNode::for_each(
+                let foreach_node = MachineNode::for_each(
                     &foreach_node_id,
                     &foreach_input,
                     &entry,
                     &exit,
                 );
                 plan.add_node(foreach_node);
-                plan.add_edge(CapEdge::direct(&foreach_input, &foreach_node_id));
+                plan.add_edge(MachinePlanEdge::direct(&foreach_input, &foreach_node_id));
 
                 // Create iteration edge from ForEach to body entry
-                plan.add_edge(CapEdge::iteration(&foreach_node_id, &entry));
+                plan.add_edge(MachinePlanEdge::iteration(&foreach_node_id, &entry));
 
                 // Output connects to the body exit (each iteration produces output)
                 prev_node_id = exit;
@@ -432,8 +432,8 @@ impl CapPlanBuilder {
         }
 
         let output_id = "output";
-        plan.add_node(CapNode::output(output_id, "result", &prev_node_id));
-        plan.add_edge(CapEdge::direct(&prev_node_id, output_id));
+        plan.add_node(MachineNode::output(output_id, "result", &prev_node_id));
+        plan.add_edge(MachinePlanEdge::direct(&prev_node_id, output_id));
 
         plan.metadata = Some(HashMap::from([
             ("source_spec".to_string(), json!(source_spec_str)),
@@ -470,18 +470,18 @@ impl CapPlanBuilder {
 
     /// Find ForEach/Collect ranges in a path.
     /// Returns pairs of (foreach_index, collect_index).
-    fn find_foreach_collect_ranges(steps: &[super::live_cap_graph::CapChainStepInfo]) -> Vec<(usize, usize)> {
-        use super::live_cap_graph::CapChainStepType;
+    fn find_foreach_collect_ranges(steps: &[super::live_cap_graph::StrandStep]) -> Vec<(usize, usize)> {
+        use super::live_cap_graph::StrandStepType;
 
         let mut ranges = Vec::new();
         let mut foreach_stack: Vec<usize> = Vec::new();
 
         for (i, step) in steps.iter().enumerate() {
             match &step.step_type {
-                CapChainStepType::ForEach { .. } => {
+                StrandStepType::ForEach { .. } => {
                     foreach_stack.push(i);
                 }
-                CapChainStepType::Collect { .. } => {
+                StrandStepType::Collect { .. } => {
                     if let Some(foreach_idx) = foreach_stack.pop() {
                         ranges.push((foreach_idx, i));
                     }
@@ -498,7 +498,7 @@ impl CapPlanBuilder {
 // find_all_paths) have been moved to LiveCapGraph. Use LiveCapGraph for path finding and
 // build_plan_from_path for plan construction.
 //
-// The old string-based ReachableTargetInfo, CapChainStepInfo, CapChainPathInfo types have been
+// The old string-based ReachableTargetInfo, StrandStep, Strand types have been
 // replaced by the typed versions in live_cap_graph.rs.
 
 // =============================================================================
@@ -566,17 +566,17 @@ pub struct PathArgumentRequirements {
     pub can_execute_without_input: bool,
 }
 
-impl CapPlanBuilder {
+impl MachinePlanBuilder {
     /// Analyze argument requirements for a path.
     ///
-    /// Takes the new typed `CapChainPathInfo` from `live_cap_graph` which uses
+    /// Takes the new typed `Strand` from `live_cap_graph` which uses
     /// typed `MediaUrn` and `CapUrn` values.
     ///
     /// Only Cap steps have arguments to analyze. ForEach/Collect/WrapInList steps
     /// are cardinality transitions with no user-configurable arguments.
     pub async fn analyze_path_arguments(
         &self,
-        path: &CapChainPathInfo,
+        path: &Strand,
     ) -> PlannerResult<PathArgumentRequirements> {
         let caps = self.cap_registry.get_cached_caps().await
             .map_err(|e| PlannerError::RegistryError(format!("Failed to get caps: {}", e)))?;
@@ -838,22 +838,22 @@ mod tests {
     // ARGUMENT RESOLUTION TESTS
     // ==========================================================================
 
-    fn create_test_plan_builder() -> CapPlanBuilder {
+    fn create_test_plan_builder() -> MachinePlanBuilder {
         let cap_registry = CapRegistry::new_for_test();
         let media_registry = MediaUrnRegistry::new_for_test(
             std::env::temp_dir().join(format!("capdag_test_{}", uuid::Uuid::new_v4()))
         ).expect("Failed to create test media registry");
-        CapPlanBuilder::new(
+        MachinePlanBuilder::new(
             Arc::new(cap_registry),
             Arc::new(media_registry),
         )
     }
 
-    fn create_test_plan_builder_with_registry(cap_registry: CapRegistry) -> CapPlanBuilder {
+    fn create_test_plan_builder_with_registry(cap_registry: CapRegistry) -> MachinePlanBuilder {
         let media_registry = MediaUrnRegistry::new_for_test(
             std::env::temp_dir().join(format!("capdag_test_{}", uuid::Uuid::new_v4()))
         ).expect("Failed to create test media registry");
-        CapPlanBuilder::new(
+        MachinePlanBuilder::new(
             Arc::new(cap_registry),
             Arc::new(media_registry),
         )
@@ -982,7 +982,7 @@ mod tests {
     // Verifies that missing validation metadata is converted to JSON None
     #[test]
     fn test952_validation_to_json_none() {
-        let json = CapPlanBuilder::validation_to_json(None);
+        let json = MachinePlanBuilder::validation_to_json(None);
         assert!(json.is_none(), "None validation should return None");
     }
 
@@ -991,7 +991,7 @@ mod tests {
     #[test]
     fn test765_validation_to_json_empty() {
         let validation = MediaValidation::default();
-        let json = CapPlanBuilder::validation_to_json(Some(&validation));
+        let json = MachinePlanBuilder::validation_to_json(Some(&validation));
         assert!(json.is_none(), "Empty validation should return None");
     }
 
@@ -1007,7 +1007,7 @@ mod tests {
             pattern: None,
             allowed_values: None,
         };
-        let json = CapPlanBuilder::validation_to_json(Some(&validation));
+        let json = MachinePlanBuilder::validation_to_json(Some(&validation));
         assert!(json.is_some(), "Validation with constraints should return Some");
         let json = json.unwrap();
         assert_eq!(json["min"], 50.0);
@@ -1126,7 +1126,7 @@ mod tests {
     // URN CANONICALIZATION TESTS
     // ==========================================================================
     // NOTE: Path finding tests (TEST770-787) have been moved to live_cap_graph.rs
-    // as path finding is now handled by LiveCapGraph, not CapPlanBuilder.
+    // as path finding is now handled by LiveCapGraph, not MachinePlanBuilder.
     // Availability filtering (TEST770-776) is now implicit in LiveCapGraph sync.
     // Path coherence scoring (TEST782-787) has been removed from the architecture.
 
@@ -1159,7 +1159,7 @@ mod tests {
     // TEST1103: Tests that is_dispatchable has correct directionality
     // The available cap (provider) must be dispatchable for the requested cap (request).
     // This tests the directionality: provider.is_dispatchable(&request)
-    // NOTE: This now tests CapUrn::is_dispatchable directly, not via CapPlanBuilder
+    // NOTE: This now tests CapUrn::is_dispatchable directly, not via MachinePlanBuilder
     #[test]
     fn test1103_is_dispatchable_uses_correct_directionality() {
         // A more specific provider should be dispatchable for a general request

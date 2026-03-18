@@ -1,12 +1,12 @@
-//! Route graph — typed DAG representation for route notation
+//! Route graph — typed DAG representation for machine notation
 //!
-//! A `RouteGraph` is the semantic model behind route notation. It represents
+//! A `Machine` is the semantic model behind machine notation. It represents
 //! a directed acyclic graph of capability edges, where each edge transforms
 //! one or more source media types into a target media type via a capability.
 //!
 //! ## Equivalence
 //!
-//! Two `RouteGraph`s are equivalent if they have the same set of edges,
+//! Two `Machine`s are equivalent if they have the same set of edges,
 //! compared using `MediaUrn::is_equivalent()` for media types and
 //! `CapUrn` BTreeMap equality for capabilities. Alias names and statement
 //! ordering are serialization concerns only — they do not affect equivalence.
@@ -25,7 +25,7 @@ use crate::urn::media_urn::MediaUrn;
 /// media types into a target media type. The `is_loop` flag indicates
 /// ForEach semantics (the capability is applied to each item in a list).
 #[derive(Debug, Clone)]
-pub struct RouteEdge {
+pub struct MachineEdge {
     /// Input media URN(s) — from connected cap's in-spec.
     /// Multiple sources represent fan-in (e.g., text + model-spec → embeddings).
     pub sources: Vec<MediaUrn>,
@@ -37,7 +37,7 @@ pub struct RouteEdge {
     pub is_loop: bool,
 }
 
-impl RouteEdge {
+impl MachineEdge {
     /// Check if two edges are semantically equivalent.
     ///
     /// Equivalence is defined as:
@@ -47,7 +47,7 @@ impl RouteEdge {
     /// - Same is_loop flag
     ///
     /// Source order does not matter — fan-in sources are compared as sets.
-    pub fn is_equivalent(&self, other: &RouteEdge) -> bool {
+    pub fn is_equivalent(&self, other: &MachineEdge) -> bool {
         if self.is_loop != other.is_loop {
             return false;
         }
@@ -97,15 +97,15 @@ impl RouteEdge {
     }
 }
 
-impl PartialEq for RouteEdge {
+impl PartialEq for MachineEdge {
     fn eq(&self, other: &Self) -> bool {
         self.is_equivalent(other)
     }
 }
 
-impl Eq for RouteEdge {}
+impl Eq for MachineEdge {}
 
-/// A route graph — the semantic model behind route notation.
+/// A route graph — the semantic model behind machine notation.
 ///
 /// The graph is a collection of directed edges where each edge is a capability
 /// that transforms source media types into a target media type. The graph
@@ -117,15 +117,15 @@ impl Eq for RouteEdge {}
 /// of ordering. Alias names used in the textual notation are not part of
 /// the graph model.
 #[derive(Debug, Clone)]
-pub struct RouteGraph {
+pub struct Machine {
     /// Edges in the graph, ordered for deterministic serialization.
     /// Comparison is order-independent (set semantics).
-    edges: Vec<RouteEdge>,
+    edges: Vec<MachineEdge>,
 }
 
-impl RouteGraph {
+impl Machine {
     /// Create a new route graph from a vector of edges.
-    pub fn new(edges: Vec<RouteEdge>) -> Self {
+    pub fn new(edges: Vec<MachineEdge>) -> Self {
         Self { edges }
     }
 
@@ -135,12 +135,12 @@ impl RouteGraph {
     }
 
     /// Get the edges of this graph.
-    pub fn edges(&self) -> &[RouteEdge] {
+    pub fn edges(&self) -> &[MachineEdge] {
         &self.edges
     }
 
     /// Get a mutable reference to the edges (for building during parsing).
-    pub fn edges_mut(&mut self) -> &mut Vec<RouteEdge> {
+    pub fn edges_mut(&mut self) -> &mut Vec<MachineEdge> {
         &mut self.edges
     }
 
@@ -157,9 +157,9 @@ impl RouteGraph {
     /// Check if two route graphs are semantically equivalent.
     ///
     /// Two graphs are equivalent if they have the same set of edges
-    /// (compared using `RouteEdge::is_equivalent`). Edge ordering
+    /// (compared using `MachineEdge::is_equivalent`). Edge ordering
     /// does not matter.
-    pub fn is_equivalent(&self, other: &RouteGraph) -> bool {
+    pub fn is_equivalent(&self, other: &Machine) -> bool {
         if self.edges.len() != other.edges.len() {
             return false;
         }
@@ -234,24 +234,24 @@ impl RouteGraph {
     }
 }
 
-impl PartialEq for RouteGraph {
+impl PartialEq for Machine {
     fn eq(&self, other: &Self) -> bool {
         self.is_equivalent(other)
     }
 }
 
-impl Eq for RouteGraph {}
+impl Eq for Machine {}
 
-impl fmt::Display for RouteGraph {
+impl fmt::Display for Machine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.edges.is_empty() {
-            return write!(f, "RouteGraph(empty)");
+            return write!(f, "Machine(empty)");
         }
-        write!(f, "RouteGraph({} edges)", self.edges.len())
+        write!(f, "Machine({} edges)", self.edges.len())
     }
 }
 
-impl fmt::Display for RouteEdge {
+impl fmt::Display for MachineEdge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let sources: Vec<String> = self.sources.iter().map(|s| s.to_string()).collect();
         let loop_prefix = if self.is_loop { "LOOP " } else { "" };
@@ -278,8 +278,8 @@ mod tests {
         CapUrn::from_string(s).unwrap()
     }
 
-    fn edge(sources: &[&str], cap_str: &str, target: &str, is_loop: bool) -> RouteEdge {
-        RouteEdge {
+    fn edge(sources: &[&str], cap_str: &str, target: &str, is_loop: bool) -> MachineEdge {
+        MachineEdge {
             sources: sources.iter().map(|s| media(s)).collect(),
             cap_urn: cap(cap_str),
             target: media(target),
@@ -288,7 +288,7 @@ mod tests {
     }
 
     // =========================================================================
-    // RouteEdge equivalence
+    // MachineEdge equivalence
     // =========================================================================
 
     #[test]
@@ -396,12 +396,12 @@ mod tests {
     }
 
     // =========================================================================
-    // RouteGraph equivalence
+    // Machine equivalence
     // =========================================================================
 
     #[test]
     fn graph_equivalence_same_edges() {
-        let g1 = RouteGraph::new(vec![
+        let g1 = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -415,7 +415,7 @@ mod tests {
                 false,
             ),
         ]);
-        let g2 = RouteGraph::new(vec![
+        let g2 = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn graph_equivalence_reordered_edges() {
-        let g1 = RouteGraph::new(vec![
+        let g1 = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -450,7 +450,7 @@ mod tests {
             ),
         ]);
         // Same edges, reversed order
-        let g2 = RouteGraph::new(vec![
+        let g2 = Machine::new(vec![
             edge(
                 &["media:txt;textable"],
                 "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
@@ -470,13 +470,13 @@ mod tests {
 
     #[test]
     fn graph_not_equivalent_different_edge_count() {
-        let g1 = RouteGraph::new(vec![edge(
+        let g1 = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
-        let g2 = RouteGraph::new(vec![
+        let g2 = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -496,13 +496,13 @@ mod tests {
 
     #[test]
     fn graph_not_equivalent_different_cap() {
-        let g1 = RouteGraph::new(vec![edge(
+        let g1 = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
-        let g2 = RouteGraph::new(vec![edge(
+        let g2 = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=summarize;out=\"media:txt;textable\"",
             "media:txt;textable",
@@ -513,15 +513,15 @@ mod tests {
 
     #[test]
     fn graph_empty() {
-        let g = RouteGraph::empty();
+        let g = Machine::empty();
         assert!(g.is_empty());
         assert_eq!(g.edge_count(), 0);
     }
 
     #[test]
     fn graph_empty_equivalence() {
-        let g1 = RouteGraph::empty();
-        let g2 = RouteGraph::empty();
+        let g1 = Machine::empty();
+        let g2 = Machine::empty();
         assert!(g1.is_equivalent(&g2));
         assert_eq!(g1, g2);
     }
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn root_sources_linear_chain() {
-        let g = RouteGraph::new(vec![
+        let g = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn leaf_targets_linear_chain() {
-        let g = RouteGraph::new(vec![
+        let g = Machine::new(vec![
             edge(
                 &["media:pdf"],
                 "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn root_sources_fan_in() {
         // Two sources feed into one cap
-        let g = RouteGraph::new(vec![edge(
+        let g = Machine::new(vec![edge(
             &["media:txt;textable", "media:model-spec;textable"],
             "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
             "media:embedding-vector;record;textable",
@@ -602,20 +602,20 @@ mod tests {
 
     #[test]
     fn display_graph() {
-        let g = RouteGraph::new(vec![edge(
+        let g = Machine::new(vec![edge(
             &["media:pdf"],
             "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
             "media:txt;textable",
             false,
         )]);
         let display = format!("{}", g);
-        assert_eq!(display, "RouteGraph(1 edges)");
+        assert_eq!(display, "Machine(1 edges)");
     }
 
     #[test]
     fn display_empty_graph() {
-        let g = RouteGraph::empty();
+        let g = Machine::empty();
         let display = format!("{}", g);
-        assert_eq!(display, "RouteGraph(empty)");
+        assert_eq!(display, "Machine(empty)");
     }
 }
