@@ -6,10 +6,12 @@ The host-side manager that spawns plugin processes, routes frames, and monitors 
 
 `PluginHostRuntime` sits between a RelaySlave and one or more plugin processes. It manages their full lifecycle — spawning, handshake, frame routing, health monitoring, and death handling.
 
-```
-RelaySlave ←→ PluginHostRuntime ←→ Plugin A (stdin/stdout)
-                                ←→ Plugin B (stdin/stdout)
-                                ←→ Plugin C (stdin/stdout)
+```mermaid
+graph LR
+    RS["RelaySlave"] <--> PH["PluginHostRuntime"]
+    PH <-->|stdin/stdout| PA["Plugin A"]
+    PH <-->|stdin/stdout| PB["Plugin B"]
+    PH <-->|stdin/stdout| PC["Plugin C"]
 ```
 
 The struct tracks each plugin as a `ManagedPlugin` with its process handle, I/O channels, manifest, capabilities, health status, and pending heartbeats.
@@ -60,6 +62,28 @@ Source: `host_runtime.rs` (`register_plugin`, line 324; `attach_plugin`, line 33
 
 ## Plugin Spawning
 
+```mermaid
+sequenceDiagram
+    participant R as Relay
+    participant PH as PluginHostRuntime
+    participant P as Plugin (new)
+
+    R->>PH: REQ(cap)
+    Note over PH: Plugin not running — spawn on demand
+    PH->>P: spawn process (no args)
+
+    rect rgb(240, 248, 255)
+        Note over PH,P: Handshake
+        PH->>P: Hello (limits)
+        P->>PH: Hello (limits + manifest)
+        PH->>P: REQ(CAP_IDENTITY, nonce)
+        P->>PH: nonce echo
+    end
+
+    Note over PH: Update cap table from manifest
+    PH->>P: Forward original REQ(cap)
+```
+
 When a REQ arrives for a cap handled by a registered-but-not-running plugin:
 
 1. **Spawn**: The host starts the plugin binary as a child process with no arguments (triggering plugin CBOR mode).
@@ -74,6 +98,19 @@ If HELLO fails, the plugin is marked with `hello_failed = true` and will not be 
 Source: `host_runtime.rs`.
 
 ## Frame Routing: Engine → Plugin
+
+```mermaid
+flowchart TD
+    F["Frame from relay"] --> FT{frame_type?}
+    FT -->|REQ| CAP["Lookup cap_urn<br/>in cap_table"]
+    CAP --> RUN{Plugin running?}
+    RUN -->|No| SP["Spawn on demand"]
+    SP --> FWD
+    RUN -->|Yes| FWD["Forward to plugin<br/>Record (XID,RID) in<br/>incoming_rxids"]
+
+    FT -->|"STREAM_START<br/>CHUNK<br/>STREAM_END<br/>END<br/>ERR"| CONT["Lookup (XID,RID)<br/>in incoming_rxids"]
+    CONT --> FWD2["Forward to<br/>handling plugin"]
+```
 
 Frames arriving from the relay (engine side) are routed to plugins:
 

@@ -17,6 +17,18 @@ Source: pdfcartridge, txtcartridge.
 
 ## Standard Caps
 
+```mermaid
+graph LR
+    PDF["media:pdf"] -->|generate_thumbnail| IMG["media:image;png"]
+    PDF -->|extract_metadata| REC["media:record"]
+    PDF -->|extract_outline| JSON["media:json"]
+    PDF -->|disbind| LIST["media:pdf;list"]
+
+    TXT["media:text"] -->|generate_thumbnail| IMG2["media:image;png"]
+    TXT -->|extract_metadata| REC2["media:record"]
+    MD["media:text;markdown"] -->|extract_outline| JSON2["media:json"]
+```
+
 `capdag::standard::caps` defines cap URN helpers for common document operations:
 
 | Function | Operation | Description |

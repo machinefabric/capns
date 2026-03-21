@@ -6,28 +6,33 @@ Connection setup between host and plugin: frame exchange, limit negotiation, ide
 
 The handshake is a two-frame exchange followed by an identity verification request.
 
-```
-Host                          Plugin
-  │                              │
-  │──── Hello (limits) ─────────►│
-  │                              │
-  │◄──── Hello (limits+manifest)─│
-  │                              │
-  │  both sides compute min()    │
-  │  and update reader/writer    │
-  │                              │
-  │──── REQ(CAP_IDENTITY,nonce) ►│
-  │──── STREAM_START ───────────►│
-  │──── CHUNK(nonce) ───────────►│
-  │──── STREAM_END ─────────────►│
-  │──── END ────────────────────►│
-  │                              │
-  │◄──── STREAM_START ───────────│
-  │◄──── CHUNK(nonce echo) ──────│
-  │◄──── STREAM_END ─────────────│
-  │◄──── END ────────────────────│
-  │                              │
-  │  connection is now live       │
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant P as Plugin
+
+    rect rgb(240, 248, 255)
+        Note over H,P: HELLO Exchange
+        H->>P: Hello (limits)
+        P->>H: Hello (limits + manifest)
+        Note over H,P: Both sides compute min() and update reader/writer
+    end
+
+    rect rgb(245, 255, 245)
+        Note over H,P: Identity Verification
+        H->>P: REQ(CAP_IDENTITY)
+        H->>P: STREAM_START
+        H->>P: CHUNK(nonce)
+        H->>P: STREAM_END
+        H->>P: END
+
+        P->>H: STREAM_START
+        P->>H: CHUNK(nonce echo)
+        P->>H: STREAM_END
+        P->>H: END
+    end
+
+    Note over H,P: Connection is now live
 ```
 
 The host always sends first. The plugin waits for the host's Hello before responding.

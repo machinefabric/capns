@@ -68,6 +68,29 @@ Source: `types.rs` (`ProgressMapper`, line 73).
 
 ## Nested Mapping Example
 
+```mermaid
+graph TD
+    subgraph "DAG (2 groups)"
+        G0["Group 0<br/>[0.0, 0.5]"]
+        G1["Group 1<br/>[0.5, 1.0]"]
+    end
+
+    subgraph "Group 0 Handler"
+        DL["Download<br/>[0.0, 0.25] of handler"]
+        INF["Inference<br/>[0.25, 1.0] of handler"]
+    end
+
+    subgraph "Effective Ranges"
+        DLE["Download effective<br/>[0.0, 0.125] of task"]
+        INFE["Inference effective<br/>[0.125, 0.5] of task"]
+    end
+
+    G0 --> DL
+    G0 --> INF
+    DL --> DLE
+    INF --> INFE
+```
+
 A concrete example showing how a progress value flows through three layers:
 
 **Setup**: A DAG with 2 groups. An ML cartridge in group 0 downloads a model via peer call, then runs inference.

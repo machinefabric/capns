@@ -6,14 +6,14 @@ RelaySlave, RelayMaster, and how relay chains connect components.
 
 A RelaySlave/RelayMaster pair forms a transparent frame bridge over a Unix socket. The pair connects a PluginHostRuntime (managing plugin processes) to the RelaySwitch (routing cap invocations).
 
-```
-RelaySwitch                  PluginHostRuntime
-     │                              │
-     │    Unix socket               │
-     │  ┌───────────────────────┐   │
-     ├──┤ RelayMaster │ RelaySlave ├──┤
-     │  └───────────────────────┘   │
-     │                              │
+```mermaid
+graph LR
+    SW["RelaySwitch"] <-->|Unix socket| RM["RelayMaster"]
+    RM <-->|Unix socket| RS["RelaySlave"]
+    RS <--> PH["PluginHostRuntime"]
+
+    style RM fill:#e8f4fd
+    style RS fill:#e8f4fd
 ```
 
 All regular frames pass through unchanged. Only two frame types are intercepted — RelayNotify and RelayState — which carry control information between the switch and the host.
@@ -54,6 +54,31 @@ Source: `relay.rs`.
 
 ## Frame Interception
 
+```mermaid
+sequenceDiagram
+    participant PH as PluginHostRuntime
+    participant RS as RelaySlave
+    participant RM as RelayMaster
+    participant SW as RelaySwitch
+
+    Note over PH,SW: RelayNotify (slave → master)
+    PH->>RS: Caps changed
+    RS->>RM: RelayNotify (manifest, limits)
+    Note over RM: Stores manifest — never forwarded
+    RM--xSW: (intercepted)
+
+    Note over PH,SW: RelayState (master → slave)
+    SW->>RM: RelayState (resource info)
+    RM->>RS: RelayState (payload)
+    Note over RS: Stores in resource_state — never forwarded
+    RS--xPH: (intercepted)
+
+    Note over PH,SW: Regular frames
+    PH->>RS: REQ / CHUNK / END / etc.
+    RS->>RM: (pass-through)
+    RM->>SW: (pass-through)
+```
+
 ### RelayNotify (Slave → Master)
 
 RelayNotify frames carry capability advertisements from the slave's host to the switch. They contain:
@@ -80,6 +105,30 @@ RelayState frames never reach the PluginHostRuntime as frames — they are inter
 
 ## Connection Lifecycle
 
+```mermaid
+sequenceDiagram
+    participant E as Engine
+    participant RM as RelayMaster
+    participant RS as RelaySlave
+    participant PH as PluginHostRuntime
+
+    Note over E,PH: 1. Socket creation
+    E->>RM: Create Unix socket pair
+    E->>RS: Other end of socket
+
+    Note over E,PH: 2. Initial advertisement
+    RS->>RM: RelayNotify (caps, limits)
+
+    Note over E,PH: 3. Identity verification
+    RM->>RS: REQ(CAP_IDENTITY)
+    RS->>PH: (forward)
+    PH-->>RS: nonce echo
+    RS-->>RM: (forward)
+
+    Note over E,PH: 4. Spawn reader tasks
+    Note over E,PH: 5. Bidirectional flow — relay is live
+```
+
 1. **Socket creation**: The engine creates a Unix socket pair (or equivalent IPC channel).
 2. **Endpoint assignment**: One end goes to the RelaySlave (in the PluginHostRuntime's process), the other to the RelaySwitch (in the engine's process).
 3. **Initial advertisement**: The RelaySlave sends a RelayNotify on startup, advertising its host's capabilities and limits. This is triggered by `run()` with an `initial_notify` parameter.
@@ -94,16 +143,23 @@ Source: `relay.rs`, `relay_switch.rs`.
 
 A RelaySwitch manages an array of masters, each connected to a different host:
 
-```
-                    RelaySwitch
-                   /     |     \
-               RM_0    RM_1    RM_2
-                |        |        |
-               RS_0    RS_1    RS_2
-                |        |        |
-               PH_0    PH_1    PH_2
-              / | \      |      / \
-            P0 P1 P2    P3    P4  P5
+```mermaid
+graph TD
+    SW["RelaySwitch"]
+    SW --> RM0["RM_0"]
+    SW --> RM1["RM_1"]
+    SW --> RM2["RM_2"]
+
+    RM0 --> RS0["RS_0"] --> PH0["PH_0"]
+    RM1 --> RS1["RS_1"] --> PH1["PH_1"]
+    RM2 --> RS2["RS_2"] --> PH2["PH_2"]
+
+    PH0 --> P0["P0"]
+    PH0 --> P1["P1"]
+    PH0 --> P2["P2"]
+    PH1 --> P3["P3"]
+    PH2 --> P4["P4"]
+    PH2 --> P5["P5"]
 ```
 
 Each master provides a different set of capabilities (though overlap is possible). The switch aggregates all capabilities into a single cap table and routes each REQ to the master whose plugins can best handle the requested cap — using `is_dispatchable` matching and specificity ranking across all masters.

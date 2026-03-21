@@ -4,6 +4,16 @@ Error types across the stack, error propagation patterns, and common failure mod
 
 ## Error Type Hierarchy
 
+```mermaid
+graph BT
+    OP["OpError<br/>(handler layer)"] --> RT["RuntimeError<br/>(plugin layer)"]
+    RT --> ERR["ERR frame<br/>(wire)"]
+    ERR --> AH["AsyncHostError<br/>(host layer)"]
+    AH --> RSE["RelaySwitchError<br/>(relay layer)"]
+    RSE --> EX["ExecutionError<br/>(execution layer)"]
+    EX --> TASK["Task failure<br/>(application layer)"]
+```
+
 Each layer of the system defines its own error type. Errors propagate upward — a plugin handler error becomes a runtime error, then an ERR frame, then an execution error, then a task failure.
 
 ### Plugin Layer (RuntimeError)
@@ -88,6 +98,21 @@ All handler errors are wrapped in this type. The message should be descriptive e
 
 ## Error Propagation
 
+```mermaid
+graph TD
+    subgraph "Plugin Process"
+        OP["Op handler"] -->|"Err(OpError)"| DR["dispatch_op()"]
+        DR -->|"ERR frame"| STDOUT["stdout"]
+    end
+
+    STDOUT --> PHR["PluginHostRuntime"]
+    PHR --> RS["RelaySlave → RelayMaster"]
+    RS --> SW["RelaySwitch"]
+    SW --> EF["execute_fanin"]
+    EF -->|"ExecutionError::<br/>PluginExecutionFailed"| CI["cap_interpreter"]
+    CI -->|"task state → Failed"| DB["SQLite"]
+```
+
 ### Plugin → Engine
 
 When a handler fails, the error travels through several layers:
@@ -102,6 +127,22 @@ When a handler fails, the error travels through several layers:
 8. **cap_interpreter** records the failure; task state → `Failed`.
 
 ### Plugin Death
+
+```mermaid
+sequenceDiagram
+    participant P as Plugin
+    participant PH as PluginHostRuntime
+    participant E as Engine
+
+    Note over P: Process dies unexpectedly
+    P--xPH: stdout EOF
+    Note over PH: Detect death via reader task
+    PH->>PH: Read stderr (last_death_message)
+    loop For each pending request
+        PH->>E: ERR frame (death message)
+    end
+    Note over E: ExecutionError::PluginExecutionFailed<br/>or ExecutionError::HostError
+```
 
 When a plugin process dies unexpectedly:
 

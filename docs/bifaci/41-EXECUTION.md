@@ -4,6 +4,18 @@ How the executor runs a ResolvedGraph: plugin discovery, edge grouping, topologi
 
 ## execute_dag
 
+```mermaid
+flowchart TD
+    RG["ResolvedGraph"] --> DISC["1. Discover plugins"]
+    DISC --> INFRA["2. Create infrastructure<br/>(HostRuntime, Relay, Switch)"]
+    INFRA --> REG["3. Register all caps"]
+    REG --> GRP["4. Group edges by<br/>(target, cap_urn)"]
+    GRP --> TOPO["5. Topological sort"]
+    TOPO --> PROG["6. Pre-compute<br/>progress boundaries"]
+    PROG --> EXEC["7. Execute each group<br/>via execute_fanin()"]
+    EXEC --> RES["8. Return results<br/>HashMap&lt;node_id, NodeData&gt;"]
+```
+
 `execute_dag()` is the top-level function that takes a `ResolvedGraph` and runs it:
 
 1. **Discover plugins**: Collect all unique cap URNs from the graph's edges. For each, find a plugin binary that provides it.
@@ -55,6 +67,39 @@ Source: `executor.rs`.
 ### Input Collection
 
 For each source node in the edge group, look up its data in the `node_data` map. If any source is missing, fail with `ExecutionError::NoIncomingData`. Source data was produced by an earlier group's execution.
+
+```mermaid
+sequenceDiagram
+    participant EX as Executor
+    participant SW as RelaySwitch
+    participant P as Plugin
+
+    EX->>SW: register_external_request(rid, cap_urn)
+    Note over SW: Returns (XID, response_rx)
+
+    loop For each source in EdgeGroup
+        EX->>SW: STREAM_START (stream_id, media_urn)
+        EX->>SW: CHUNK(s)
+        EX->>SW: STREAM_END
+    end
+    EX->>SW: END
+
+    Note over SW: Routes to plugin via cap matching
+    SW->>P: (forwarded)
+
+    loop select! loop
+        alt Response frame on rx
+            P-->>EX: CHUNK → accumulate data
+            P-->>EX: LOG → forward progress
+            P-->>EX: END → done
+            P-->>EX: ERR → fail
+        else Pump timeout (200ms)
+            Note over EX: read_from_masters_timeout<br/>Routes peer frames through switch
+        else Activity timeout (120s)
+            Note over EX: ExecutionError::ActivityTimeout
+        end
+    end
+```
 
 ### Cap Invocation
 

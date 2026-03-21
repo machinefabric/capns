@@ -202,6 +202,21 @@ Registering a handler for a cap URN that is not in the manifest is harmless but 
 
 ## Cartridge Lifecycle
 
+```mermaid
+stateDiagram-v2
+    [*] --> Registered : Discovery
+    Registered --> Spawning : First REQ for this cap
+    Spawning --> Handshaking : Process started
+    Handshaking --> Live : HELLO + identity OK
+    Handshaking --> Failed : HELLO failed
+    Live --> Live : Handle requests
+    Live --> Dead : Process died
+    Live --> Killed : Engine shutdown / idle timeout
+    Dead --> Spawning : Next REQ triggers respawn
+    Killed --> Registered : Available for respawn
+    Failed --> [*] : Permanent failure
+```
+
 1. **Discovery**: The engine's plugin registry or dev_plugins mapping identifies which cartridge binary provides a given cap.
 2. **First request**: When a REQ arrives for a cap this cartridge provides, the PluginHostRuntime spawns the binary with no arguments (triggering plugin CBOR mode).
 3. **Handshake**: HELLO exchange and identity verification (see [22-HANDSHAKE.md](22-HANDSHAKE.md)).

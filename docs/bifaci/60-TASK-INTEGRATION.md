@@ -50,19 +50,18 @@ Source: machfab `FileOperationCoordinator`, `cap_interpreter`.
 
 The full progress chain from plugin to UI:
 
-```
-Plugin handler                cap_interpreter              SQLite        UI
-     │                              │                        │           │
-     │ output.progress(0.5, "msg")  │                        │           │
-     │──── LOG frame ──────────────►│                        │           │
-     │                              │                        │           │
-     │                              │ CapProgressFn called   │           │
-     │                              │ map_progress(0.5,      │           │
-     │                              │   step_base,           │           │
-     │                              │   step_weight)         │           │
-     │                              │── UPDATE progress ────►│           │
-     │                              │                        │── poll ──►│
-     │                              │                        │           │
+```mermaid
+sequenceDiagram
+    participant P as Plugin Handler
+    participant CI as cap_interpreter
+    participant DB as SQLite
+    participant UI as UI
+
+    P->>CI: LOG frame<br/>progress(0.5, "msg")
+    Note over CI: CapProgressFn called<br/>map_progress(0.5,<br/>step_base, step_weight)
+    CI->>DB: UPDATE progress
+    UI->>DB: poll
+    DB-->>UI: progress value
 ```
 
 1. **Plugin handler**: `output.progress(0.5, "message")` sends a LOG frame.
@@ -84,6 +83,15 @@ The UI distinguishes "running" from "idle" based on frame activity:
 This is a cosmetic distinction. "Idle" in the UI does not mean the task has stalled — it means the progress value hasn't changed recently. Keepalive frames keep the engine alive; progress frames update the display.
 
 ## Task Completion
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created : TriggerFuse event
+    Created --> Running : Execute DAG
+    Running --> Completed : Success (progress = 1.0)
+    Running --> Failed : ExecutionError
+    Running --> Cancelled : control_flags.aborted
+```
 
 When DAG execution finishes:
 

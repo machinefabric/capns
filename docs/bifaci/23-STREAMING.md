@@ -14,17 +14,17 @@ Source: `capdag/src/bifaci/frame.rs` (StreamStart, StreamEnd); `plugin_runtime.r
 
 A stream follows this sequence:
 
-```
-STREAM_START (stream_id, media_urn)
-    │
-    ▼
-CHUNK (stream_id, payload, chunk_index=0, checksum)
-CHUNK (stream_id, payload, chunk_index=1, checksum)
-    ...
-CHUNK (stream_id, payload, chunk_index=N, checksum)
-    │
-    ▼
-STREAM_END (stream_id, chunk_count=N+1)
+```mermaid
+sequenceDiagram
+    participant S as Sender
+    participant R as Receiver
+
+    S->>R: STREAM_START (stream_id, media_urn)
+    S->>R: CHUNK (chunk_index=0, checksum)
+    S->>R: CHUNK (chunk_index=1, checksum)
+    Note over S,R: ... more chunks ...
+    S->>R: CHUNK (chunk_index=N, checksum)
+    S->>R: STREAM_END (chunk_count=N+1)
 ```
 
 - **STREAM_START** announces the stream. The `media_urn` tells the receiver what kind of data to expect.
@@ -37,14 +37,26 @@ After STREAM_END, any CHUNK for the same `stream_id` is a protocol error.
 
 After all streams within a request have ended (each with its own STREAM_END), the sender sends **END** to signal that no more streams will be opened and the request is complete:
 
-```
-STREAM_START (stream A)
-  CHUNK(s)
-STREAM_END (stream A)
-STREAM_START (stream B)
-  CHUNK(s)
-STREAM_END (stream B)
-END
+```mermaid
+sequenceDiagram
+    participant S as Sender
+    participant R as Receiver
+
+    rect rgb(240, 248, 255)
+        Note right of S: Stream A
+        S->>R: STREAM_START (stream A)
+        S->>R: CHUNK(s)
+        S->>R: STREAM_END (stream A)
+    end
+
+    rect rgb(245, 255, 245)
+        Note right of S: Stream B
+        S->>R: STREAM_START (stream B)
+        S->>R: CHUNK(s)
+        S->>R: STREAM_END (stream B)
+    end
+
+    S->>R: END
 ```
 
 No STREAM_START, CHUNK, or STREAM_END may follow an END for the same request ID.
@@ -138,6 +150,21 @@ struct FlowState {
 ```
 
 When a frame arrives:
+
+```mermaid
+flowchart TD
+    A["Frame arrives with seq"] --> B{seq == expected?}
+    B -->|Yes| C["Deliver frame"]
+    C --> D["Drain consecutive<br/>buffered frames"]
+    D --> E["Advance expected_seq"]
+
+    B -->|seq > expected| F["Buffer frame"]
+    F --> G{Buffer size > max?}
+    G -->|Yes| H["Protocol error"]
+    G -->|No| I["Wait for gap fill"]
+
+    B -->|seq < expected<br/>or duplicate| H
+```
 
 1. **In order** (seq == expected_seq): Delivered immediately, along with any consecutive frames already buffered. The expected_seq advances past all delivered frames.
 2. **Out of order** (seq > expected_seq): Buffered. The frame waits until the gap is filled.

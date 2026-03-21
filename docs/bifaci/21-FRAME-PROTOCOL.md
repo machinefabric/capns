@@ -55,6 +55,33 @@ Source: `capdag/src/bifaci/frame.rs` (keys module, line 910; Frame struct, line 
 
 ## Frame Types
 
+The following diagram shows how frame types relate within a request lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Hello : connection setup
+    Hello --> Req : connection live
+
+    state "Request Lifecycle" as RL {
+        Req --> StreamStart : open stream
+        StreamStart --> Chunk : send data
+        Chunk --> Chunk : more data
+        Chunk --> StreamEnd : stream complete
+        StreamEnd --> StreamStart : open another stream
+        StreamEnd --> End : all streams done
+        Req --> End : empty response
+
+        Req --> Err : request failed
+        StreamStart --> Err : request failed
+        Chunk --> Err : request failed
+    }
+
+    state "Anytime" as AT {
+        Log : Log (progress, info)
+        Heartbeat : Heartbeat (health probe)
+    }
+```
+
 ### Hello (0)
 
 Sent once by each side during connection setup. The host sends Hello first (no manifest); the plugin responds with Hello including a JSON-encoded manifest in `meta["manifest"]`.

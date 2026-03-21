@@ -6,32 +6,44 @@ How the components connect, what role each plays, and how frames flow through th
 
 Bifaci arranges components in three layers. The engine sits at the top and issues capability invocation requests. Plugins sit at the bottom and execute those requests. Between them, a relay network routes frames to the right destination.
 
-```
-┌───────────────────────────────┐
-│     Engine / DAG Executor     │
-└──────────────┬────────────────┘
-               │
-┌──────────────▼────────────────┐
-│         RelaySwitch            │
-│  Routes REQ by cap URN         │
-│  Routes continuations by RID   │
-│  Tracks peer invocations       │
-└─┬────┬────┬────┬──────────────┘
-  │    │    │    │
-  ▼    ▼    ▼    ▼
- RM   RM   RM   RM    RelayMasters (one per host)
-  │    │    │    │     (Unix socket)
-  ▼    ▼    ▼    ▼
- RS   RS   RS   RS    RelaySlaves (one per host)
-  │    │    │    │
-  ▼    ▼    ▼    ▼
- PH   PH   PH   PH    PluginHostRuntimes (one per host)
- /\   /\   /\   /\
- ▼▼   ▼▼   ▼▼   ▼▼
- PP   PP   PP   PP    Plugin processes (stdin/stdout)
+```mermaid
+graph TD
+    Engine["Engine / DAG Executor"]
+    Switch["RelaySwitch<br/>Routes REQ by cap URN<br/>Routes continuations by RID<br/>Tracks peer invocations"]
+
+    Engine --> Switch
+
+    subgraph Host0 ["Host 0"]
+        RM0["RelayMaster"] --> RS0["RelaySlave"]
+        RS0 --> PH0["PluginHostRuntime"]
+        PH0 --> P0A["Plugin A"]
+        PH0 --> P0B["Plugin B"]
+    end
+
+    subgraph Host1 ["Host 1"]
+        RM1["RelayMaster"] --> RS1["RelaySlave"]
+        RS1 --> PH1["PluginHostRuntime"]
+        PH1 --> P1A["Plugin C"]
+    end
+
+    subgraph Host2 ["Host 2"]
+        RM2["RelayMaster"] --> RS2["RelaySlave"]
+        RS2 --> PH2["PluginHostRuntime"]
+        PH2 --> P2A["Plugin D"]
+        PH2 --> P2B["Plugin E"]
+    end
+
+    Switch --> RM0
+    Switch --> RM1
+    Switch --> RM2
 ```
 
-Each PluginHostRuntime manages one or more plugin processes. A RelayMaster/RelaySlave pair connects each host to the central RelaySwitch over a Unix socket. The switch aggregates all capabilities from all hosts and routes requests to the correct one.
+Each PluginHostRuntime manages one or more plugin processes. RelayMaster/RelaySlave pairs connect each host to the central RelaySwitch over Unix sockets. The switch aggregates all capabilities from all hosts and routes requests to the correct one.
+
+Connection types:
+- Switch ↔ Master: Unix socket
+- Master ↔ Slave: Unix socket (same pair)
+- Host ↔ Plugin: stdin/stdout pipes
 
 Source: `capdag/src/bifaci/relay_switch.rs`, `relay.rs`, `host_runtime.rs`, `plugin_runtime.rs`.
 
@@ -105,26 +117,31 @@ Source: `capdag/src/bifaci/in_process_host.rs`.
 
 A complete capability invocation follows this path:
 
-```
-Engine                RelaySwitch           RelaySlave           PluginHost           Plugin
-  │                       │                     │                    │                   │
-  │──── REQ(cap) ────────►│                     │                    │                   │
-  │                       │ assign XID          │                    │                   │
-  │                       │ match cap → master  │                    │                   │
-  │                       │──── REQ(cap,xid) ──►│                    │                   │
-  │                       │                     │──── REQ(cap,xid) ─►│                   │
-  │                       │                     │                    │ match cap → plugin │
-  │                       │                     │                    │──── REQ(cap,xid) ─►│
-  │                       │                     │                    │                   │
-  │                       │                     │                    │  handler executes  │
-  │                       │                     │                    │                   │
-  │                       │                     │                    │◄── STREAM_START ───│
-  │                       │                     │                    │◄── CHUNK(data) ────│
-  │                       │                     │                    │◄── CHUNK(data) ────│
-  │                       │                     │                    │◄── STREAM_END ─────│
-  │                       │                     │◄─── (forwarded) ───│◄── END ───────────│
-  │                       │◄─── (forwarded) ────│                    │                   │
-  │◄── (forwarded) ───────│                     │                    │                   │
+```mermaid
+sequenceDiagram
+    participant E as Engine
+    participant SW as RelaySwitch
+    participant RS as RelaySlave
+    participant PH as PluginHost
+    participant P as Plugin
+
+    E->>SW: REQ(cap)
+    Note over SW: assign XID, match cap → master
+    SW->>RS: REQ(cap, xid)
+    RS->>PH: REQ(cap, xid)
+    Note over PH: match cap → plugin
+    PH->>P: REQ(cap, xid)
+
+    Note over P: handler executes
+
+    P-->>PH: STREAM_START
+    P-->>PH: CHUNK(data)
+    P-->>PH: CHUNK(data)
+    P-->>PH: STREAM_END
+    P-->>PH: END
+    PH-->>RS: (forwarded)
+    RS-->>SW: (forwarded)
+    SW-->>E: (forwarded)
 ```
 
 The REQ carries the cap URN in key 10. The RelaySwitch assigns an XID (routing_id, key 11) and records the mapping `(XID, RID) → destination master`. All subsequent frames for this request carry the same (XID, RID) pair and follow the recorded route.
@@ -135,21 +152,26 @@ Response frames flow back through the same components in reverse. The relay and 
 
 When Plugin A needs to call a capability provided by Plugin B:
 
-```
-Plugin A         PluginHost A        RelaySlave A       RelaySwitch       Plugin B
-   │                  │                   │                  │                │
-   │── REQ(cap) ─────►│                   │                  │                │
-   │  (no XID)        │── REQ(cap) ──────►│                  │                │
-   │                  │ record outgoing   │── REQ(cap) ─────►│                │
-   │                  │                   │                  │ assign XID     │
-   │                  │                   │                  │ record peer    │
-   │                  │                   │                  │── REQ(cap) ───►│
-   │                  │                   │                  │                │
-   │                  │                   │                  │◄── response ───│
-   │                  │                   │◄── response ─────│                │
-   │                  │◄── response ──────│                  │                │
-   │◄── response ─────│                   │                  │                │
-   │  (PeerResponse)  │ route by RID      │                  │                │
+```mermaid
+sequenceDiagram
+    participant PA as Plugin A
+    participant PHA as PluginHost A
+    participant RSA as RelaySlave A
+    participant SW as RelaySwitch
+    participant PB as Plugin B
+
+    PA->>PHA: REQ(cap) — no XID
+    Note over PHA: record RID in outgoing_rids
+    PHA->>RSA: REQ(cap)
+    RSA->>SW: REQ(cap)
+    Note over SW: assign XID, record peer
+    SW->>PB: REQ(cap, xid)
+
+    PB-->>SW: response frames
+    SW-->>RSA: response (by XID)
+    RSA-->>PHA: response
+    Note over PHA: route by RID to Plugin A
+    PHA-->>PA: PeerResponse
 ```
 
 Plugin A sends a REQ without an XID — the plugin doesn't know about routing IDs. The PluginHostRuntime records the request's RID in `outgoing_rids` and forwards it. The RelaySwitch assigns an XID, records the request as a peer invocation in `peer_requests`, and routes to Plugin B's master. Response frames flow back through the same path, with the switch using the (XID, RID) mapping to route them to Plugin A's master.
@@ -175,6 +197,27 @@ Version 2 replaced the old single-response model (the removed `Res` frame type, 
 ## Threading Model
 
 ### Rust (tokio)
+
+```mermaid
+graph LR
+    subgraph Tokio Workers
+        RT["Reader Task<br/>(stdin → dispatch)"]
+        WT["Writer Task<br/>(channel → stdout)"]
+        H1["Handler Task 1"]
+        H2["Handler Task 2"]
+    end
+
+    subgraph Blocking Pool
+        BL["spawn_blocking<br/>(FFI model load)"]
+    end
+
+    RT -->|route frames| H1
+    RT -->|route frames| H2
+    H1 -->|send frames| CH["mpsc channel"]
+    H2 -->|send frames| CH
+    BL -.->|ProgressSender| CH
+    CH --> WT
+```
 
 The Rust PluginRuntime uses a tokio multi-threaded runtime. The main components:
 

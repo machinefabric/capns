@@ -6,9 +6,14 @@ ML model cartridges: model downloading via peer calls, model loading with keepal
 
 All ML cartridges share a three-phase architecture:
 
-```
-1. Download ──► 2. Load ──► 3. Inference
-   (peer call)    (blocking FFI)   (streaming output)
+```mermaid
+graph LR
+    DL["1. Download<br/>(peer call to<br/>modelcartridge)"] --> LD["2. Load<br/>(blocking FFI via<br/>run_with_keepalive)"]
+    LD --> INF["3. Inference<br/>(streaming output<br/>with progress)"]
+
+    DL -.- P1["[0.00 – 0.25]"]
+    LD -.- P2["[0.25 – 0.35]"]
+    INF -.- P3["[0.35 – 0.95]"]
 ```
 
 1. **Download**: Delegate to `modelcartridge` via a peer call. The model cartridge handles HTTP downloads, local caching, and hash verification. Returns a local file path.

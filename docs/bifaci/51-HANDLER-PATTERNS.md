@@ -67,6 +67,19 @@ Source: mlxcartridge handlers.
 
 ## Argument Extraction
 
+```mermaid
+flowchart LR
+    WET["WetContext"] -->|get_arc| REQ["Request"]
+    REQ -->|take_input| IP["InputPackage"]
+    IP -->|collect_streams| ST["Vec&lt;(media_urn, bytes)&gt;"]
+    ST -->|require_stream| DATA["Argument bytes"]
+    ST -->|find_stream_str| OPT["Optional text"]
+
+    REQ -->|output| OS["OutputStream"]
+    OS -->|emit_cbor| OUT["Response"]
+    OS -->|progress| LOG["LOG frame"]
+```
+
 ### Collecting Streams
 
 The standard pattern for getting arguments from the input:

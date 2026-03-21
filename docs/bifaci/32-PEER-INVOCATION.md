@@ -138,31 +138,43 @@ Handlers typically reserve the first portion of their progress range for peer ca
 
 At the protocol level, peer invocation involves multiple components:
 
-```
-Plugin A           PluginHost A        RelaySlave A      RelaySwitch       Plugin B
-   │                    │                   │                │                │
-   │── REQ(cap) ───────►│                   │                │                │
-   │   (no XID)         │                   │                │                │
-   │                    │ record RID in     │                │                │
-   │                    │ outgoing_rids     │                │                │
-   │                    │── REQ(cap) ──────►│                │                │
-   │                    │                   │── REQ(cap) ───►│                │
-   │                    │                   │                │ assign XID     │
-   │                    │                   │                │ record peer    │
-   │                    │                   │                │── REQ(xid) ──►│
-   │                    │                   │                │                │
-   │ STREAM_START ─────►│                   │                │                │
-   │ CHUNK(arg) ───────►│    (forwarded through relay)      ─────────────────►│
-   │ STREAM_END ───────►│                                                    │
-   │ END ──────────────►│                                                    │
-   │                    │                   │                │                │
-   │                    │                   │                │◄── LOG(prog) ──│
-   │                    │◄── LOG(prog) ─────│◄── LOG(prog) ──│                │
-   │◄── LOG(prog) ──────│                   │                │                │
-   │                    │                   │                │◄── CHUNK ──────│
-   │◄── CHUNK ──────────│◄── (forwarded) ───│◄── (forwarded) │                │
-   │                    │                   │                │◄── END ────────│
-   │◄── END ────────────│                   │                │                │
+```mermaid
+sequenceDiagram
+    participant PA as Plugin A
+    participant PHA as PluginHost A
+    participant RSA as RelaySlave A
+    participant SW as RelaySwitch
+    participant PB as Plugin B
+
+    Note over PA,PB: Request Phase
+    PA->>PHA: REQ(cap) — no XID
+    Note over PHA: record RID in outgoing_rids
+    PHA->>RSA: REQ(cap)
+    RSA->>SW: REQ(cap)
+    Note over SW: assign XID, record peer
+    SW->>PB: REQ(cap, xid)
+
+    PA->>PHA: STREAM_START
+    PA->>PHA: CHUNK(arg)
+    PA->>PHA: STREAM_END
+    PA->>PHA: END
+    Note over PHA,PB: (forwarded through relay)
+
+    Note over PA,PB: Response Phase
+    PB-->>SW: LOG(progress)
+    SW-->>RSA: LOG(progress)
+    RSA-->>PHA: LOG(progress)
+    PHA-->>PA: LOG(progress)
+
+    PB-->>SW: CHUNK(result)
+    SW-->>RSA: CHUNK
+    RSA-->>PHA: CHUNK
+    PHA-->>PA: CHUNK
+
+    PB-->>SW: END
+    SW-->>RSA: END
+    RSA-->>PHA: END
+    PHA-->>PA: END
 ```
 
 Key points:

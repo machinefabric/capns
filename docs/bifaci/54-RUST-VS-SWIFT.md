@@ -86,6 +86,23 @@ runtime.register_op_type(capUrn: "cap:...", make: MyOp.init)
 
 ## Keepalive Differences
 
+```mermaid
+graph TD
+    subgraph Rust
+        R_CALL["run_with_keepalive()"] --> R_SB["spawn_blocking<br/>(blocking thread pool)"]
+        R_CALL --> R_SEL["tokio::select!<br/>interval(30s)"]
+        R_SEL -->|every 30s| R_PROG["Progress frame"]
+        R_SB -->|complete| R_DONE["select! exits"]
+    end
+
+    subgraph Swift
+        S_CALL["runWithKeepalive()"] --> S_TASK["Background Task<br/>loop { sleep(30s) }"]
+        S_CALL --> S_OP["Async operation"]
+        S_TASK -->|every 30s| S_PROG["Progress frame"]
+        S_OP -->|complete| S_CANCEL["Cancel background Task"]
+    end
+```
+
 Both implementations emit keepalive frames every 30 seconds during blocking operations. The mechanism differs:
 
 **Rust** (`run_with_keepalive`):

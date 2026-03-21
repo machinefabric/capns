@@ -12,6 +12,16 @@ Source: `capdag/src/planner/`.
 
 ## LiveCapGraph
 
+```mermaid
+graph LR
+    PDF["media:pdf"] -->|extract_metadata| REC["media:record"]
+    PDF -->|generate_thumbnail| IMG["media:image;png"]
+    PDF -->|extract_text| TXT["media:text"]
+    TXT -->|generate_embeddings| EMB["media:embedding"]
+    TXT -->|summarize| TXT2["media:text"]
+    IMG -->|describe_image| TXT
+```
+
 The `LiveCapGraph` is a directed graph where nodes are media URNs and edges are capabilities. When a cap is registered with input URN `A` and output URN `B`, the graph gains an edge `A → B` labeled with that cap.
 
 Path finding traverses this graph to discover multi-step transformation chains: if there is a cap `A → B` and a cap `B → C`, then the input type `A` can reach the output type `C` via a two-step chain.
@@ -126,6 +136,18 @@ Most edges are `Direct`. `JsonField` and `JsonPath` edges are used when a cap pr
 
 ## MachinePlanBuilder
 
+```mermaid
+flowchart LR
+    S["Strand<br/>(path A→B→C)"] --> PB["MachinePlanBuilder"]
+    ARGS["Argument specs"] --> PB
+    PB --> IS["InputSlot nodes"]
+    PB --> CAP["Cap nodes"]
+    PB --> OUT["Output nodes"]
+    IS --> MP["MachinePlan"]
+    CAP --> MP
+    OUT --> MP
+```
+
 The plan builder converts a `Strand` (path through the cap graph) plus argument specifications into a `MachinePlan`.
 
 `build_plan_from_path()` is the main entry point:
@@ -139,6 +161,16 @@ The plan builder converts a `Strand` (path through the cap graph) plus argument 
 Source: `capdag/src/planner/plan_builder.rs`.
 
 ### Slot Resolution Priority
+
+```mermaid
+flowchart TD
+    Q{"slot_values<br/>[step_N:slot_name]?"} -->|Found| V1["Use explicit<br/>per-step value"]
+    Q -->|Not found| Q2{"cap_settings<br/>[cap_urn][slot_name]?"}
+    Q2 -->|Found| V2["Use per-cap<br/>setting"]
+    Q2 -->|Not found| Q3{"default_value<br/>in cap definition?"}
+    Q3 -->|Found| V3["Use default"]
+    Q3 -->|Not found| V4["No value<br/>(argument omitted)"]
+```
 
 When a cap argument has a slot (a named parameter that can be overridden), the builder resolves its value in three steps:
 

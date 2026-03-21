@@ -87,6 +87,17 @@ Source: `plugin_runtime.rs` (`register_op`, `register_op_type`, `find_handler`).
 
 ## Mode Detection
 
+```mermaid
+flowchart TD
+    A["runtime.run()"] --> B{CLI arguments?}
+    B -->|No args| C["Plugin CBOR Mode<br/>Read/write binary frames<br/>on stdin/stdout"]
+    B -->|Has args| D{First arg?}
+    D -->|"manifest"| E["Print JSON manifest"]
+    D -->|"--help"| F["Print subcommands"]
+    D -->|slug match| G["CLI Mode<br/>Parse args from cap defs<br/>Run handler, output NDJSON"]
+    D -->|no match| H["UnknownSubcommand error"]
+```
+
 `run()` checks the process's command-line arguments:
 
 - **No arguments**: Plugin CBOR mode. The runtime reads binary frames from stdin and writes to stdout. This is how the host invokes plugins.
@@ -124,10 +135,12 @@ Source: `plugin_runtime.rs` (run method).
 
 The writer task is a `tokio::spawn` that loops on an `mpsc::UnboundedReceiver<Frame>`:
 
-```
-Handler A ─┐
-Handler B ─┤── mpsc channel ──► Writer Task ──► stdout
-Handler C ─┘
+```mermaid
+graph LR
+    HA["Handler A"] --> CH["mpsc channel"]
+    HB["Handler B"] --> CH
+    HC["Handler C"] --> CH
+    CH --> WT["Writer Task"] --> OUT["stdout"]
 ```
 
 All handlers and the runtime itself send frames through this channel. The writer serializes each frame to CBOR, prepends the 4-byte length, and writes to stdout.
@@ -150,6 +163,16 @@ pub trait Op<T>: Send + Sync {
 
 - `perform()` runs the handler logic. It receives a `DryContext` (control flags, dry-run state) and a `WetContext` (a typed key-value store). The `WetContext` holds an `Arc<Request>` under the key `"request"`.
 - `metadata()` returns descriptive information about the operation.
+
+```mermaid
+flowchart LR
+    REQ["REQ frame"] --> FH["find_handler<br/>(is_dispatchable)"]
+    FH --> F["OpFactory"]
+    F --> OP["Op instance"]
+    OP --> P["perform()"]
+    P -->|Ok| CL["close() → STREAM_END + END"]
+    P -->|Err| ER["ERR frame"]
+```
 
 The runtime calls `dispatch_op()`, which:
 1. Creates a `Request` from the input, output, and peer invoker.

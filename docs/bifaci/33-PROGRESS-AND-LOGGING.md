@@ -84,11 +84,19 @@ If all tokio workers are occupied by blocking calls, the writer task cannot run.
 
 The sequence:
 
-```
-Handler emits progress(0.25, "Loading model...")   → queued in channel
-Handler calls llama_model_load()                    → blocks tokio worker
-Writer task needs a tokio worker to drain channel   → none available
-30s pass... 60s... 90s... 120s                      → engine timeout
+```mermaid
+sequenceDiagram
+    participant H as Handler
+    participant CH as mpsc Channel
+    participant WT as Writer Task
+    participant E as Engine
+
+    H->>CH: progress(0.25, "Loading model...")
+    Note over H: llama_model_load() — blocks tokio worker
+    Note over WT: Needs tokio worker — none available
+    Note over CH: Frames stuck in channel
+    Note over E: 30s... 60s... 90s...
+    E->>E: 120s — Activity Timeout!
 ```
 
 ### run_with_keepalive (Rust)
@@ -164,6 +172,16 @@ let result = tokio::task::spawn_blocking(move || {
 }).await.unwrap();
 ```
 
+```mermaid
+flowchart TD
+    Q{"Blocking work needs<br/>granular progress?"}
+    Q -->|"No — just keep alive"| RWK["run_with_keepalive()<br/>Fixed value every 30s"]
+    Q -->|"Yes — per-token, per-step"| PS["ProgressSender<br/>Emit from inside closure"]
+
+    RWK --> SB1["spawn_blocking(closure)"]
+    PS --> SB2["spawn_blocking(move || {<br/>  ps.progress(...)  <br/>})"]
+```
+
 The key difference from `run_with_keepalive`: `ProgressSender` gives the closure control over when and what progress to emit, rather than emitting a fixed keepalive value at a fixed interval. Use `run_with_keepalive` for simple blocking calls (model loads). Use `ProgressSender` when the blocking work itself can report granular progress (per-token inference, multi-file processing).
 
 The vision pipeline in ggufcartridge uses `ProgressSender` because `VisionEngine<'a>` borrows from the model and cannot be returned from `spawn_blocking` — the entire pipeline (load + inference) must run in a single blocking closure, and per-token progress needs to be emitted from inside it.
@@ -182,26 +200,15 @@ Individual caps can override the default timeout via the `activity_timeout` fiel
 
 Progress values pass through several layers between the plugin and the UI:
 
-```
-Plugin handler ──► OutputStream.progress(0.5, "...")
-                        │
-                        ▼
-                   LOG frame on stdout
-                        │
-                        ▼
-              PluginHostRuntime (pass-through)
-                        │
-                        ▼
-              RelaySlave → RelayMaster (pass-through)
-                        │
-                        ▼
-              execute_fanin → CapProgressFn callback
-                        │
-                        ▼
-              cap_interpreter → maps to step's range in task
-                        │
-                        ▼
-              SQLite database → UI
+```mermaid
+graph TD
+    PH["Plugin handler<br/>output.progress(0.5, ...)"] --> LOG["LOG frame on stdout"]
+    LOG --> PHR["PluginHostRuntime<br/>(pass-through)"]
+    PHR --> RS["RelaySlave → RelayMaster<br/>(pass-through)"]
+    RS --> EF["execute_fanin<br/>→ CapProgressFn callback"]
+    EF --> CI["cap_interpreter<br/>→ map to step range"]
+    CI --> DB["SQLite database"]
+    DB --> UI["UI"]
 ```
 
 1. **Plugin handler**: Emits raw progress in [0.0, 1.0].

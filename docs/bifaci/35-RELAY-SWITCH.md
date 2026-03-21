@@ -49,6 +49,20 @@ Source: `relay_switch.rs` (`RelaySwitch::new`, line 230).
 
 ## Cap Routing
 
+```mermaid
+flowchart TD
+    REQ["REQ(cap_urn)"] --> PARSE["Parse cap URN"]
+    PARSE --> MATCH["Match against each<br/>master's cap set<br/>(is_dispatchable)"]
+    MATCH --> RANK{Multiple matches?}
+    RANK -->|Yes| SPEC["Rank by specificity"]
+    RANK -->|No| SKIP
+    SPEC --> SKIP{Master healthy?}
+    SKIP -->|No| ERR["RelaySwitchError::NoHandler"]
+    SKIP -->|Yes| XID["Assign XID<br/>(atomic increment)"]
+    XID --> REC["Record (XID, RID)<br/>in routing tables"]
+    REC --> FWD["Forward REQ to<br/>selected master"]
+```
+
 When a REQ frame arrives (from the engine or from a peer plugin), the switch routes it:
 
 1. **Parse** the `cap` field (key 10) as a cap URN.

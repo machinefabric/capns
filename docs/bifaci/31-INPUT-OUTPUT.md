@@ -183,6 +183,27 @@ Sends STREAM_END with the total chunk count. Idempotent — calling it twice is 
 
 ### Implicit Stream Management
 
+```mermaid
+sequenceDiagram
+    participant H as Handler
+    participant OS as OutputStream
+    participant W as Wire
+
+    H->>OS: write(data) or emit_cbor(value)
+    Note over OS: ensure_started()
+    OS->>W: STREAM_START (auto)
+    OS->>W: CHUNK (data)
+
+    H->>OS: write(more)
+    OS->>W: CHUNK (more)
+
+    Note over H: handler returns Ok(())
+    Note over OS: runtime calls close()
+    OS->>W: STREAM_END
+    Note over OS: runtime sends
+    OS->>W: END
+```
+
 Handlers do not need to send STREAM_START, STREAM_END, or END frames manually:
 
 - **STREAM_START**: Sent automatically before the first chunk. The first call to `write()`, `emit_cbor()`, or `emit_list_item()` triggers it via `ensure_started()`.

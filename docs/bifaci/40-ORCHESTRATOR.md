@@ -6,6 +6,15 @@ Machine notation parsing, DAG construction, and cap resolution.
 
 The orchestrator bridges textual DAG descriptions and the execution engine. It takes either a machine notation string (from the route module) or a `MachinePlan` (from the planner) and produces a `ResolvedGraph` — a validated DAG with concrete cap definitions, media types, and wiring — ready for execution.
 
+```mermaid
+flowchart LR
+    MN["Machine Notation<br/>or MachinePlan"] --> PARSE["Parse"]
+    PARSE --> RESOLVE["Resolve<br/>cap URNs"]
+    RESOLVE --> VALIDATE["Validate<br/>media compat"]
+    VALIDATE --> CYCLE["Check<br/>for cycles"]
+    CYCLE --> RG["ResolvedGraph"]
+```
+
 The pipeline: parse → resolve cap URNs → validate media compatibility → check for cycles → produce `ResolvedGraph`.
 
 Source: `capdag/src/orchestrator/`.
@@ -34,6 +43,12 @@ A linear chain:
 
 ```
 [media:pdf -> extract -> media:text;encoding=utf8 -> summarize -> media:text;encoding=utf8]
+```
+
+```mermaid
+graph LR
+    A["media:pdf"] -->|extract| B["media:text"]
+    B -->|summarize| C["media:text"]
 ```
 
 Fan-in (multiple sources into one step):
