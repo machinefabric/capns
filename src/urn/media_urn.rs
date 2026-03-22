@@ -118,6 +118,10 @@ pub const MEDIA_MODEL_SPEC: &str = "media:model-spec;textable";
 /// Media URN for MLX model path - scalar by default
 pub const MEDIA_MLX_MODEL_PATH: &str = "media:mlx-model-path;textable";
 
+// Backend-agnostic model-spec variants (used by conversation/inference caps).
+/// Backend-agnostic LLM model spec — model spec string determines the backend.
+pub const MEDIA_MODEL_SPEC_LLM: &str = "media:model-spec;textable;llm";
+
 // Backend + use-case specific model-spec variants.
 // Each inference cap declares the variant matching its backend and purpose,
 // so slot values can target a specific cartridge+task without ambiguity.
@@ -145,6 +149,8 @@ pub const MEDIA_MODEL_SPEC_CANDLE_VISION: &str = "media:model-spec;candle;textab
 pub const MEDIA_MODEL_SPEC_CANDLE_EMBEDDINGS: &str = "media:model-spec;candle;textable;embeddings";
 /// Candle image embeddings model spec (e.g. CLIP)
 pub const MEDIA_MODEL_SPEC_CANDLE_IMAGE_EMBEDDINGS: &str = "media:model-spec;candle;image-embeddings;textable";
+/// Candle LLM model spec (e.g. Mistral-7B safetensors)
+pub const MEDIA_MODEL_SPEC_CANDLE_LLM: &str = "media:model-spec;candle;textable;llm";
 /// Candle transcription model spec (e.g. Whisper)
 pub const MEDIA_MODEL_SPEC_CANDLE_TRANSCRIPTION: &str = "media:model-spec;candle;textable;transcription";
 /// Media URN for model repository (input for list-models) - has record marker
