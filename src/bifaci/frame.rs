@@ -1590,9 +1590,9 @@ mod tests {
         assert_eq!(g2.seq, 2, "remove(rid, None) must not affect (rid, Some(xid))");
     }
 
-    // TEST445a: Same RID with different XIDs get independent seq counters
+    // TEST860: Same RID with different XIDs get independent seq counters
     #[test]
-    fn test445a_seq_assigner_same_rid_different_xids_independent() {
+    fn test860_seq_assigner_same_rid_different_xids_independent() {
         let mut assigner = SeqAssigner::new();
         let rid = MessageId::new_uuid();
         let xid_a = MessageId::Uint(1);

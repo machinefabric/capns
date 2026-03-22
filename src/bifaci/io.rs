@@ -895,9 +895,9 @@ mod tests {
         assert_eq!(decoded.log_message(), Some("Something happened"));
     }
 
-    // TEST208b: Test progress LOG frame encode/decode roundtrip preserves progress float
+    // TEST846: Test progress LOG frame encode/decode roundtrip preserves progress float
     #[test]
-    fn test208b_progress_frame_roundtrip() {
+    fn test846_progress_frame_roundtrip() {
         let id = MessageId::new_uuid();
 
         // Test several progress values including edge cases AND the f64→f32→f64 chain
@@ -951,9 +951,9 @@ mod tests {
         }
     }
 
-    // TEST208c: Double roundtrip (modelcartridge → relay → candlecartridge)
+    // TEST847: Double roundtrip (modelcartridge → relay → candlecartridge)
     #[test]
-    fn test208c_progress_double_roundtrip() {
+    fn test847_progress_double_roundtrip() {
         let id = MessageId::new_uuid();
 
         for progress in [0.0f32, 0.03333333, 0.06666667, 0.13333334, 0.5, 1.0] {
@@ -1495,9 +1495,9 @@ mod tests {
         assert!(result.is_err(), "garbage bytes must produce decode error");
     }
 
-    // TEST399a: RelayNotify encode/decode roundtrip preserves manifest and limits
+    // TEST848: RelayNotify encode/decode roundtrip preserves manifest and limits
     #[test]
-    fn test399a_relay_notify_roundtrip() {
+    fn test848_relay_notify_roundtrip() {
         let manifest = br#"{"caps":["cap:in=\"media:void\";op=test;out=\"media:void\"","cap:in=\"media:void\";op=convert;out=\"media:void\""]}"#;
         let limits = crate::bifaci::frame::Limits { max_frame: 2_000_000, max_chunk: 128_000, ..crate::bifaci::frame::Limits::default() };
         let frame = Frame::relay_notify(manifest, &limits);
@@ -1513,9 +1513,9 @@ mod tests {
         assert_eq!(decoded_limits.max_chunk, 128_000);
     }
 
-    // TEST400a: RelayState encode/decode roundtrip preserves resource payload
+    // TEST849: RelayState encode/decode roundtrip preserves resource payload
     #[test]
-    fn test400a_relay_state_roundtrip() {
+    fn test849_relay_state_roundtrip() {
         let resources = b"{\"memory_mb\":8192,\"cpu_cores\":8}";
         let frame = Frame::relay_state(resources);
 

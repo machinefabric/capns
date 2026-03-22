@@ -6064,7 +6064,7 @@ mod tests {
         assert_eq!(bytes, b"response data");
     }
 
-    // TEST546: LOG frames arriving BEFORE StreamStart are delivered immediately
+    // TEST839: LOG frames arriving BEFORE StreamStart are delivered immediately
     //
     // This tests the critical fix: during a peer call, the peer (e.g., modelcartridge)
     // sends LOG frames for minutes during model download BEFORE sending any data
@@ -6075,7 +6075,7 @@ mod tests {
     // PeerResponse, which meant the handler couldn't call recv() until data arrived —
     // causing 120s activity timeouts during long downloads.
     #[tokio::test]
-    async fn test546_peer_response_delivers_logs_before_stream_start() {
+    async fn test839_peer_response_delivers_logs_before_stream_start() {
         let (sender, _frames) = MockFrameSender::new();
         let (response_tx, response_rx) = unbounded_channel();
 
@@ -6154,9 +6154,9 @@ mod tests {
         assert!(response.recv().await.is_none(), "stream must end after STREAM_END");
     }
 
-    // TEST547: PeerResponse::collect_bytes discards LOG frames
+    // TEST840: PeerResponse::collect_bytes discards LOG frames
     #[tokio::test]
-    async fn test547_peer_response_collect_bytes_discards_logs() {
+    async fn test840_peer_response_collect_bytes_discards_logs() {
         let (sender, _frames) = MockFrameSender::new();
         let (response_tx, response_rx) = unbounded_channel();
 
@@ -6199,9 +6199,9 @@ mod tests {
         assert_eq!(bytes, b"hello", "collect_bytes must return only data, discarding all LOG frames");
     }
 
-    // TEST548: PeerResponse::collect_value discards LOG frames
+    // TEST841: PeerResponse::collect_value discards LOG frames
     #[tokio::test]
-    async fn test548_peer_response_collect_value_discards_logs() {
+    async fn test841_peer_response_collect_value_discards_logs() {
         let (sender, _frames) = MockFrameSender::new();
         let (response_tx, response_rx) = unbounded_channel();
 
@@ -6321,9 +6321,9 @@ mod tests {
         assert!(found.is_none(), "Invalid URN must return None, not panic");
     }
 
-    // TEST684: run_with_keepalive returns closure result (fast operation, no keepalive frames)
+    // TEST842: run_with_keepalive returns closure result (fast operation, no keepalive frames)
     #[tokio::test]
-    async fn test684_run_with_keepalive_returns_result() {
+    async fn test842_run_with_keepalive_returns_result() {
         let (sender, frames) = MockFrameSender::new();
         let stream = OutputStream::new(
             Arc::new(sender),
@@ -6346,9 +6346,9 @@ mod tests {
         assert_eq!(progress_frames.len(), 0, "No keepalive frame for instant operation");
     }
 
-    // TEST685: run_with_keepalive returns Ok/Err from closure
+    // TEST843: run_with_keepalive returns Ok/Err from closure
     #[tokio::test]
-    async fn test685_run_with_keepalive_returns_result_type() {
+    async fn test843_run_with_keepalive_returns_result_type() {
         let (sender, _frames) = MockFrameSender::new();
         let stream = OutputStream::new(
             Arc::new(sender),
@@ -6365,9 +6365,9 @@ mod tests {
         assert_eq!(result.unwrap(), "model_loaded");
     }
 
-    // TEST686: run_with_keepalive propagates errors from closure
+    // TEST844: run_with_keepalive propagates errors from closure
     #[tokio::test]
-    async fn test686_run_with_keepalive_propagates_error() {
+    async fn test844_run_with_keepalive_propagates_error() {
         let (sender, _frames) = MockFrameSender::new();
         let stream = OutputStream::new(
             Arc::new(sender),
@@ -6389,9 +6389,9 @@ mod tests {
         }
     }
 
-    // TEST687: ProgressSender emits progress and log frames independently of OutputStream
+    // TEST845: ProgressSender emits progress and log frames independently of OutputStream
     #[test]
-    fn test687_progress_sender_emits_frames() {
+    fn test845_progress_sender_emits_frames() {
         let (sender, frames) = MockFrameSender::new();
         let stream = OutputStream::new(
             Arc::new(sender),

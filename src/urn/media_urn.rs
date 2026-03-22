@@ -131,7 +131,7 @@ pub const MEDIA_MODEL_SPEC_GGUF_LLM: &str = "media:model-spec;gguf;textable;llm"
 pub const MEDIA_MODEL_SPEC_GGUF_EMBEDDINGS: &str = "media:model-spec;gguf;textable;embeddings";
 
 // MLX backend
-/// MLX vision model spec (e.g. Qwen2.5-VL)
+/// MLX vision model spec (e.g. Qwen3-VL)
 pub const MEDIA_MODEL_SPEC_MLX_VISION: &str = "media:model-spec;mlx;textable;vision";
 /// MLX LLM model spec (e.g. Llama-3.2-3B)
 pub const MEDIA_MODEL_SPEC_MLX_LLM: &str = "media:model-spec;mlx;textable;llm";
