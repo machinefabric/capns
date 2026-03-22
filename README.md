@@ -215,7 +215,7 @@ cargo test
 
 ## Performance
 
-Tests conducted on a MacBook Pro M1 Pro (2021) with 16GB RAM, using a simple echo capability(the identity) that accepts binary input and produces binary output. Each host language (Rust, Go, Python, Swift) was tested with plugins implemented in each of the four languages, measuring throughput in MB/s.
+Tests conducted on a MacBook M1 Pro (2021) with 16GB RAM running macOS Tahoe 26.3.1 (a), using the identity cap. Each host language (Rust, Go, Python, Swift) was tested with plugins implemented in each of the four languages, measuring throughput in streaming MB/s.
 
 ### Throughput Matrix (MB/s) — Router: Rust
 
@@ -265,30 +265,30 @@ Tests conducted on a MacBook Pro M1 Pro (2021) with 16GB RAM, using a simple ech
 | 24 | swift-rust-python | 5.51 |
 
 ```
-  swift-rust-python              █                                               5.51
-  rust-swift-python              █                                               5.55
-  rust-go-python                 █                                               5.57
-  rust-rust-python               █                                               5.57
-  swift-swift-python             █                                               5.58
-  swift-go-python                █                                               5.58
-  rust-go-rust                   ███████████████████                            98.68
-  swift-swift-rust               ████████████████████                          104.83
-  swift-rust-rust                █████████████████████                         106.67
-  rust-swift-rust                ██████████████████████                        110.94
-  swift-go-rust                  ██████████████████████                        111.96
-  rust-rust-rust                 ██████████████████████                        112.11
-  swift-swift-swift              ████████████████████████████████              162.79
-  rust-rust-swift                ████████████████████████████████              163.68
-  rust-go-swift                  ████████████████████████████████              166.10
-  swift-rust-swift               █████████████████████████████████             169.21
-  rust-swift-swift               █████████████████████████████████             173.14
-  swift-go-swift                 ██████████████████████████████████            174.15
-  swift-rust-go                  ████████████████████████████████████          186.48
-  swift-go-go                    █████████████████████████████████████         190.18
-  swift-swift-go                 ██████████████████████████████████████        194.44
-  rust-go-go                     ██████████████████████████████████████        196.55
-  rust-rust-go                   █████████████████████████████████████████     210.52
-  rust-swift-go                  █████████████████████████████████████████████ 228.96
+  swift-rust-python              █                                               5.51 MB/s
+  rust-swift-python              █                                               5.55 〃
+  rust-go-python                 █                                               5.57 〃
+  rust-rust-python               █                                               5.57 〃
+  swift-swift-python             █                                               5.58 〃
+  swift-go-python                █                                               5.58 〃
+  rust-go-rust                   ███████████████████                            98.68 〃
+  swift-swift-rust               ████████████████████                          104.83 〃
+  swift-rust-rust                █████████████████████                         106.67 〃
+  rust-swift-rust                ██████████████████████                        110.94 〃
+  swift-go-rust                  ██████████████████████                        111.96 〃
+  rust-rust-rust                 ██████████████████████                        112.11 〃
+  swift-swift-swift              ████████████████████████████████              162.79 〃
+  rust-rust-swift                ████████████████████████████████              163.68 〃
+  rust-go-swift                  ████████████████████████████████              166.10 〃
+  swift-rust-swift               █████████████████████████████████             169.21 〃
+  rust-swift-swift               █████████████████████████████████             173.14 〃
+  swift-go-swift                 ██████████████████████████████████            174.15 〃
+  swift-rust-go                  ████████████████████████████████████          186.48 〃
+  swift-go-go                    █████████████████████████████████████         190.18 〃
+  swift-swift-go                 ██████████████████████████████████████        194.44 〃
+  rust-go-go                     ██████████████████████████████████████        196.55 〃
+  rust-rust-go                   █████████████████████████████████████████     210.52 〃
+  rust-swift-go                  █████████████████████████████████████████████ 228.96 〃
 ```
 
 ## License
