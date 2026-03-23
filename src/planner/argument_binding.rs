@@ -470,7 +470,7 @@ impl ArgumentBindings {
     }
 }
 
-/// Input specification for cap chain execution
+/// Input specification for machine execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrandInput {
     pub files: Vec<CapInputFile>,

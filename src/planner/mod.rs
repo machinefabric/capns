@@ -1,4 +1,4 @@
-//! Planner — planning, discovery, and execution for cap chains
+//! Planner — planning, discovery, and execution for machines
 //!
 //! This module provides:
 //! - **Shape analysis** from media URNs (cardinality + structure)

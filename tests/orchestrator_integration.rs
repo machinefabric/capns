@@ -601,7 +601,7 @@ async fn test944_cap_not_found() {
 // Phase 2: Long Chain Tests (4-6 caps)
 // =============================================================================
 
-// TEST011: 4-cap chain: edge1 -> edge2 -> edge7 -> edge8
+// TEST011: 4-machine: edge1 -> edge2 -> edge7 -> edge8
 // node1 -> node2 -> node3 -> node6 -> node7
 // "hello" -> "[PREPEND]hello" -> "[PREPEND]hello[APPEND]" -> "[PREPEND]HELLO[APPEND]" -> "]DNEPPA[OLLEH]DNEPERP["
 #[tokio::test]
@@ -650,7 +650,7 @@ async fn test945_four_machine() {
     }
 }
 
-// TEST012: 5-cap chain: edge1 -> edge2 -> edge7 -> edge8 -> edge9
+// TEST012: 5-machine: edge1 -> edge2 -> edge7 -> edge8 -> edge9
 // node1 -> node2 -> node3 -> node6 -> node7 -> node8
 // adds <<...>> wrapping around the reversed string
 #[tokio::test]
@@ -699,7 +699,7 @@ async fn test946_five_machine() {
     }
 }
 
-// TEST013: 6-cap chain: edge1 -> edge2 -> edge7 -> edge8 -> edge9 -> edge10
+// TEST013: 6-machine: edge1 -> edge2 -> edge7 -> edge8 -> edge9 -> edge10
 // Full cycle: node1 -> node2 -> node3 -> node6 -> node7 -> node8 -> node1
 // Completes the round trip: unwrap markers + lowercase
 #[tokio::test]

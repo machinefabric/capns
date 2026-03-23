@@ -34,7 +34,7 @@ Source: `capdag/src/planner/live_cap_graph.rs`.
 
 This is used by the UI to show what transformations are available for a given input file — "you can extract metadata, generate a thumbnail, create embeddings, ..." without enumerating every possible path.
 
-Each result is a `ReachableTargetInfo` containing the target media URN and the cap chain needed to reach it.
+Each result is a `ReachableTargetInfo` containing the target media URN and the machine needed to reach it.
 
 ### Path Finding
 

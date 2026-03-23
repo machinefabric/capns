@@ -161,7 +161,7 @@ Source: `relay_switch.rs` (`MasterHealthStatus`, `MasterConnection::healthy`).
 
 The switch also exposes:
 - `get_reachable_targets()` — queries the `LiveCapGraph` to find which output media URNs are reachable from a given input.
-- `find_paths_to_exact_target()` — finds cap chains that transform an input into a specific output.
+- `find_paths_to_exact_target()` — finds machines that transform an input into a specific output.
 
 These methods are used by the planner (see [43-PLANNER.md](43-PLANNER.md)) to find execution paths through the capability graph.
 

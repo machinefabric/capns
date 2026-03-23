@@ -4,7 +4,7 @@ How cartridge execution ties into machfab tasks: triggers, cap interpretation, p
 
 ## Task System Overview
 
-In MachineFabric, a **task** represents a user-initiated transformation — "describe this image," "extract metadata from these PDFs," "generate thumbnails for this folder." The task system wraps cap chain execution: it resolves input files, builds or receives an execution plan, runs the DAG through the Bifaci infrastructure, tracks progress, and stores results.
+In MachineFabric, a **task** represents a user-initiated transformation — "describe this image," "extract metadata from these PDFs," "generate thumbnails for this folder." The task system wraps machine execution: it resolves input files, builds or receives an execution plan, runs the DAG through the Bifaci infrastructure, tracks progress, and stores results.
 
 Tasks live in a SQLite database. The UI polls task state (progress, status, last activity) to show real-time feedback.
 
@@ -14,8 +14,8 @@ Source: machfab engine code.
 
 Tasks are created via `TriggerFuse` events:
 
-- **ExecuteMachine**: Explicitly run a cap chain on specified input files. Triggered by user action (e.g., dragging a file onto a capability in the UI).
-- **GenerateThumbnails**: Auto-triggered when a file is added to a listing. Runs the thumbnail generation cap chain in the background.
+- **ExecuteMachine**: Explicitly run a machine on specified input files. Triggered by user action (e.g., dragging a file onto a capability in the UI).
+- **GenerateThumbnails**: Auto-triggered when a file is added to a listing. Runs the thumbnail generation machine in the background.
 
 Each trigger carries a `DryContext` structure with a values map (task parameters) and control flags (including abort support). The control flags allow the UI to cancel a running task by setting `aborted = true`.
 

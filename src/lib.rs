@@ -98,7 +98,7 @@ pub use bifaci::relay::{RelaySlave, RelayMaster};
 pub use bifaci::relay_switch::{RelaySwitch, RelaySwitchError, MasterHealthStatus};
 pub use bifaci::in_process_host::{InProcessPluginHost, FrameHandler, ResponseWriter, accumulate_input};
 
-// Planner — planning, discovery, and execution for cap chains
+// Planner — planning, discovery, and execution for machines
 pub use planner::{
     PlannerError, PlannerResult, CapExecutor, CapSettingsProvider,
     // Shape (cardinality + structure)

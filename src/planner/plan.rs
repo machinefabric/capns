@@ -1,6 +1,6 @@
 //! Cap Execution Plan structures
 //!
-//! Defines the structured execution plan for cap chains.
+//! Defines the structured execution plan for machines.
 //! This plan describes a DAG of caps to execute, with data flow between them.
 //!
 //! The execution model supports:
@@ -359,7 +359,7 @@ impl MachinePlanEdge {
     }
 }
 
-/// The structured execution plan for a cap chain
+/// The structured execution plan for a machine
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachinePlan {
     /// Human-readable name for this execution plan
@@ -840,7 +840,7 @@ impl MachinePlan {
     /// Create a linear chain of caps (each output feeds into next input).
     /// `file_path_arg_names` provides the argument name for each cap in the chain.
     pub fn linear_chain(cap_urns: &[&str], input_media: &str, _output_media: &str, file_path_arg_names: &[&str]) -> Self {
-        let mut plan = Self::new("Linear cap chain");
+        let mut plan = Self::new("Linear machine");
 
         if cap_urns.is_empty() {
             return plan;
@@ -901,7 +901,7 @@ pub struct NodeExecutionResult {
     pub duration_ms: u64,
 }
 
-/// Overall result of executing a cap chain
+/// Overall result of executing a machine
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineResult {
     /// Whether the entire chain executed successfully
