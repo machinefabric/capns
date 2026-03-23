@@ -376,6 +376,79 @@ impl ProgressSender {
     }
 }
 
+/// Detachable handle that can emit CBOR data chunks from any thread
+/// (including `spawn_blocking`).  Obtained via [`OutputStream::stream_sender`].
+///
+/// Like [`ProgressSender`], this is `Send + Sync + 'static` and does not
+/// borrow the parent `OutputStream`.
+///
+/// **Important:** call [`OutputStream::ensure_started_public`] *before*
+/// moving the `StreamSender` into `spawn_blocking` so that the STREAM_START
+/// frame is sent while the async context is still available.
+pub struct StreamSender {
+    sender: Arc<dyn FrameSender>,
+    request_id: MessageId,
+    routing_id: Option<MessageId>,
+    stream_id: String,
+    max_chunk: usize,
+    /// Shared chunk_index counter (same instance as OutputStream).
+    chunk_index: Arc<Mutex<u64>>,
+    /// Shared chunk_count counter (same instance as OutputStream).
+    chunk_count: Arc<Mutex<u64>>,
+}
+
+impl StreamSender {
+    /// Emit a single CBOR value as one or more CHUNK frames.
+    ///
+    /// Bytes and Text values are automatically split at `max_chunk` boundaries.
+    pub fn emit_cbor(&self, value: &ciborium::Value) -> Result<(), RuntimeError> {
+        match value {
+            ciborium::Value::Bytes(bytes) => {
+                let mut offset = 0;
+                while offset < bytes.len() {
+                    let chunk_size = (bytes.len() - offset).min(self.max_chunk);
+                    let chunk_bytes = bytes[offset..offset + chunk_size].to_vec();
+                    self.send_chunk(&ciborium::Value::Bytes(chunk_bytes))?;
+                    offset += chunk_size;
+                }
+            }
+            _ => {
+                self.send_chunk(value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn send_chunk(&self, value: &ciborium::Value) -> Result<(), RuntimeError> {
+        let mut cbor_payload = Vec::new();
+        ciborium::into_writer(value, &mut cbor_payload)
+            .map_err(|e| RuntimeError::Handler(format!("Failed to encode CBOR: {}", e)))?;
+
+        let chunk_index = {
+            let mut guard = self.chunk_index.lock().unwrap();
+            let current = *guard;
+            *guard += 1;
+            current
+        };
+        {
+            let mut guard = self.chunk_count.lock().unwrap();
+            *guard += 1;
+        }
+
+        let checksum = Frame::compute_checksum(&cbor_payload);
+        let mut frame = Frame::chunk(
+            self.request_id.clone(),
+            self.stream_id.clone(),
+            0,
+            cbor_payload,
+            chunk_index,
+            checksum,
+        );
+        frame.routing_id = self.routing_id.clone();
+        self.sender.send(&frame)
+    }
+}
+
 /// Writable stream handle for handler output or peer call arguments.
 /// Manages STREAM_START/CHUNK/STREAM_END framing automatically.
 pub struct OutputStream {
@@ -386,8 +459,8 @@ pub struct OutputStream {
     routing_id: Option<MessageId>,
     max_chunk: usize,
     stream_started: AtomicBool,
-    chunk_index: Mutex<u64>,
-    chunk_count: Mutex<u64>,
+    chunk_index: Arc<Mutex<u64>>,
+    chunk_count: Arc<Mutex<u64>>,
     closed: AtomicBool,
 }
 
@@ -408,8 +481,8 @@ impl OutputStream {
             routing_id,
             max_chunk,
             stream_started: AtomicBool::new(false),
-            chunk_index: Mutex::new(0),
-            chunk_count: Mutex::new(0),
+            chunk_index: Arc::new(Mutex::new(0)),
+            chunk_count: Arc::new(Mutex::new(0)),
             closed: AtomicBool::new(false),
         }
     }
@@ -594,6 +667,33 @@ impl OutputStream {
             request_id: self.request_id.clone(),
             routing_id: self.routing_id.clone(),
         }
+    }
+
+    /// Create a detached stream sender that can emit CBOR data chunks from any
+    /// thread (including `spawn_blocking`).
+    ///
+    /// Shares chunk counters with this `OutputStream` so that `close()` reports
+    /// the correct total chunk count.
+    ///
+    /// **Call `ensure_started()` before creating the `StreamSender`** so that
+    /// STREAM_START is sent while the async context is still active.
+    pub fn stream_sender(&self) -> StreamSender {
+        StreamSender {
+            sender: Arc::clone(&self.sender),
+            request_id: self.request_id.clone(),
+            routing_id: self.routing_id.clone(),
+            stream_id: self.stream_id.clone(),
+            max_chunk: self.max_chunk,
+            chunk_index: Arc::clone(&self.chunk_index),
+            chunk_count: Arc::clone(&self.chunk_count),
+        }
+    }
+
+    /// Send STREAM_START if not already sent.  Public wrapper for handlers
+    /// that need to guarantee the stream is open before moving a
+    /// [`StreamSender`] into `spawn_blocking`.
+    pub fn start(&self) -> Result<(), RuntimeError> {
+        self.ensure_started()
     }
 
     /// Run a blocking closure on a dedicated thread while emitting keepalive progress
