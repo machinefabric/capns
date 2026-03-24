@@ -137,5 +137,6 @@ pub use orchestrator::{
 pub use input_resolver::{
     InputItem, ContentStructure, ResolvedFile, ResolvedInputSet, InputResolverError,
     MediaAdapter, AdapterMatch, AdapterResult, MediaAdapterRegistry,
+    ValueAdapter, ValueAdapterResult, ValueAdapterRegistry,
     resolve_input, resolve_inputs, resolve_paths, detect_file,
 };

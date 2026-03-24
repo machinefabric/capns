@@ -431,7 +431,7 @@ impl MediaUrn {
 
     /// Check if a marker tag (tag with wildcard/no value) is present.
     /// A marker tag is stored as key="*" in the tagged URN.
-    fn has_marker_tag(&self, tag_name: &str) -> bool {
+    pub fn has_marker_tag(&self, tag_name: &str) -> bool {
         self.0.tags.get(tag_name).map_or(false, |v| v == "*")
     }
 
