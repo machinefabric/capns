@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -156,6 +157,7 @@ pub struct ProfileSchemaRegistry {
     cache_dir: PathBuf,
     /// In-memory cache of compiled schemas
     compiled_schemas: Arc<Mutex<HashMap<String, Arc<CompiledSchema>>>>,
+    offline_flag: Arc<AtomicBool>,
 }
 
 impl ProfileSchemaRegistry {
@@ -186,6 +188,7 @@ impl ProfileSchemaRegistry {
             client,
             cache_dir,
             compiled_schemas,
+            offline_flag: Arc::new(AtomicBool::new(false)),
         };
 
         // Install bundled standard schemas to cache if they don't exist
@@ -244,6 +247,11 @@ impl ProfileSchemaRegistry {
         }
 
         Ok(())
+    }
+
+    /// Set the offline flag. When true, all schema fetches are blocked.
+    pub fn set_offline(&self, offline: bool) {
+        self.offline_flag.store(offline, Ordering::Relaxed);
     }
 
     fn get_cache_dir() -> Result<PathBuf, ProfileSchemaError> {
@@ -371,6 +379,11 @@ impl ProfileSchemaRegistry {
     }
 
     async fn fetch_schema(&self, profile_url: &str) -> Result<(JsonValue, JSONSchema), ProfileSchemaError> {
+        if self.offline_flag.load(Ordering::Relaxed) {
+            return Err(ProfileSchemaError::NetworkBlocked(format!(
+                "Network access blocked by policy — cannot fetch schema '{}'", profile_url
+            )));
+        }
         let response = self.client.get(profile_url).send().await.map_err(|e| {
             ProfileSchemaError::HttpError(format!("Failed to fetch schema from {}: {}", profile_url, e))
         })?;
@@ -504,6 +517,9 @@ pub enum ProfileSchemaError {
 
     #[error("Cache error: {0}")]
     CacheError(String),
+
+    #[error("Network access blocked: {0}")]
+    NetworkBlocked(String),
 }
 
 #[cfg(test)]

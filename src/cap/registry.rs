@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -106,6 +107,7 @@ pub struct CapRegistry {
     cache_dir: PathBuf,
     cached_caps: Arc<Mutex<HashMap<String, Cap>>>,
     config: RegistryConfig,
+    offline_flag: Arc<AtomicBool>,
 }
 
 impl CapRegistry {
@@ -149,6 +151,7 @@ impl CapRegistry {
             cache_dir,
             cached_caps,
             config,
+            offline_flag: Arc::new(AtomicBool::new(false)),
         };
 
         // Copy bundled standard capabilities to cache if they don't exist
@@ -172,6 +175,11 @@ impl CapRegistry {
     /// Get the current registry configuration
     pub fn config(&self) -> &RegistryConfig {
         &self.config
+    }
+
+    /// Set the offline flag. When true, all registry fetches are blocked.
+    pub fn set_offline(&self, offline: bool) {
+        self.offline_flag.store(offline, Ordering::Relaxed);
     }
 
     /// Ensure the identity cap is always in the cache.
@@ -469,6 +477,11 @@ impl CapRegistry {
     }
 
     async fn fetch_from_registry(&self, urn: &str) -> Result<Cap, RegistryError> {
+        if self.offline_flag.load(Ordering::Relaxed) {
+            return Err(RegistryError::NetworkBlocked(format!(
+                "Network access blocked by policy — cannot fetch cap '{}'", urn
+            )));
+        }
         let normalized_urn = normalize_cap_urn(urn);
         // URL-encode only the tags part (after "cap:") since the path prefix must be literal
         // The path is /cap:... where "cap:" is literal and the rest is URL-encoded
@@ -560,6 +573,7 @@ impl CapRegistry {
             cache_dir: PathBuf::from("/tmp/capdag-test-cache"),
             cached_caps: Arc::new(Mutex::new(HashMap::new())),
             config: RegistryConfig::default(),
+            offline_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -571,6 +585,7 @@ impl CapRegistry {
             cache_dir: PathBuf::from("/tmp/capdag-test-cache"),
             cached_caps: Arc::new(Mutex::new(HashMap::new())),
             config,
+            offline_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -604,6 +619,9 @@ pub enum RegistryError {
 
     #[error("Validation error: {0}")]
     ValidationError(String),
+
+    #[error("Network access blocked: {0}")]
+    NetworkBlocked(String),
 }
 
 #[cfg(test)]
@@ -627,6 +645,7 @@ mod tests {
             cache_dir,
             cached_caps: Arc::new(Mutex::new(HashMap::new())),
             config: RegistryConfig::default(),
+            offline_flag: Arc::new(AtomicBool::new(false)),
         };
 
         (registry, temp_dir)
@@ -650,6 +669,67 @@ mod tests {
 
         assert_eq!(key1, key2);
         assert_ne!(key1, key3);
+    }
+
+    // TEST907: Offline flag blocks fetch_from_registry without making HTTP request
+    #[tokio::test]
+    async fn test907_offline_blocks_fetch() {
+        let (registry, _temp_dir) = registry_with_temp_cache().await;
+
+        // Set offline
+        registry.set_offline(true);
+
+        // Try to fetch a non-cached cap — should fail with NetworkBlocked, not an HTTP error
+        let result = registry.get_cap("cap:in=media:void;op=nonexistent;out=media:void").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RegistryError::NetworkBlocked(msg) => {
+                assert!(msg.contains("Network access blocked"), "Error should mention blocking: {}", msg);
+            }
+            other => panic!("Expected NetworkBlocked, got: {:?}", other),
+        }
+    }
+
+    // TEST908: Cached caps remain accessible when offline
+    #[tokio::test]
+    async fn test908_cached_caps_accessible_when_offline() {
+        let (registry, _temp_dir) = registry_with_temp_cache().await;
+
+        // Add a cap to the cache directly
+        let cap_json = r#"{"urn":"cap:in=media:void;op=test_offline;out=media:void","command":"test","title":"Test Cap","args":[]}"#;
+        let cap: Cap = serde_json::from_str(cap_json).unwrap();
+        registry.add_caps_to_cache(vec![cap.clone()]);
+
+        // Set offline
+        registry.set_offline(true);
+
+        // Should still be able to get the cached cap
+        let result = registry.get_cap("cap:in=media:void;op=test_offline;out=media:void").await;
+        assert!(result.is_ok(), "Cached cap should be accessible when offline");
+        assert_eq!(result.unwrap().title, "Test Cap");
+    }
+
+    // TEST909: set_offline(false) restores fetch ability (would fail with HTTP error, not NetworkBlocked)
+    #[tokio::test]
+    async fn test909_set_offline_false_restores_fetch() {
+        let (registry, _temp_dir) = registry_with_temp_cache().await;
+
+        registry.set_offline(true);
+
+        // Verify blocked
+        let result = registry.get_cap("cap:in=media:void;op=nonexistent;out=media:void").await;
+        assert!(matches!(result, Err(RegistryError::NetworkBlocked(_))));
+
+        // Restore online
+        registry.set_offline(false);
+
+        // Now should attempt HTTP (which will fail with HttpError or NotFound, not NetworkBlocked)
+        let result = registry.get_cap("cap:in=media:void;op=nonexistent;out=media:void").await;
+        assert!(result.is_err());
+        assert!(
+            !matches!(result, Err(RegistryError::NetworkBlocked(_))),
+            "After set_offline(false), should not get NetworkBlocked"
+        );
     }
 }
 

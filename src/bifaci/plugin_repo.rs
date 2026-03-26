@@ -6,6 +6,7 @@
 use reqwest::Client;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -20,6 +21,8 @@ pub enum PluginRepoError {
     ParseError(String),
     #[error("Registry request failed with status {0}")]
     StatusError(u16),
+    #[error("Network access blocked: {0}")]
+    NetworkBlocked(String),
 }
 
 pub type Result<T> = std::result::Result<T, PluginRepoError>;
@@ -202,6 +205,7 @@ pub struct PluginRepo {
     caches: Arc<RwLock<HashMap<String, PluginRepoCache>>>,
     /// Cache TTL in seconds
     cache_ttl: Duration,
+    offline_flag: Arc<AtomicBool>,
 }
 
 impl PluginInfo {
@@ -229,11 +233,22 @@ impl PluginRepo {
             http_client,
             caches: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl: Duration::from_secs(cache_ttl_seconds),
+            offline_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Set the offline flag. When true, all registry fetches are blocked.
+    pub fn set_offline(&self, offline: bool) {
+        self.offline_flag.store(offline, Ordering::Relaxed);
     }
 
     /// Fetch plugin registry from a URL
     async fn fetch_registry(&self, repo_url: &str) -> Result<PluginRegistryResponse> {
+        if self.offline_flag.load(Ordering::Relaxed) {
+            return Err(PluginRepoError::NetworkBlocked(format!(
+                "Network access blocked by policy — cannot fetch plugin registry '{}'", repo_url
+            )));
+        }
         let response = self.http_client
             .get(repo_url)
             .send()

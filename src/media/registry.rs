@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -113,6 +114,7 @@ pub struct MediaUrnRegistry {
     /// Extension to media URNs index for fast lookups (lowercase extension -> list of URNs)
     extension_index: Arc<Mutex<HashMap<String, Vec<String>>>>,
     config: RegistryConfig,
+    offline_flag: Arc<AtomicBool>,
 }
 
 impl MediaUrnRegistry {
@@ -163,6 +165,7 @@ impl MediaUrnRegistry {
             cached_specs,
             extension_index,
             config,
+            offline_flag: Arc::new(AtomicBool::new(false)),
         };
 
         // Install bundled standard media specs (also updates extension index)
@@ -201,6 +204,11 @@ impl MediaUrnRegistry {
         &self.config
     }
 
+    /// Set the offline flag. When true, all registry fetches are blocked.
+    pub fn set_offline(&self, offline: bool) {
+        self.offline_flag.store(offline, Ordering::Relaxed);
+    }
+
     /// Create a lightweight MediaUrnRegistry for testing purposes.
     /// This skips the standard spec installation and uses a provided cache directory.
     /// Available for downstream crate tests as well.
@@ -222,6 +230,7 @@ impl MediaUrnRegistry {
             cached_specs: Arc::new(Mutex::new(HashMap::new())),
             extension_index: Arc::new(Mutex::new(HashMap::new())),
             config: RegistryConfig::default(),
+            offline_flag: Arc::new(AtomicBool::new(false)),
         };
 
         // Install bundled specs synchronously
@@ -586,6 +595,11 @@ impl MediaUrnRegistry {
     }
 
     async fn fetch_from_registry(&self, urn: &str) -> Result<StoredMediaSpec, MediaRegistryError> {
+        if self.offline_flag.load(Ordering::Relaxed) {
+            return Err(MediaRegistryError::NetworkBlocked(format!(
+                "Network access blocked by policy — cannot fetch media spec '{}'", urn
+            )));
+        }
         let normalized_urn = normalize_media_urn(urn);
         // URL-encode only the tags part
         let tags_part = normalized_urn
@@ -675,6 +689,9 @@ pub enum MediaRegistryError {
 
     #[error("No media spec registered for extension: {0}")]
     ExtensionNotFound(String),
+
+    #[error("Network access blocked: {0}")]
+    NetworkBlocked(String),
 }
 
 #[cfg(test)]
@@ -700,6 +717,7 @@ mod tests {
             cached_specs: Arc::new(Mutex::new(HashMap::new())),
             extension_index: Arc::new(Mutex::new(HashMap::new())),
             config: RegistryConfig::default(),
+            offline_flag: Arc::new(AtomicBool::new(false)),
         };
 
         (registry, temp_dir)
