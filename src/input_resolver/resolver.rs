@@ -14,6 +14,97 @@ use crate::media::registry::MediaUrnRegistry;
 /// Maximum content to read for inspection (64 KB)
 const MAX_INSPECTION_SIZE: usize = 64 * 1024;
 
+/// Discriminate candidate media URNs by validation rules in their specs.
+///
+/// Given file content and a set of candidate URN strings (e.g. all URNs for
+/// a file extension), eliminates candidates whose media spec validation
+/// rules reject the content. Candidates with no validation rules survive
+/// (no rules = no basis for elimination).
+///
+/// Returns the surviving candidate URN strings in their original order.
+pub fn discriminate_candidates_by_validation(
+    content: &[u8],
+    candidate_urns: &[String],
+    media_registry: &MediaUrnRegistry,
+) -> Vec<String> {
+    let content_str = std::str::from_utf8(content).ok();
+    let content_len = content.len();
+
+    candidate_urns
+        .iter()
+        .filter(|urn| {
+            let spec = match media_registry.get_cached_spec(urn) {
+                Some(spec) => spec,
+                None => return true, // No spec in cache → cannot eliminate
+            };
+
+            let validation = match &spec.validation {
+                Some(v) if !v.is_empty() => v,
+                _ => return true, // No validation rules → survives
+            };
+
+            // Check pattern (regex against content as UTF-8)
+            if let Some(ref pattern) = validation.pattern {
+                match content_str {
+                    Some(text) => {
+                        match regex::Regex::new(pattern) {
+                            Ok(re) => {
+                                if !re.is_match(text) {
+                                    return false; // Pattern didn't match → eliminate
+                                }
+                            }
+                            Err(_) => {
+                                // Invalid regex in spec is a spec authoring bug — hard fail
+                                // would block all candidates with that spec. Log and keep
+                                // the candidate (don't eliminate based on broken rule).
+                                tracing::error!(
+                                    "Media spec '{}' has invalid validation pattern '{}' — \
+                                     fix the TOML definition in capgraph/src/media",
+                                    urn, pattern
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        // Binary content cannot match a text pattern → eliminate
+                        return false;
+                    }
+                }
+            }
+
+            // Check min_length (byte length)
+            if let Some(min_len) = validation.min_length {
+                if content_len < min_len {
+                    return false;
+                }
+            }
+
+            // Check max_length (byte length)
+            if let Some(max_len) = validation.max_length {
+                if content_len > max_len {
+                    return false;
+                }
+            }
+
+            // Check allowed_values
+            if let Some(ref allowed) = validation.allowed_values {
+                match content_str {
+                    Some(text) => {
+                        let trimmed = text.trim();
+                        if !allowed.iter().any(|v| v == trimmed) {
+                            return false;
+                        }
+                    }
+                    None => return false, // Binary content can't match allowed text values
+                }
+            }
+
+            true // Survived all checks
+        })
+        .cloned()
+        .collect()
+}
+
 /// Global adapter registry (lazily initialized with bundled MediaUrnRegistry)
 fn get_registry() -> &'static MediaAdapterRegistry {
     static REGISTRY: OnceLock<MediaAdapterRegistry> = OnceLock::new();
@@ -528,5 +619,112 @@ mod tests {
         let cache_dir = temp_dir.path().to_path_buf();
         let registry = crate::media::registry::MediaUrnRegistry::new_for_test(cache_dir).unwrap();
         (Arc::new(registry), temp_dir)
+    }
+
+    // Discrimination Tests (TEST_DISC_1 through TEST_DISC_6)
+    // These test discriminate_candidates_by_validation against real bundled media specs.
+
+    /// Helper: get all txt-extension URNs from the bundled registry.
+    fn txt_extension_urns(registry: &crate::media::registry::MediaUrnRegistry) -> Vec<String> {
+        registry.media_urns_for_extension("txt").unwrap()
+    }
+
+    // TEST_DISC_1: Plain text content ("Hello world") eliminates all model-spec variants
+    // because they require pattern ".*:.*" (content must contain a colon).
+    #[test]
+    fn test_disc_1_plain_text_eliminates_model_specs() {
+        let (registry, _temp) = create_test_media_registry();
+        let all_txt_urns = txt_extension_urns(&registry);
+
+        let content = b"Hello world\nThis is a plain text file\nNo colons here";
+        let survivors = discriminate_candidates_by_validation(content, &all_txt_urns, &registry);
+
+        // model-spec variants have pattern ".*:.*" — plain text without colons fails this
+        for survivor in &survivors {
+            assert!(
+                !survivor.contains("model-spec"),
+                "model-spec URN '{}' should have been eliminated — content has no colon",
+                survivor
+            );
+        }
+
+        // Plain text URN (media:txt;textable) has no validation → must survive
+        assert!(
+            survivors.iter().any(|u| u == "media:txt;textable"),
+            "media:txt;textable should survive (no validation rules), survivors: {:?}",
+            survivors
+        );
+    }
+
+    // TEST_DISC_2: Model spec content ("hf:MaziyarPanahi/Mistral-7B") passes the pattern.
+    #[test]
+    fn test_disc_2_model_spec_content_survives_pattern() {
+        let (registry, _temp) = create_test_media_registry();
+        let all_txt_urns = txt_extension_urns(&registry);
+
+        let content = b"hf:MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF";
+        let survivors = discriminate_candidates_by_validation(content, &all_txt_urns, &registry);
+
+        // Content has a colon → model-spec pattern matches → model-spec variants survive
+        assert!(
+            survivors.iter().any(|u| u.contains("model-spec")),
+            "At least one model-spec URN should survive — content contains a colon, survivors: {:?}",
+            survivors
+        );
+    }
+
+    // TEST_DISC_3: Short content eliminates frontmatter (min_length = 50).
+    #[test]
+    fn test_disc_3_short_content_eliminates_frontmatter() {
+        let (registry, _temp) = create_test_media_registry();
+        let all_txt_urns = txt_extension_urns(&registry);
+
+        // 30 bytes — below frontmatter's min_length of 50
+        let content = b"Short text, only thirty bytes.";
+        assert!(content.len() < 50);
+
+        let survivors = discriminate_candidates_by_validation(content, &all_txt_urns, &registry);
+
+        assert!(
+            !survivors.iter().any(|u| u.contains("frontmatter")),
+            "frontmatter URN should have been eliminated — content ({} bytes) < min_length 50, survivors: {:?}",
+            content.len(), survivors
+        );
+    }
+
+    // TEST_DISC_4: Long content keeps frontmatter (min_length = 50).
+    #[test]
+    fn test_disc_4_long_content_keeps_frontmatter() {
+        let (registry, _temp) = create_test_media_registry();
+        let all_txt_urns = txt_extension_urns(&registry);
+
+        // 80 bytes — above frontmatter's min_length of 50
+        let content = b"This is a longer piece of text that is at least fifty bytes to pass the frontmatter minimum length check ok.";
+        assert!(content.len() >= 50);
+
+        let survivors = discriminate_candidates_by_validation(content, &all_txt_urns, &registry);
+
+        assert!(
+            survivors.iter().any(|u| u.contains("frontmatter")),
+            "frontmatter URN should survive — content ({} bytes) >= min_length 50, survivors: {:?}",
+            content.len(), survivors
+        );
+    }
+
+    // TEST_DISC_5: Empty candidate list → empty result.
+    #[test]
+    fn test_disc_5_empty_candidates() {
+        let (registry, _temp) = create_test_media_registry();
+        let survivors = discriminate_candidates_by_validation(b"anything", &[], &registry);
+        assert!(survivors.is_empty());
+    }
+
+    // TEST_DISC_6: URN not in registry cache → survives (cannot eliminate what we can't look up).
+    #[test]
+    fn test_disc_6_unknown_urn_survives() {
+        let (registry, _temp) = create_test_media_registry();
+        let candidates = vec!["media:nonexistent;fake".to_string()];
+        let survivors = discriminate_candidates_by_validation(b"anything", &candidates, &registry);
+        assert_eq!(survivors, candidates, "Unknown URN should survive — no spec to eliminate it");
     }
 }

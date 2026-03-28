@@ -57,6 +57,7 @@ pub use resolver::{
     resolve_paths,
     detect_file,
     detect_file_with_media_registry,
+    discriminate_candidates_by_validation,
 };
 
 pub use path_resolver::resolve_directory;

@@ -142,4 +142,5 @@ pub use input_resolver::{
     MediaAdapter, AdapterMatch, AdapterResult, MediaAdapterRegistry,
     ValueAdapter, ValueAdapterResult, ValueAdapterRegistry,
     resolve_input, resolve_inputs, resolve_paths, detect_file,
+    discriminate_candidates_by_validation,
 };
