@@ -978,7 +978,7 @@ mod tests {
         let registry = test_registry().await;
         let media_specs = create_media_specs(vec![
             MediaSpecDef {
-                urn: "media:custom-setting;setting".to_string(),
+                urn: "media:custom-setting".to_string(),
                 media_type: "text/plain".to_string(),
                 title: "Custom Setting".to_string(),
                 profile_uri: Some("https://example.com/schema".to_string()),
@@ -993,7 +993,7 @@ mod tests {
             }
         ]);
 
-        let resolved = resolve_media_urn("media:custom-setting;setting", Some(&media_specs), &registry).await.unwrap();
+        let resolved = resolve_media_urn("media:custom-setting", Some(&media_specs), &registry).await.unwrap();
         assert!(resolved.metadata.is_some());
         let metadata = resolved.metadata.unwrap();
         assert_eq!(metadata.get("category_key").unwrap(), "interface");
@@ -1006,7 +1006,7 @@ mod tests {
         let registry = test_registry().await;
         let media_specs = create_media_specs(vec![
             MediaSpecDef {
-                urn: "media:bounded-number;numeric;setting".to_string(),
+                urn: "media:bounded-number;numeric".to_string(),
                 media_type: "text/plain".to_string(),
                 title: "Bounded Number".to_string(),
                 profile_uri: Some("https://example.com/schema".to_string()),
@@ -1028,7 +1028,7 @@ mod tests {
             }
         ]);
 
-        let resolved = resolve_media_urn("media:bounded-number;numeric;setting", Some(&media_specs), &registry).await.unwrap();
+        let resolved = resolve_media_urn("media:bounded-number;numeric", Some(&media_specs), &registry).await.unwrap();
 
         // Verify validation
         assert!(resolved.validation.is_some());
