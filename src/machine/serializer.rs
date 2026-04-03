@@ -27,6 +27,7 @@ use std::fmt::Write;
 use crate::planner::live_cap_graph::{Strand, StrandStepType};
 use crate::urn::media_urn::MediaUrn;
 
+use super::error::MachineAbstractionError;
 use super::graph::{MachineEdge, Machine};
 
 impl Machine {
@@ -36,7 +37,7 @@ impl Machine {
     /// - Each `Cap` step becomes a `MachineEdge` with a single source
     /// - `ForEach` steps set `is_loop: true` on the next Cap edge
     /// - `Collect` and `WrapInList` steps are elided (implicit in transitions)
-    pub fn from_path(path: &Strand) -> Self {
+    pub fn from_path(path: &Strand) -> Result<Self, MachineAbstractionError> {
         let mut edges = Vec::new();
         let mut pending_loop = false;
 
@@ -60,7 +61,11 @@ impl Machine {
             }
         }
 
-        Self::new(edges)
+        if edges.is_empty() {
+            return Err(MachineAbstractionError::NoCapabilitySteps);
+        }
+
+        Ok(Self::new(edges))
     }
 
     /// Serialize this machine graph to canonical one-line machine notation.
@@ -557,7 +562,7 @@ mod tests {
             description: "Extract Text".to_string(),
         };
 
-        let graph = Machine::from_path(&path);
+        let graph = Machine::from_path(&path).unwrap();
         assert_eq!(graph.edge_count(), 1);
         assert!(!graph.edges()[0].is_loop);
     }
@@ -601,7 +606,7 @@ mod tests {
             description: "ForEach → Page to Text → Collect".to_string(),
         };
 
-        let graph = Machine::from_path(&path);
+        let graph = Machine::from_path(&path).unwrap();
         // ForEach + Cap + Collect → 1 edge with is_loop=true
         assert_eq!(graph.edge_count(), 1);
         assert!(graph.edges()[0].is_loop, "ForEach step must set is_loop on next Cap edge");
@@ -638,9 +643,35 @@ mod tests {
             description: "Extract → WrapInList".to_string(),
         };
 
-        let graph = Machine::from_path(&path);
+        let graph = Machine::from_path(&path).unwrap();
         // WrapInList is elided — only the Cap edge remains
         assert_eq!(graph.edge_count(), 1);
         assert!(!graph.edges()[0].is_loop);
+    }
+
+    #[test]
+    fn from_path_structural_only_fails() {
+        use crate::planner::live_cap_graph::{StrandStep, StrandStepType};
+
+        let path = Strand {
+            steps: vec![StrandStep {
+                step_type: StrandStepType::ForEach {
+                    list_spec: media("media:bool;decision;list;textable"),
+                    item_spec: media("media:bool;decision;textable"),
+                },
+                from_spec: media("media:bool;decision;list;textable"),
+                to_spec: media("media:bool;decision;textable"),
+            }],
+            source_spec: media("media:bool;decision;list;textable"),
+            target_spec: media("media:bool;decision;textable"),
+            total_steps: 1,
+            cap_step_count: 0,
+            description: "ForEach".to_string(),
+        };
+
+        assert!(matches!(
+            Machine::from_path(&path),
+            Err(MachineAbstractionError::NoCapabilitySteps)
+        ));
     }
 }

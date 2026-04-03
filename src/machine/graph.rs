@@ -344,10 +344,15 @@ impl Machine {
 }
 
 impl MachineRun {
-    pub fn new(id: String, resolved_strand: Strand) -> Self {
+    pub fn new(id: String, machine: &Machine, resolved_strand: Strand) -> Self {
+        let machine_notation = machine.to_machine_notation();
+        assert!(
+            !machine_notation.is_empty(),
+            "MachineRun requires a non-empty machine notation"
+        );
         Self {
             id,
-            machine_notation: resolved_strand.to_machine_notation(),
+            machine_notation,
             resolved_strand,
             status: MachineRunStatus::Pending,
             error_message: None,
@@ -413,7 +418,7 @@ mod tests {
     use crate::planner::{StrandStep, StrandStepType};
 
     #[test]
-    fn machine_run_derives_machine_notation_from_resolved_strand() {
+    fn machine_run_uses_abstract_machine_notation() {
         let strand = Strand {
             steps: vec![
                 StrandStep {
@@ -444,8 +449,9 @@ mod tests {
             description: "PDF to text pages".to_string(),
         };
 
-        let expected_notation = strand.to_machine_notation();
-        let run = MachineRun::new("run-1".to_string(), strand);
+        let machine = strand.knit();
+        let expected_notation = machine.to_machine_notation();
+        let run = MachineRun::new("run-1".to_string(), &machine, strand);
 
         assert_eq!(run.machine_notation, expected_notation);
         assert_eq!(run.resolved_strand.target_spec.to_string(), "media:page;textable");

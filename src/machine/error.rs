@@ -2,6 +2,14 @@
 
 use thiserror::Error;
 
+/// Errors that can occur when abstracting a resolved strand into a machine.
+#[derive(Debug, Error)]
+pub enum MachineAbstractionError {
+    /// The strand contains no capability steps and therefore does not define a machine.
+    #[error("resolved strand does not contain any capability steps")]
+    NoCapabilitySteps,
+}
+
 /// Errors that can occur during machine notation parsing
 #[derive(Debug, Error)]
 pub enum MachineSyntaxError {

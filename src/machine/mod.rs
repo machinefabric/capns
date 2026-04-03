@@ -29,6 +29,6 @@ pub mod graph;
 pub mod parser;
 pub mod serializer;
 
-pub use error::MachineSyntaxError;
+pub use error::{MachineAbstractionError, MachineSyntaxError};
 pub use graph::{Machine, MachineEdge, MachineRun, MachineRunStatus};
 pub use parser::parse_machine;

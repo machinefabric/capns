@@ -244,6 +244,10 @@ impl Strand {
     /// Cap steps become edges; ForEach sets `is_loop` on the next cap;
     /// Collect and WrapInList are elided (implicit in transitions).
     pub fn knit(&self) -> crate::machine::Machine {
+        self.try_knit().expect("resolved strand does not define a valid machine")
+    }
+
+    pub fn try_knit(&self) -> Result<crate::machine::Machine, crate::machine::MachineAbstractionError> {
         crate::machine::Machine::from_path(self)
     }
 
@@ -251,7 +255,12 @@ impl Strand {
     ///
     /// This is the primary identifier for accessibility and comparison.
     pub fn to_machine_notation(&self) -> String {
-        self.knit().to_machine_notation()
+        self.try_to_machine_notation()
+            .expect("resolved strand does not define a valid machine")
+    }
+
+    pub fn try_to_machine_notation(&self) -> Result<String, crate::machine::MachineAbstractionError> {
+        Ok(self.try_knit()?.to_machine_notation())
     }
 }
 

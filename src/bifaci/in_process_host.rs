@@ -23,6 +23,7 @@
 
 use crate::bifaci::frame::{FlowKey, Frame, FrameType, Limits, MessageId, SeqAssigner};
 use crate::bifaci::io::{CborError, FrameReader, FrameWriter};
+use crate::bifaci::relay_switch::InstalledPluginIdentity;
 use crate::cap::caller::CapArgumentValue;
 use crate::cap::definition::Cap;
 use crate::standard::caps::CAP_IDENTITY;
@@ -32,6 +33,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RelayNotifyCapabilitiesPayload {
+    caps: Vec<String>,
+    installed_plugins: Vec<InstalledPluginIdentity>,
+}
 
 // =============================================================================
 // FRAME HANDLER TRAIT
@@ -320,8 +327,8 @@ impl InProcessPluginHost {
         Self { handlers }
     }
 
-    /// Build the aggregate manifest as a JSON array of cap URN strings.
-    /// Always includes CAP_IDENTITY as the first entry.
+    /// Build the aggregate RelayNotify manifest payload.
+    /// Always includes CAP_IDENTITY as the first cap entry.
     fn build_manifest(&self) -> Vec<u8> {
         let mut cap_urns: Vec<String> = vec![CAP_IDENTITY.to_string()];
         for entry in &self.handlers {
@@ -332,7 +339,12 @@ impl InProcessPluginHost {
                 }
             }
         }
-        serde_json::to_vec(&cap_urns).unwrap_or_else(|_| b"[]".to_vec())
+        let payload = RelayNotifyCapabilitiesPayload {
+            caps: cap_urns,
+            installed_plugins: Vec::new(),
+        };
+        serde_json::to_vec(&payload)
+            .expect("BUG: InProcessPluginHost RelayNotify payload must serialize")
     }
 
     /// Build the cap table for routing: flat list of (cap_urn, handler_idx).
@@ -656,9 +668,10 @@ mod tests {
         let notify = reader.read().await.unwrap().unwrap();
         assert_eq!(notify.frame_type, FrameType::RelayNotify);
         let manifest = notify.relay_notify_manifest().unwrap();
-        let cap_urns: Vec<String> = serde_json::from_slice(manifest).unwrap();
-        assert!(cap_urns.len() >= 2); // identity + echo cap
-        assert_eq!(cap_urns[0], CAP_IDENTITY);
+        let payload: RelayNotifyCapabilitiesPayload = serde_json::from_slice(manifest).unwrap();
+        assert!(payload.caps.len() >= 2); // identity + echo cap
+        assert_eq!(payload.caps[0], CAP_IDENTITY);
+        assert!(payload.installed_plugins.is_empty());
 
         // Send a REQ + STREAM_START + CHUNK (CBOR-encoded) + STREAM_END + END
         let rid = MessageId::new_uuid();
@@ -828,9 +841,10 @@ mod tests {
         )]);
 
         let manifest = host.build_manifest();
-        let cap_urns: Vec<String> = serde_json::from_slice(&manifest).unwrap();
-        assert_eq!(cap_urns[0], CAP_IDENTITY);
-        assert!(cap_urns.iter().any(|u| u.contains("thumbnail")));
+        let payload: RelayNotifyCapabilitiesPayload = serde_json::from_slice(&manifest).unwrap();
+        assert_eq!(payload.caps[0], CAP_IDENTITY);
+        assert!(payload.caps.iter().any(|u| u.contains("thumbnail")));
+        assert!(payload.installed_plugins.is_empty());
     }
 
     // TEST658: InProcessPluginHost handles heartbeat by echoing same ID
