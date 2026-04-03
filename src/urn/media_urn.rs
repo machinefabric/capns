@@ -74,8 +74,10 @@ pub const MEDIA_VIDEO: &str = "media:video";
 // Semantic AI input types - distinguished by their purpose/context
 /// Media URN for audio input containing speech for transcription (Whisper)
 pub const MEDIA_AUDIO_SPEECH: &str = "media:audio;wav;speech";
-/// Media URN for thumbnail image output
-pub const MEDIA_IMAGE_THUMBNAIL: &str = "media:image;png;thumbnail";
+/// Media URN for extracted page text
+pub const MEDIA_TEXTABLE_PAGE: &str = "media:textable;page";
+/// Media URN for list of extracted page texts
+pub const MEDIA_TEXTABLE_PAGE_LIST: &str = "media:textable;page;list";
 
 // Document types (PRIMARY naming - type IS the format)
 /// Media URN for PDF documents
@@ -118,7 +120,7 @@ pub const MEDIA_MODEL_SPEC: &str = "media:model-spec;textable";
 /// Media URN for MLX model path - scalar by default
 pub const MEDIA_MLX_MODEL_PATH: &str = "media:mlx-model-path;textable";
 
-// Backend-agnostic model-spec variants (used by conversation/inference caps).
+// Backend-agnostic model-spec variants (used by inference caps).
 /// Backend-agnostic LLM model spec — model spec string determines the backend.
 pub const MEDIA_MODEL_SPEC_LLM: &str = "media:model-spec;textable;llm";
 
@@ -195,12 +197,6 @@ pub const MEDIA_PATH_OUTPUT: &str = "media:model-path;record;textable";
 pub const MEDIA_EMBEDDING_VECTOR: &str = "media:embedding-vector;record;textable";
 /// Media URN for LLM inference output - has record marker
 pub const MEDIA_LLM_INFERENCE_OUTPUT: &str = "media:generated-text;record;textable";
-/// Media URN for extracted metadata - has record marker
-pub const MEDIA_FILE_METADATA: &str = "media:file-metadata;record;textable";
-/// Media URN for extracted outline - has record marker
-pub const MEDIA_DOCUMENT_OUTLINE: &str = "media:document-outline;record;textable";
-/// Media URN for disbound page - has list marker (array of page objects)
-pub const MEDIA_DISBOUND_PAGE: &str = "media:disbound-page;list;textable";
 /// Media URN for vision inference output - textable, scalar by default
 pub const MEDIA_IMAGE_DESCRIPTION: &str = "media:image-description;textable";
 /// Media URN for transcription output - has record marker

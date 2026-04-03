@@ -4,9 +4,7 @@
 //! all MACINA providers, including their formal argument specifications.
 //! These definitions should match the TOML definitions in capgraph/src/
 
-use crate::{
-    Cap, CapOutput, CapRegistry, CapUrn, CapUrnBuilder, MEDIA_DISBOUND_PAGE, MEDIA_DOCUMENT_OUTLINE, MEDIA_FILE_METADATA, RegistryError
-};
+use crate::{Cap, CapOutput, CapRegistry, CapUrn, CapUrnBuilder, RegistryError};
 use crate::urn::media_urn::{
     // Primitives (needed for coercion functions)
     MEDIA_STRING, MEDIA_INTEGER, MEDIA_BOOLEAN, MEDIA_OBJECT, MEDIA_IDENTITY,
@@ -20,7 +18,7 @@ use crate::urn::media_urn::{
     MEDIA_FRONTMATTER_TEXT, MEDIA_MODEL_SPEC,
     MEDIA_MODEL_REPO, MEDIA_JSON_SCHEMA,
     // Semantic output types
-    MEDIA_IMAGE_THUMBNAIL,
+    MEDIA_TEXTABLE_PAGE_LIST,
     // CAPDAG output types
     MEDIA_MODEL_DIM, MEDIA_DOWNLOAD_OUTPUT,
     MEDIA_LIST_OUTPUT, MEDIA_STATUS_OUTPUT, MEDIA_CONTENTS_OUTPUT,
@@ -128,16 +126,16 @@ pub fn discard_cap() -> Cap {
 // LLM URN BUILDERS
 // -----------------------------------------------------------------------------
 
-/// Build URN for conversation capability
-pub fn llm_conversation_urn(lang_code: &str) -> CapUrn {
+/// Build URN for generic text-generation capability.
+pub fn llm_generate_text_urn() -> CapUrn {
     CapUrnBuilder::new()
-        .tag("op", "conversation")
-        .solo_tag("unconstrained")
-        .tag("language", lang_code)
+        .tag("op", "generate_text")
+        .solo_tag("llm")
+        .solo_tag("ml-model")
         .in_spec(MEDIA_STRING)
-        .out_spec(MEDIA_LLM_INFERENCE_OUTPUT)
+        .out_spec(MEDIA_STRING)
         .build()
-        .expect("Failed to build conversation cap URN")
+        .expect("Failed to build generate_text cap URN")
 }
 
 /// Build URN for multiplechoice capability
@@ -298,17 +296,17 @@ pub fn model_path_urn() -> CapUrn {
 // DOCUMENT PROCESSING URN BUILDERS
 // -----------------------------------------------------------------------------
 
-/// Build URN for generate-thumbnail capability.
+/// Build URN for page-image rendering capability.
 ///
 /// `input_media` is the media URN for the input type (e.g., MEDIA_PDF, MEDIA_IDENTITY).
-/// Output is always an image (PNG thumbnail).
-pub fn generate_thumbnail_urn(input_media: &str) -> CapUrn {
+/// Output is always a PNG page image.
+pub fn render_page_image_urn(input_media: &str) -> CapUrn {
     CapUrnBuilder::new()
-        .tag("op", "generate_thumbnail")
+        .tag("op", "render_page_image")
         .in_spec(input_media)
-        .out_spec(MEDIA_IMAGE_THUMBNAIL)
+        .out_spec(MEDIA_PNG)
         .build()
-        .expect("Failed to build generate-thumbnail cap URN")
+        .expect("Failed to build render_page_image cap URN")
 }
 
 /// Build URN for disbind capability.
@@ -318,33 +316,9 @@ pub fn disbind_urn(input_media: &str) -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "disbind")
         .in_spec(input_media)
-        .out_spec(MEDIA_DISBOUND_PAGE)
+        .out_spec(MEDIA_TEXTABLE_PAGE_LIST)
         .build()
         .expect("Failed to build disbind cap URN")
-}
-
-/// Build URN for extract-metadata capability.
-///
-/// `input_media` is the media URN for the input type (e.g., MEDIA_PDF, MEDIA_TXT).
-pub fn extract_metadata_urn(input_media: &str) -> CapUrn {
-    CapUrnBuilder::new()
-        .tag("op", "extract_metadata")
-        .in_spec(input_media)
-        .out_spec(MEDIA_FILE_METADATA)
-        .build()
-        .expect("Failed to build extract-metadata cap URN")
-}
-
-/// Build URN for extract-outline capability.
-///
-/// `input_media` is the media URN for the input type (e.g., MEDIA_PDF, MEDIA_TXT).
-pub fn extract_outline_urn(input_media: &str) -> CapUrn {
-    CapUrnBuilder::new()
-        .tag("op", "extract_outline")
-        .in_spec(input_media)
-        .out_spec(MEDIA_DOCUMENT_OUTLINE)
-        .build()
-        .expect("Failed to build extract-outline cap URN")
 }
 
 // -----------------------------------------------------------------------------
@@ -539,9 +513,9 @@ pub fn all_coercion_paths() -> Vec<(&'static str, &'static str)> {
 // LLM CAPABILITIES
 // -----------------------------------------------------------------------------
 
-/// Get conversation cap from registry with language
-pub async fn llm_conversation(registry: Arc<CapRegistry>, lang_code: &str) -> Result<Cap, RegistryError> {
-    let urn = llm_conversation_urn(lang_code);
+/// Get generic text-generation cap from registry.
+pub async fn llm_generate_text_cap(registry: Arc<CapRegistry>) -> Result<Cap, RegistryError> {
+    let urn = llm_generate_text_urn();
     registry.get_cap(&urn.to_string()).await
 }
 
@@ -635,21 +609,9 @@ pub async fn model_path_cap(registry: Arc<CapRegistry>) -> Result<Cap, RegistryE
 // DOCUMENT PROCESSING CAPABILITIES
 // -----------------------------------------------------------------------------
 
-/// Get extract-metadata cap from registry
-pub async fn extract_metadata_cap(registry: Arc<CapRegistry>, input_media: &str) -> Result<Cap, RegistryError> {
-    let urn = extract_metadata_urn(input_media);
-    registry.get_cap(&urn.to_string()).await
-}
-
-/// Get generate-thumbnail cap from registry
-pub async fn generate_thumbnail_cap(registry: Arc<CapRegistry>, input_media: &str) -> Result<Cap, RegistryError> {
-    let urn = generate_thumbnail_urn(input_media);
-    registry.get_cap(&urn.to_string()).await
-}
-
-/// Get extract-outline cap from registry
-pub async fn extract_outline_cap(registry: Arc<CapRegistry>, input_media: &str) -> Result<Cap, RegistryError> {
-    let urn = extract_outline_urn(input_media);
+/// Get page-image rendering cap from registry.
+pub async fn render_page_image_cap(registry: Arc<CapRegistry>, input_media: &str) -> Result<Cap, RegistryError> {
+    let urn = render_page_image_urn(input_media);
     registry.get_cap(&urn.to_string()).await
 }
 
@@ -742,31 +704,22 @@ mod tests {
             "availability and path must be distinct cap URNs");
     }
 
-    // TEST310: Test llm_conversation_urn uses unconstrained tag (not constrained)
     #[test]
-    fn test310_llm_conversation_urn_unconstrained() {
-        let urn = llm_conversation_urn("en");
-        assert!(urn.get_tag("unconstrained").is_some(), "LLM conversation URN must have 'unconstrained' tag");
-        assert!(urn.has_tag("op", "conversation"), "must have op=conversation");
-        assert!(urn.has_tag("language", "en"), "must have language=en");
-    }
-
-    // TEST311: Test llm_conversation_urn in/out specs match the expected media URNs semantically
-    #[test]
-    fn test311_llm_conversation_urn_specs() {
+    fn test310_llm_generate_text_urn_shape() {
         use crate::urn::media_urn::MediaUrn;
-        let urn = llm_conversation_urn("fr");
+        let urn = llm_generate_text_urn();
 
-        // Compare semantically via MediaUrn matching (tag order may differ)
         let in_spec = MediaUrn::from_string(urn.in_spec()).expect("in_spec must parse");
-        let expected_in = MediaUrn::from_string(MEDIA_STRING).expect("MEDIA_STRING must parse");
-        assert!(in_spec.conforms_to(&expected_in).unwrap(),
-            "in_spec '{}' must match MEDIA_STRING '{}'", urn.in_spec(), MEDIA_STRING);
-
         let out_spec = MediaUrn::from_string(urn.out_spec()).expect("out_spec must parse");
-        let expected_out = MediaUrn::from_string(MEDIA_LLM_INFERENCE_OUTPUT).expect("LLM output must parse");
-        assert!(out_spec.conforms_to(&expected_out).unwrap(),
-            "out_spec '{}' must match '{}'", urn.out_spec(), MEDIA_LLM_INFERENCE_OUTPUT);
+        let expected = MediaUrn::from_string(MEDIA_STRING).expect("MEDIA_STRING must parse");
+
+        assert!(urn.has_tag("op", "generate_text"), "must have op=generate_text");
+        assert!(urn.has_marker_tag("llm"), "must have llm tag");
+        assert!(urn.has_marker_tag("ml-model"), "must have ml-model tag");
+        assert!(in_spec.conforms_to(&expected).unwrap(),
+            "in_spec '{}' must match MEDIA_STRING '{}'", urn.in_spec(), MEDIA_STRING);
+        assert!(out_spec.conforms_to(&expected).unwrap(),
+            "out_spec '{}' must match MEDIA_STRING '{}'", urn.out_spec(), MEDIA_STRING);
     }
 
     // TEST312: Test all URN builders produce parseable cap URNs
@@ -775,7 +728,7 @@ mod tests {
         // Each of these must not panic
         let _avail = model_availability_urn();
         let _path = model_path_urn();
-        let _conv = llm_conversation_urn("en");
+        let _conv = llm_generate_text_urn();
 
         // Verify they roundtrip through CapUrn parsing
         let avail_str = model_availability_urn().to_string();
