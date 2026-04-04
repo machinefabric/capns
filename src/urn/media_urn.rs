@@ -105,6 +105,28 @@ pub const MEDIA_JSON_SCHEMA: &str = "media:json;json-schema;record;textable";
 /// Media URN for YAML data - has record marker (structured key-value)
 pub const MEDIA_YAML: &str = "media:record;textable;yaml";
 
+// Format-specific variants for JSON, YAML, CSV
+/// Media URN for a generic JSON value (scalar — string, number, boolean, null, or object)
+pub const MEDIA_JSON_VALUE: &str = "media:json;textable";
+/// Media URN for a JSON object (alias for MEDIA_JSON)
+pub const MEDIA_JSON_RECORD: &str = "media:json;record;textable";
+/// Media URN for a JSON array (list of values)
+pub const MEDIA_JSON_LIST: &str = "media:json;list;textable";
+/// Media URN for a JSON array of objects (list of records)
+pub const MEDIA_JSON_LIST_RECORD: &str = "media:json;list;record;textable";
+/// Media URN for a generic YAML value (scalar — string, number, boolean, null, or mapping)
+pub const MEDIA_YAML_VALUE: &str = "media:textable;yaml";
+/// Media URN for a YAML mapping (alias for MEDIA_YAML)
+pub const MEDIA_YAML_RECORD: &str = "media:record;textable;yaml";
+/// Media URN for a YAML sequence (list of values)
+pub const MEDIA_YAML_LIST: &str = "media:list;textable;yaml";
+/// Media URN for a YAML sequence of mappings (list of records)
+pub const MEDIA_YAML_LIST_RECORD: &str = "media:list;record;textable;yaml";
+/// Media URN for CSV data — by definition a list of records (header row + data rows)
+pub const MEDIA_CSV: &str = "media:csv;list;record;textable";
+/// Media URN for single-column CSV — list of values without record structure
+pub const MEDIA_CSV_LIST: &str = "media:csv;list;textable";
+
 // File path types - for arguments that represent filesystem paths
 /// Media URN for a single file path - textable, scalar by default (no list marker)
 pub const MEDIA_FILE_PATH: &str = "media:file-path;textable";
@@ -437,6 +459,18 @@ impl MediaUrn {
     /// For checking if data is structured (map/list), use is_structured().
     pub fn is_json(&self) -> bool {
         self.get_tag("json").is_some()
+    }
+
+    /// Check if this represents YAML representation specifically.
+    /// Returns true if the "yaml" marker tag is present.
+    pub fn is_yaml(&self) -> bool {
+        self.get_tag("yaml").is_some()
+    }
+
+    /// Check if this represents CSV representation specifically.
+    /// Returns true if the "csv" marker tag is present.
+    pub fn is_csv(&self) -> bool {
+        self.get_tag("csv").is_some()
     }
 
     /// Check if this represents text data.

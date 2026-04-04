@@ -25,6 +25,10 @@ use crate::urn::media_urn::{
     MEDIA_AVAILABILITY_OUTPUT, MEDIA_PATH_OUTPUT,
     MEDIA_EMBEDDING_VECTOR, MEDIA_JSON, MEDIA_LLM_INFERENCE_OUTPUT,
     MEDIA_DECISION, MEDIA_DECISION_ARRAY, MEDIA_VOID,
+    // Format conversion types (JSON, YAML, CSV variants)
+    MEDIA_JSON_VALUE, MEDIA_JSON_RECORD, MEDIA_JSON_LIST, MEDIA_JSON_LIST_RECORD,
+    MEDIA_YAML_VALUE, MEDIA_YAML_RECORD, MEDIA_YAML_LIST, MEDIA_YAML_LIST_RECORD,
+    MEDIA_CSV,
 };
 use std::sync::Arc;
 
@@ -503,6 +507,48 @@ pub fn all_coercion_paths() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+// -----------------------------------------------------------------------------
+// FORMAT CONVERSION URN BUILDERS
+// -----------------------------------------------------------------------------
+// Format conversion is transforming data between JSON, YAML, and CSV formats.
+// Each conversion is a cap with a specific input and output media type.
+
+/// Build a format conversion URN for a specific input → output media type pair.
+/// All format conversions use op="convert_format".
+pub fn format_conversion_urn(in_media: &str, out_media: &str) -> CapUrn {
+    CapUrnBuilder::new()
+        .tag("op", "convert_format")
+        .in_spec(in_media)
+        .out_spec(out_media)
+        .build()
+        .expect("Failed to build format conversion cap URN")
+}
+
+/// All valid format conversion paths between JSON, YAML, and CSV.
+/// Returns (input_media_urn, output_media_urn) pairs.
+pub fn all_format_conversion_paths() -> Vec<(&'static str, &'static str)> {
+    vec![
+        // JSON <-> YAML value
+        (MEDIA_JSON_VALUE,       MEDIA_YAML_VALUE),
+        (MEDIA_YAML_VALUE,       MEDIA_JSON_VALUE),
+        // JSON <-> YAML record
+        (MEDIA_JSON_RECORD,      MEDIA_YAML_RECORD),
+        (MEDIA_YAML_RECORD,      MEDIA_JSON_RECORD),
+        // JSON <-> YAML list
+        (MEDIA_JSON_LIST,        MEDIA_YAML_LIST),
+        (MEDIA_YAML_LIST,        MEDIA_JSON_LIST),
+        // JSON <-> YAML list of records
+        (MEDIA_JSON_LIST_RECORD, MEDIA_YAML_LIST_RECORD),
+        (MEDIA_YAML_LIST_RECORD, MEDIA_JSON_LIST_RECORD),
+        // JSON list of records <-> CSV
+        (MEDIA_JSON_LIST_RECORD, MEDIA_CSV),
+        (MEDIA_CSV,              MEDIA_JSON_LIST_RECORD),
+        // YAML list of records <-> CSV
+        (MEDIA_YAML_LIST_RECORD, MEDIA_CSV),
+        (MEDIA_CSV,              MEDIA_YAML_LIST_RECORD),
+    ]
+}
+
 // =============================================================================
 // REGISTRY LOOKUP FUNCTIONS (async, return Cap from registry)
 // =============================================================================
@@ -671,6 +717,34 @@ pub async fn all_coercion_caps(registry: Arc<CapRegistry>) -> Result<Vec<(&'stat
     Ok(caps)
 }
 
+// -----------------------------------------------------------------------------
+// FORMAT CONVERSION CAPABILITIES
+// -----------------------------------------------------------------------------
+
+/// Get a single format conversion cap from the registry
+pub async fn format_conversion_cap(
+    registry: Arc<CapRegistry>,
+    in_media: &str,
+    out_media: &str,
+) -> Result<Cap, RegistryError> {
+    let urn = format_conversion_urn(in_media, out_media);
+    registry.get_cap(&urn.to_string()).await
+}
+
+/// Get all format conversion caps from the registry
+/// Returns a vector of (in_media, out_media, Cap) tuples
+/// Fails if any conversion cap is missing from the registry
+pub async fn all_format_conversion_caps(
+    registry: Arc<CapRegistry>,
+) -> Result<Vec<(&'static str, &'static str, Cap)>, RegistryError> {
+    let mut caps = Vec::new();
+    for (in_media, out_media) in all_format_conversion_paths() {
+        let cap = format_conversion_cap(registry.clone(), in_media, out_media).await?;
+        caps.push((in_media, out_media, cap));
+    }
+    Ok(caps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,5 +888,42 @@ mod tests {
         let expected_out = MediaUrn::from_string(MEDIA_INTEGER).expect("MEDIA_INTEGER should parse");
         assert!(out_urn.conforms_to(&expected_out).unwrap(),
             "out_spec '{}' should conform to '{}'", urn.out_spec(), MEDIA_INTEGER);
+    }
+
+    // TEST850: all_format_conversion_paths each entry builds a valid parseable CapUrn
+    #[test]
+    fn test850_all_format_conversion_paths_build_valid_urns() {
+        let paths = all_format_conversion_paths();
+        assert_eq!(paths.len(), 12, "Expected 12 format conversion paths");
+
+        for (in_media, out_media) in &paths {
+            let urn = format_conversion_urn(in_media, out_media);
+            assert!(urn.has_tag("op", "convert_format"),
+                "Format conversion URN for {}→{} must have op=convert_format", in_media, out_media);
+
+            // Verify roundtrip through string parsing
+            let urn_str = urn.to_string();
+            let reparsed = crate::urn::cap_urn::CapUrn::from_string(&urn_str);
+            assert!(reparsed.is_ok(),
+                "Format conversion URN for {}→{} must roundtrip through parsing: {:?}",
+                in_media, out_media, reparsed.err());
+        }
+    }
+
+    // TEST851: format_conversion_urn in/out specs match the input constants
+    #[test]
+    fn test851_format_conversion_urn_specs() {
+        use crate::urn::media_urn::MediaUrn;
+
+        let urn = format_conversion_urn(MEDIA_JSON_VALUE, MEDIA_YAML_VALUE);
+        let in_urn = MediaUrn::from_string(urn.in_spec()).expect("in_spec should parse");
+        let expected_in = MediaUrn::from_string(MEDIA_JSON_VALUE).expect("MEDIA_JSON_VALUE should parse");
+        assert!(in_urn.conforms_to(&expected_in).unwrap(),
+            "in_spec '{}' should conform to '{}'", urn.in_spec(), MEDIA_JSON_VALUE);
+
+        let out_urn = MediaUrn::from_string(urn.out_spec()).expect("out_spec should parse");
+        let expected_out = MediaUrn::from_string(MEDIA_YAML_VALUE).expect("MEDIA_YAML_VALUE should parse");
+        assert!(out_urn.conforms_to(&expected_out).unwrap(),
+            "out_spec '{}' should conform to '{}'", urn.out_spec(), MEDIA_YAML_VALUE);
     }
 }
