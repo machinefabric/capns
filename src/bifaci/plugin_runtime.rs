@@ -1938,6 +1938,46 @@ struct ActiveRequest {
     raw_tx: crossbeam_channel::Sender<Frame>,
 }
 
+/// A queued incoming request waiting for a handler slot.
+/// The crossbeam sender is in `active_requests` for frame routing.
+/// The receiver is held here until the handler is spawned.
+struct QueuedRequest {
+    factory: OpFactory,
+    cap_urn: String,
+    routing_id: Option<MessageId>,
+    request_id: MessageId,
+    raw_rx: crossbeam_channel::Receiver<Frame>,
+}
+
+/// Shared handle for dynamic concurrency capacity adjustment.
+///
+/// Cartridges receive this via `Request::capacity_handle()` and can call
+/// `set(n)` at any time to adjust how many concurrent requests the runtime
+/// will dispatch to handlers. For example, ggufcartridge might set capacity
+/// to 1 during model load, then increase it when VRAM allows.
+#[derive(Clone)]
+pub struct CapacityHandle {
+    value: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CapacityHandle {
+    fn new(initial: usize) -> Self {
+        Self {
+            value: Arc::new(std::sync::atomic::AtomicUsize::new(initial)),
+        }
+    }
+
+    /// Set the concurrency capacity. 0 means unlimited.
+    pub fn set(&self, n: usize) {
+        self.value.store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Get the current capacity. 0 means unlimited.
+    pub fn get(&self) -> usize {
+        self.value.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// The plugin runtime that handles all I/O for plugin binaries.
 ///
 /// Plugins create a runtime with their manifest, register handlers for their caps,
@@ -1956,6 +1996,12 @@ struct ActiveRequest {
 /// - Respond to heartbeats while handlers are running
 /// - Accept new requests while previous ones are still processing
 /// - Handle multiple concurrent cap invocations
+///
+/// **Concurrency capacity**: Set via `set_capacity(n)` before `run()`. When set,
+/// incoming requests beyond the capacity are queued. The runtime sends LOG frames
+/// with `level="queued"` so the pipeline knows the request is alive but waiting.
+/// When a handler slot opens, the next queued request is dequeued and dispatched.
+/// Default is 0 (unlimited).
 pub struct PluginRuntime {
     /// Registered Op factories by cap URN pattern
     handlers: HashMap<String, OpFactory>,
@@ -1969,6 +2015,10 @@ pub struct PluginRuntime {
 
     /// Negotiated protocol limits
     limits: Limits,
+
+    /// Concurrency capacity: 0 = unlimited, N = max N concurrent handlers.
+    /// Shared via CapacityHandle so handlers can adjust dynamically.
+    capacity: CapacityHandle,
 }
 
 /// Dispatch an Op with a Request via WetContext.
@@ -1991,6 +2041,72 @@ async fn dispatch_op(
         let _ = req.output().close();
     }
     result
+}
+
+/// Spawn a handler task for an incoming request.
+///
+/// The crossbeam receiver carries frames routed by the main loop's active_requests
+/// map. The handler's demux drains them (even if they arrived before this spawn).
+fn spawn_handler(
+    raw_rx: crossbeam_channel::Receiver<Frame>,
+    factory: OpFactory,
+    cap_urn: String,
+    request_id: MessageId,
+    routing_id: Option<MessageId>,
+    output_tx: &tokio::sync::mpsc::UnboundedSender<Frame>,
+    pending_peer_requests: &Arc<Mutex<HashMap<MessageId, PendingPeerRequest>>>,
+    manifest: &Option<CapManifest>,
+    max_chunk: usize,
+) -> JoinHandle<()> {
+    let output_tx_clone = output_tx.clone();
+    let pending_clone = Arc::clone(pending_peer_requests);
+    let manifest_clone = manifest.clone();
+
+    tokio::spawn(async move {
+        tracing::info!("[PluginRuntime] handler started: cap='{}' rid={:?}", cap_urn, request_id);
+        let fp_ctx = FilePathContext::new(&cap_urn, manifest_clone).ok();
+        let input_package = demux_multi_stream(raw_rx, fp_ctx);
+
+        let sender: Arc<dyn FrameSender> = Arc::new(ChannelFrameSender {
+            tx: output_tx_clone.clone(),
+        });
+        let stream_id = uuid::Uuid::new_v4().to_string();
+        let output = OutputStream::new(
+            Arc::clone(&sender),
+            stream_id,
+            "*".to_string(),
+            request_id.clone(),
+            routing_id.clone(),
+            max_chunk,
+        );
+
+        let peer_invoker = PeerInvokerImpl {
+            output_tx: output_tx_clone.clone(),
+            pending_requests: Arc::clone(&pending_clone),
+            max_chunk,
+            origin_request_id: request_id.clone(),
+            origin_routing_id: routing_id.clone(),
+        };
+
+        let op = factory();
+        let peer_arc: Arc<dyn PeerInvoker> = Arc::new(peer_invoker);
+        let result = dispatch_op(op, input_package, output, peer_arc).await;
+
+        match result {
+            Ok(()) => {
+                tracing::info!("[PluginRuntime] handler completed OK: cap='{}' rid={:?}", cap_urn, request_id);
+                let mut end_frame = Frame::end(request_id, None);
+                end_frame.routing_id = routing_id;
+                let _ = sender.send(&end_frame);
+            }
+            Err(e) => {
+                tracing::error!("[PluginRuntime] handler FAILED: cap='{}' rid={:?} error={}", cap_urn, request_id, e);
+                let mut err_frame = Frame::err(request_id, "HANDLER_ERROR", &e.to_string());
+                err_frame.routing_id = routing_id;
+                let _ = sender.send(&err_frame);
+            }
+        }
+    })
 }
 
 impl PluginRuntime {
@@ -2027,6 +2143,7 @@ impl PluginRuntime {
             manifest_data,
             manifest: parsed_manifest,
             limits: Limits::default(),
+            capacity: CapacityHandle::new(0),
         };
         rt.register_standard_caps();
         rt
@@ -2047,6 +2164,7 @@ impl PluginRuntime {
             manifest_data,
             manifest: Some(manifest),
             limits: Limits::default(),
+            capacity: CapacityHandle::new(0),
         };
         rt.register_standard_caps();
         rt
@@ -2069,6 +2187,28 @@ impl PluginRuntime {
         if self.find_handler(CAP_DISCARD).is_none() {
             self.register_op_type::<DiscardOp>(CAP_DISCARD);
         }
+    }
+
+    /// Set the maximum number of concurrent handler invocations.
+    ///
+    /// When set to N > 0, the runtime queues incoming requests beyond N active
+    /// handlers. Queued requests receive a LOG frame with `level="queued"` so the
+    /// pipeline's activity timeout pauses for that body.
+    ///
+    /// * `0` — unlimited (default)
+    /// * `1` — serial execution (e.g., ggufcartridge with single model loaded)
+    /// * `N` — up to N concurrent handlers
+    pub fn set_capacity(&mut self, n: usize) {
+        self.capacity.set(n);
+    }
+
+    /// Get a clonable handle to the concurrency capacity.
+    ///
+    /// Handlers can use this to adjust capacity dynamically at runtime —
+    /// for example, increasing capacity after freeing VRAM or decreasing it
+    /// under memory pressure.
+    pub fn capacity_handle(&self) -> CapacityHandle {
+        self.capacity.clone()
     }
 
     /// Register an Op factory for a cap URN.
@@ -2840,6 +2980,13 @@ impl PluginRuntime {
     }
 
     /// Run in Plugin CBOR mode - binary frame protocol via stdin/stdout.
+    ///
+    /// When `capacity` is set (> 0), incoming requests beyond the active limit
+    /// are queued. A LOG frame with `level="queued"` is sent back immediately
+    /// so the pipeline's per-body activity timeout pauses. When a handler
+    /// finishes and a slot opens, the next queued request is dequeued and its
+    /// handler spawned. Frames for queued requests are buffered in the crossbeam
+    /// channel (created on REQ) until the handler's demux drains them.
     async fn run_cbor_mode(&self) -> Result<(), RuntimeError> {
         let stdin = tokio::io::stdin();
 
@@ -2901,15 +3048,56 @@ impl PluginRuntime {
         let pending_peer_requests: Arc<Mutex<HashMap<MessageId, PendingPeerRequest>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        // Track active requests (incoming, handler already spawned)
+        // Track active requests (incoming, frames routed here regardless of queue state).
+        // The crossbeam sender lives here so the frame reader loop can route
+        // STREAM_START/CHUNK/STREAM_END/END frames to it. This happens even for
+        // queued requests — frames accumulate in the crossbeam channel until the
+        // handler is spawned.
         let mut active_requests: HashMap<MessageId, ActiveRequest> = HashMap::new();
 
         // Track active handler tasks for cleanup
         let mut active_handlers: Vec<JoinHandle<()>> = Vec::new();
 
+        // Queue for requests waiting for a handler slot.
+        // Each entry holds the crossbeam receiver (the sender side is in active_requests).
+        // When dequeued, the receiver is passed to the spawned handler.
+        let mut request_queue: std::collections::VecDeque<QueuedRequest> = std::collections::VecDeque::new();
+
+        // Number of currently running handlers (decremented when JoinHandles finish).
+        let mut running_handler_count: usize = 0;
+
         // Main loop: simple frame router. No accumulation.
         loop {
+            // Reap finished handlers and drain the queue into freed slots.
+            let prev_count = active_handlers.len();
             active_handlers.retain(|h| !h.is_finished());
+            let finished = prev_count - active_handlers.len();
+            running_handler_count = running_handler_count.saturating_sub(finished);
+
+            // Drain queue: spawn handlers for queued requests that now have capacity.
+            let cap = self.capacity.get();
+            while !request_queue.is_empty() && (cap == 0 || running_handler_count < cap) {
+                let queued = request_queue.pop_front().unwrap();
+
+                tracing::info!(
+                    "[PluginRuntime] dequeuing request: cap='{}' rid={:?} remaining_queue={}",
+                    queued.cap_urn, queued.request_id, request_queue.len()
+                );
+
+                let handle = spawn_handler(
+                    queued.raw_rx,
+                    queued.factory,
+                    queued.cap_urn,
+                    queued.request_id,
+                    queued.routing_id,
+                    &output_tx,
+                    &pending_peer_requests,
+                    &self.manifest,
+                    negotiated_limits.max_chunk,
+                );
+                active_handlers.push(handle);
+                running_handler_count += 1;
+            }
 
             let frame = match frame_reader.read().await? {
                 Some(f) => f,
@@ -2953,71 +3141,47 @@ impl PluginRuntime {
 
                     let request_id = frame.id.clone();
 
-                    // Create channel for streaming frames to handler (crossbeam for sync Iterator consumption)
+                    // Create channel for streaming frames to handler.
+                    // Always created immediately so subsequent frames (STREAM_START,
+                    // CHUNK, END) are routed here even if the handler isn't spawned
+                    // yet. Frames accumulate in the crossbeam channel until the handler
+                    // is spawned and the demux drains them.
                     let (raw_tx, raw_rx) = crossbeam_channel::unbounded();
                     active_requests.insert(request_id.clone(), ActiveRequest { raw_tx });
 
-                    // Spawn handler task immediately (not on END)
-                    let output_tx_clone = output_tx.clone();
-                    let pending_clone = Arc::clone(&pending_peer_requests);
-                    let manifest_clone = self.manifest.clone();
-                    let cap_urn_clone = cap_urn.clone();
-                    let max_chunk = negotiated_limits.max_chunk;
+                    let cap = self.capacity.get();
+                    if cap > 0 && running_handler_count >= cap {
+                        // At capacity — queue the request, send "queued" LOG back to caller.
+                        let queue_pos = request_queue.len() + 1;
+                        let mut log_frame = Frame::log(
+                            request_id.clone(), "queued",
+                            &format!("Request queued (position {}, {} active)", queue_pos, running_handler_count),
+                        );
+                        log_frame.routing_id = routing_id.clone();
+                        let _ = output_tx.send(log_frame);
 
-                    let handle = tokio::spawn(async move {
-                        tracing::info!("[PluginRuntime] handler started: cap='{}' rid={:?}", cap_urn_clone, request_id);
-                        // Build file-path context for Demux
-                        let fp_ctx = FilePathContext::new(&cap_urn_clone, manifest_clone).ok();
-
-                        // Create InputPackage via Demux (multi-stream, with file-path interception)
-                        let input_package = demux_multi_stream(raw_rx, fp_ctx);
-
-                        // Create OutputStream for handler output
-                        let sender: Arc<dyn FrameSender> = Arc::new(ChannelFrameSender {
-                            tx: output_tx_clone.clone(),
-                        });
-                        let stream_id = uuid::Uuid::new_v4().to_string();
-                        let output = OutputStream::new(
-                            Arc::clone(&sender),
-                            stream_id,
-                            "*".to_string(),
-                            request_id.clone(),
-                            routing_id.clone(),
-                            max_chunk,
+                        tracing::info!(
+                            "[PluginRuntime] request queued: cap='{}' rid={:?} queue_pos={}",
+                            cap_urn, request_id, queue_pos
                         );
 
-                        // Create PeerInvoker
-                        let peer_invoker = PeerInvokerImpl {
-                            output_tx: output_tx_clone.clone(),
-                            pending_requests: Arc::clone(&pending_clone),
-                            max_chunk,
-                            origin_request_id: request_id.clone(),
-                            origin_routing_id: routing_id.clone(),
-                        };
-
-                        // Call Op handler via dispatch
-                        let op = factory();
-                        let peer_arc: Arc<dyn PeerInvoker> = Arc::new(peer_invoker);
-                        let result = dispatch_op(op, input_package, output, peer_arc).await;
-
-                        match result {
-                            Ok(()) => {
-                                tracing::info!("[PluginRuntime] handler completed OK: cap='{}' rid={:?}", cap_urn_clone, request_id);
-                                // Send END frame with routing_id
-                                let mut end_frame = Frame::end(request_id, None);
-                                end_frame.routing_id = routing_id;
-                                let _ = sender.send(&end_frame);
-                            }
-                            Err(e) => {
-                                tracing::error!("[PluginRuntime] handler FAILED: cap='{}' rid={:?} error={}", cap_urn_clone, request_id, e);
-                                let mut err_frame = Frame::err(request_id, "HANDLER_ERROR", &e.to_string());
-                                err_frame.routing_id = routing_id;
-                                let _ = sender.send(&err_frame);
-                            }
-                        }
-                    });
-
-                    active_handlers.push(handle);
+                        request_queue.push_back(QueuedRequest {
+                            factory,
+                            cap_urn,
+                            routing_id,
+                            request_id,
+                            raw_rx,
+                        });
+                    } else {
+                        // Under capacity — spawn handler immediately.
+                        let handle = spawn_handler(
+                            raw_rx, factory, cap_urn, request_id, routing_id,
+                            &output_tx, &pending_peer_requests, &self.manifest,
+                            negotiated_limits.max_chunk,
+                        );
+                        active_handlers.push(handle);
+                        running_handler_count += 1;
+                    }
                 }
 
                 // Route STREAM_START / CHUNK / STREAM_END / LOG to active request or peer response
@@ -3080,9 +3244,6 @@ impl PluginRuntime {
 
                 FrameType::Heartbeat => {
                     let mut response = Frame::heartbeat(frame.id);
-                    // Self-report memory in heartbeat response. proc_pid_rusage(getpid())
-                    // always works, even in a sandbox — the sandbox only blocks querying
-                    // OTHER processes. This data flows to the host's PluginProcessInfo.
                     if let Some((footprint_mb, rss_mb)) = get_own_memory_mb() {
                         let mut meta = std::collections::BTreeMap::new();
                         meta.insert("footprint_mb".into(), ciborium::Value::Integer(footprint_mb.into()));

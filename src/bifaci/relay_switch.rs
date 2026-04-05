@@ -425,6 +425,7 @@ impl RelaySwitch {
                         }
                         Ok(None) => {
                             tracing::warn!("[RelaySwitch] master {} reader: socket closed (EOF)", master_idx);
+                            let _ = tx.send((master_idx, Err(CborError::UnexpectedEof)));
                             break;
                         }
                         Err(e) => {
@@ -837,6 +838,7 @@ impl RelaySwitch {
                     }
                     Ok(None) => {
                         tracing::warn!("[RelaySwitch] master {} reader: socket closed (EOF)", master_idx);
+                        let _ = tx.send((master_idx, Err(CborError::UnexpectedEof)));
                         break;
                     }
                     Err(e) => {
