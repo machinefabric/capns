@@ -435,7 +435,7 @@ pub fn coerce_to_object_urn(source_type: &str) -> CapUrn {
 }
 
 /// Map a type name to its full media URN constant
-fn media_urn_for_type(type_name: &str) -> &'static str {
+pub fn media_urn_for_type(type_name: &str) -> &'static str {
     match type_name {
         "string" => MEDIA_STRING,
         "integer" => MEDIA_INTEGER,
