@@ -385,7 +385,7 @@ fn build_manifest() -> CapManifest {
 // Helper: collect all input streams by media_urn
 // =============================================================================
 
-async fn collect_args(req: &Request) -> std::result::Result<Vec<(String, Vec<u8>)>, OpError> {
+async fn collect_args(req: &Request) -> std::result::Result<Vec<(String, Vec<u8>, Option<capdag::StreamMeta>)>, OpError> {
     req.take_input()
         .map_err(|e| OpError::ExecutionFailed(e.to_string()))?
         .collect_streams().await
@@ -398,7 +398,7 @@ fn get_req(wet: &mut WetContext) -> std::result::Result<Arc<Request>, OpError> {
 }
 
 fn emit(output: &OutputStream, value: &ciborium::Value) -> OpResult<()> {
-    output.start(false)
+    output.start(false, None)
         .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
     output.emit_cbor(value)
         .map_err(|e| OpError::ExecutionFailed(e.to_string()))

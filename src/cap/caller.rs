@@ -598,7 +598,7 @@ mod tests {
         let frames = CapArgumentValue::build_request_frames(&rid, "cap:op=test", &[arg], 32768);
 
         // Simulate plugin-side: extract streams from frames (like collect_streams does)
-        let mut streams: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut streams: Vec<(String, Vec<u8>, Option<std::collections::BTreeMap<String, ciborium::Value>>)> = Vec::new();
         let mut active: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         for frame in &frames {
@@ -607,7 +607,7 @@ mod tests {
                     let sid = frame.stream_id.clone().unwrap_or_default();
                     let media = frame.media_urn.clone().unwrap_or_default();
                     let idx = streams.len();
-                    streams.push((media, Vec::new()));
+                    streams.push((media, Vec::new(), frame.meta.clone()));
                     active.insert(sid, idx);
                 }
                 FrameType::Chunk => {
@@ -652,7 +652,7 @@ mod tests {
         let frames = CapArgumentValue::build_request_frames(&rid, "cap:op=test", &[arg], 32768);
 
         // Extract streams (same as above)
-        let mut streams: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut streams: Vec<(String, Vec<u8>, Option<std::collections::BTreeMap<String, ciborium::Value>>)> = Vec::new();
         let mut active: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         for frame in &frames {
@@ -661,7 +661,7 @@ mod tests {
                     let sid = frame.stream_id.clone().unwrap_or_default();
                     let media = frame.media_urn.clone().unwrap_or_default();
                     let idx = streams.len();
-                    streams.push((media, Vec::new()));
+                    streams.push((media, Vec::new(), frame.meta.clone()));
                     active.insert(sid, idx);
                 }
                 FrameType::Chunk => {

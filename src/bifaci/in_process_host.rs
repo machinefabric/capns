@@ -121,16 +121,18 @@ impl ResponseWriter {
         self.max_chunk
     }
 
-    /// Send a complete data response: STREAM_START + CBOR-encoded CHUNK(s) + STREAM_END + END.
-    pub fn emit_response(&self, media_urn: &str, data: &[u8]) {
+    /// Send a complete data response with metadata on STREAM_START.
+    pub fn emit_response_with_meta(&self, media_urn: &str, data: &[u8], meta: Option<crate::StreamMeta>) {
         let stream_id = "result".to_string();
 
-        self.send(Frame::stream_start(
+        let mut start = Frame::stream_start(
             MessageId::Uint(0),
             stream_id.clone(),
             media_urn.to_string(),
             None,
-        ));
+        );
+        start.meta = meta;
+        self.send(start);
 
         if data.is_empty() {
             let mut cbor_payload = Vec::new();
@@ -170,6 +172,11 @@ impl ResponseWriter {
         }
 
         self.send(Frame::end(MessageId::Uint(0), None));
+    }
+
+    /// Send a complete data response: STREAM_START + CBOR-encoded CHUNK(s) + STREAM_END + END.
+    pub fn emit_response(&self, media_urn: &str, data: &[u8]) {
+        self.emit_response_with_meta(media_urn, data, None);
     }
 
     /// Send a list response: STREAM_START + one CHUNK per item + STREAM_END + END.
@@ -293,17 +300,27 @@ impl PeerInvoker for InProcessPeerInvoker {
 /// then emit a response.
 ///
 /// Returns Err on CBOR decode failure (protocol violation).
+/// Accumulate input frames into argument values and request-level metadata.
+///
+/// Returns `(args, meta)` where `meta` is the stream metadata from the first
+/// input stream's STREAM_START frame. In a ForEach body, this carries
+/// provenance context (e.g., "title": "page_3") from the upstream producer.
 pub async fn accumulate_input(
     input: &mut mpsc::UnboundedReceiver<Frame>,
-) -> Result<Vec<CapArgumentValue>, String> {
+) -> Result<(Vec<CapArgumentValue>, Option<crate::StreamMeta>), String> {
     let mut streams: Vec<(String, String, Vec<u8>)> = Vec::new(); // (stream_id, media_urn, data)
     let mut active: HashMap<String, usize> = HashMap::new();
+    let mut request_meta: Option<crate::StreamMeta> = None;
 
     while let Some(frame) = input.recv().await {
         match frame.frame_type {
             FrameType::StreamStart => {
                 let sid = frame.stream_id.clone().unwrap_or_default();
                 let media_urn = frame.media_urn.clone().unwrap_or_default();
+                // Capture meta from the first input stream
+                if request_meta.is_none() {
+                    request_meta = frame.meta.clone();
+                }
                 let idx = streams.len();
                 streams.push((sid.clone(), media_urn, Vec::new()));
                 active.insert(sid, idx);
@@ -337,10 +354,11 @@ pub async fn accumulate_input(
         }
     }
 
-    Ok(streams
+    let args = streams
         .into_iter()
         .map(|(_, media_urn, data)| CapArgumentValue::new(media_urn, data))
-        .collect())
+        .collect();
+    Ok((args, request_meta))
 }
 
 // =============================================================================
@@ -775,9 +793,9 @@ mod tests {
             _peer: Arc<dyn PeerInvoker>,
         ) {
             match accumulate_input(&mut input).await {
-                Ok(args) => {
+                Ok((args, meta)) => {
                     let data: Vec<u8> = args.iter().flat_map(|a| a.value.clone()).collect();
-                    output.emit_response("media:", &data);
+                    output.emit_response_with_meta("media:", &data, meta);
                 }
                 Err(e) => {
                     output.emit_error("ACCUMULATE_ERROR", &e);

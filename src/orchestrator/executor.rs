@@ -641,6 +641,9 @@ pub struct ExecutionContext {
     switch: Arc<RelaySwitch>,
     /// Raw bytes at each DAG node. Isolated per execution context.
     node_data: HashMap<String, Vec<u8>>,
+    /// Per-node stream metadata. Carries provenance context (e.g. {"title": "page_3"})
+    /// through ForEach splits so body caps receive the upstream item's metadata.
+    node_meta: HashMap<String, crate::StreamMeta>,
     /// Cached max chunk size from the relay.
     max_chunk: usize,
     /// Cleanup handles for masters added via add_plugin_host.
@@ -666,6 +669,7 @@ impl ExecutionContext {
         Ok(Self {
             switch: Arc::new(switch),
             node_data: HashMap::new(),
+            node_meta: HashMap::new(),
             max_chunk,
             cleanup_handles: Vec::new(),
         })
@@ -682,6 +686,7 @@ impl ExecutionContext {
         Ok(Self {
             switch,
             node_data: HashMap::new(),
+            node_meta: HashMap::new(),
             max_chunk,
             cleanup_handles: Vec::new(),
         })
@@ -811,9 +816,34 @@ impl ExecutionContext {
         self.node_data.insert(node, data);
     }
 
+    /// Set stream metadata for a node (provenance context for ForEach propagation).
+    pub fn set_node_meta(&mut self, node: String, meta: crate::StreamMeta) {
+        self.node_meta.insert(node, meta);
+    }
+
+    /// Get stream metadata for a node.
+    pub fn get_node_meta(&self, node: &str) -> Option<&crate::StreamMeta> {
+        self.node_meta.get(node)
+    }
+
+    /// Get immutable reference to node_meta map.
+    pub fn node_meta(&self) -> &HashMap<String, crate::StreamMeta> {
+        &self.node_meta
+    }
+
+    /// Get mutable reference to node_meta map.
+    pub fn node_meta_mut(&mut self) -> &mut HashMap<String, crate::StreamMeta> {
+        &mut self.node_meta
+    }
+
     /// Get data for a node.
     pub fn get_node_data(&self, node: &str) -> Option<&Vec<u8>> {
         self.node_data.get(node)
+    }
+
+    /// Get immutable reference to node_data map.
+    pub fn node_data(&self) -> &HashMap<String, Vec<u8>> {
+        &self.node_data
     }
 
     /// Get mutable reference to node_data map.

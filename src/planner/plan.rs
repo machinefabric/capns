@@ -880,15 +880,34 @@ pub struct NodeExecutionResult {
     pub success: bool,
 
     /// Binary output data (if any).
-    /// For scalar output: the single output blob.
-    /// For sequence output (is_sequence=true): concatenation of all items.
+    /// Used by the standalone executor (capdag). The pipeline executor in machfab
+    /// writes output incrementally to disk and populates saved_paths instead.
     pub binary_output: Option<Vec<u8>>,
 
     /// Individual output items when the terminal cap used emit_list_item (is_sequence=true).
-    /// Each item is a raw unwrapped blob (CBOR transport stripped).
-    /// None for scalar output (is_sequence=false).
+    /// Used by the standalone executor. Pipeline executor uses saved_paths.
     #[serde(default)]
     pub binary_items: Option<Vec<Vec<u8>>>,
+
+    /// File paths of output already saved to disk by IncrementalWriter.
+    /// Populated by the pipeline executor (machfab). Empty for standalone executor.
+    /// For blob: single path. For sequence: one path per item.
+    #[serde(default)]
+    pub saved_paths: Vec<String>,
+
+    /// Whether the output is a sequence (from is_sequence on STREAM_START).
+    /// Determines how saved_paths should be interpreted: true = folder of items,
+    /// false = single file.
+    #[serde(default)]
+    pub is_sequence_output: bool,
+
+    /// Total bytes written to disk. 0 when binary_output is used instead.
+    #[serde(default)]
+    pub total_bytes: usize,
+
+    /// Output media URN (from the terminal cap's STREAM_START or plan derivation).
+    #[serde(default)]
+    pub media_urn_output: String,
 
     /// Error message if execution failed
     pub error: Option<String>,
@@ -1293,6 +1312,10 @@ mod tests {
             success: true,
             binary_output: Some(vec![1, 2, 3]),
             binary_items: None,
+            saved_paths: vec![],
+            is_sequence_output: false,
+            total_bytes: 0,
+            media_urn_output: String::new(),
             error: None,
             duration_ms: 50,
         };
@@ -1311,6 +1334,10 @@ mod tests {
             success: false,
             binary_output: None,
             binary_items: None,
+            saved_paths: vec![],
+            is_sequence_output: false,
+            total_bytes: 0,
+            media_urn_output: String::new(),
             error: Some("Cap execution failed".to_string()),
             duration_ms: 10,
         };

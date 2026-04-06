@@ -2439,9 +2439,9 @@ mod tests {
                 _peer: Arc<dyn PeerInvoker>,
             ) {
                 match accumulate_input(&mut input).await {
-                    Ok(args) => {
+                    Ok((args, meta)) => {
                         let data: Vec<u8> = args.iter().flat_map(|a| a.value.clone()).collect();
-                        output.emit_response("media:text", &data);
+                        output.emit_response_with_meta("media:text", &data, meta);
                     }
                     Err(e) => output.emit_error("ACCUMULATE_ERROR", &e),
                 }

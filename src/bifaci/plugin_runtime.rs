@@ -48,7 +48,7 @@ use crate::standard::caps::{CAP_IDENTITY, CAP_DISCARD};
 use async_trait::async_trait;
 // crossbeam is used for demux_multi_stream (bridging sync stdin reads to async handlers)
 use ops::{Op, OpMetadata, DryContext, WetContext, OpResult, OpError};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read, Write};
 use std::os::unix::io::FromRawFd;
 use std::sync::{Arc, Mutex};
@@ -113,6 +113,12 @@ pub enum RuntimeError {
 // STREAM ABSTRACTIONS — hide the frame protocol from handlers
 // =============================================================================
 
+/// Per-stream or per-item metadata carried on frames.
+///
+/// In non-sequence mode, set once on STREAM_START — describes the whole stream.
+/// In sequence mode, set per-item on CHUNK frames — describes each item.
+pub type StreamMeta = BTreeMap<String, ciborium::Value>;
+
 /// Errors that can occur during stream operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StreamError {
@@ -141,11 +147,16 @@ pub trait FrameSender: Send + Sync {
 /// A single input stream — yields decoded CBOR values from CHUNK frames.
 /// Handler never sees Frame, STREAM_START, STREAM_END, checksum, seq, or index.
 ///
-/// This is an async stream. Use `recv()` to get the next value, or the various
-/// `collect_*` async methods if you need to accumulate.
+/// This is an async stream. Use `recv()` to get the next value with metadata,
+/// or `recv_data()` / `collect_*` methods if you only need the data.
+///
+/// Metadata semantics depend on mode:
+/// - Non-sequence: `stream_meta()` returns the STREAM_START metadata (whole-stream).
+/// - Sequence: `recv()` delivers per-item metadata from CHUNK frames.
 pub struct InputStream {
     media_urn: String,
-    rx: tokio::sync::mpsc::UnboundedReceiver<Result<ciborium::Value, StreamError>>,
+    stream_meta: Option<StreamMeta>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Result<(ciborium::Value, Option<StreamMeta>), StreamError>>,
 }
 
 impl InputStream {
@@ -154,21 +165,38 @@ impl InputStream {
         &self.media_urn
     }
 
-    /// Receive the next CBOR value from this stream.
+    /// Stream-level metadata from STREAM_START (non-sequence mode).
+    pub fn stream_meta(&self) -> Option<&StreamMeta> {
+        self.stream_meta.as_ref()
+    }
+
+    /// Receive the next CBOR value with per-item metadata from this stream.
     /// Returns None when the stream ends.
-    pub async fn recv(&mut self) -> Option<Result<ciborium::Value, StreamError>> {
+    pub async fn recv(&mut self) -> Option<Result<(ciborium::Value, Option<StreamMeta>), StreamError>> {
         self.rx.recv().await
+    }
+
+    /// Receive the next CBOR value, discarding any per-item metadata.
+    /// Convenience for handlers that don't use metadata.
+    pub async fn recv_data(&mut self) -> Option<Result<ciborium::Value, StreamError>> {
+        match self.rx.recv().await {
+            Some(Ok((value, _meta))) => Some(Ok(value)),
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
     }
 
     /// Collect all chunks into a single byte vector.
     /// Extracts inner bytes from Value::Bytes/Text and concatenates.
+    /// Per-item metadata is discarded.
     ///
     /// WARNING: Only call this if you know the stream is finite.
     /// Infinite streams will block forever.
     pub async fn collect_bytes(mut self) -> Result<Vec<u8>, StreamError> {
         let mut result = Vec::new();
         while let Some(item) = self.recv().await {
-            match item? {
+            let (value, _meta) = item?;
+            match value {
                 ciborium::Value::Bytes(b) => result.extend(b),
                 ciborium::Value::Text(s) => result.extend(s.into_bytes()),
                 other => {
@@ -184,9 +212,10 @@ impl InputStream {
     }
 
     /// Collect a single CBOR value (expects exactly one chunk).
+    /// Per-item metadata is discarded.
     pub async fn collect_value(mut self) -> Result<ciborium::Value, StreamError> {
         match self.recv().await {
-            Some(Ok(value)) => Ok(value),
+            Some(Ok((value, _meta))) => Ok(value),
             Some(Err(e)) => Err(e),
             None => Err(StreamError::Closed),
         }
@@ -198,8 +227,8 @@ impl InputStream {
 /// `PeerResponse::recv()` yields these interleaved in arrival order. Handlers
 /// match on each variant to decide how to react (e.g., forward progress, accumulate data).
 pub enum PeerResponseItem {
-    /// A decoded CBOR data chunk from the peer response.
-    Data(Result<ciborium::Value, StreamError>),
+    /// A decoded CBOR data chunk from the peer response, with optional per-chunk metadata.
+    Data(Result<ciborium::Value, StreamError>, Option<StreamMeta>),
     /// A LOG frame from the peer (progress, status messages, etc.).
     Log(Frame),
 }
@@ -221,14 +250,14 @@ impl PeerResponse {
         self.rx.recv().await
     }
 
-    /// Collect all data chunks into a single byte vector, discarding LOG frames.
+    /// Collect all data chunks into a single byte vector, discarding LOG frames and metadata.
     ///
     /// WARNING: Only call this if you know the stream is finite.
     pub async fn collect_bytes(mut self) -> Result<Vec<u8>, StreamError> {
         let mut result = Vec::new();
         while let Some(item) = self.recv().await {
             match item {
-                PeerResponseItem::Data(Ok(value)) => match value {
+                PeerResponseItem::Data(Ok(value), _meta) => match value {
                     ciborium::Value::Bytes(b) => result.extend(b),
                     ciborium::Value::Text(s) => result.extend(s.into_bytes()),
                     other => {
@@ -238,19 +267,19 @@ impl PeerResponse {
                         result.extend(buf);
                     }
                 },
-                PeerResponseItem::Data(Err(e)) => return Err(e),
+                PeerResponseItem::Data(Err(e), _) => return Err(e),
                 PeerResponseItem::Log(_) => {} // Discard LOG frames
             }
         }
         Ok(result)
     }
 
-    /// Collect a single CBOR data value (expects exactly one data chunk), discarding LOG frames.
+    /// Collect a single CBOR data value (expects exactly one data chunk), discarding LOG frames and metadata.
     pub async fn collect_value(mut self) -> Result<ciborium::Value, StreamError> {
         while let Some(item) = self.recv().await {
             match item {
-                PeerResponseItem::Data(Ok(value)) => return Ok(value),
-                PeerResponseItem::Data(Err(e)) => return Err(e),
+                PeerResponseItem::Data(Ok(value), _meta) => return Ok(value),
+                PeerResponseItem::Data(Err(e), _) => return Err(e),
                 PeerResponseItem::Log(_) => {} // Discard LOG frames
             }
         }
@@ -292,13 +321,14 @@ impl InputPackage {
     /// Use `find_stream()` helpers to retrieve args by URN pattern matching.
     ///
     /// WARNING: Only call this if you know all streams are finite.
-    pub async fn collect_streams(mut self) -> Result<Vec<(String, Vec<u8>)>, StreamError> {
+    pub async fn collect_streams(mut self) -> Result<Vec<(String, Vec<u8>, Option<StreamMeta>)>, StreamError> {
         let mut result = Vec::new();
         while let Some(stream_result) = self.recv().await {
             let stream = stream_result?;
             let urn = stream.media_urn().to_string();
+            let meta = stream.stream_meta().cloned();
             let bytes = stream.collect_bytes().await?;
-            result.push((urn, bytes));
+            result.push((urn, bytes, meta));
         }
         Ok(result)
     }
@@ -313,12 +343,12 @@ impl InputPackage {
 ///
 /// The `media_urn` parameter must be the FULL media URN from the cap arg
 /// definition (e.g., `"media:model-spec;textable"`).
-pub fn find_stream<'a>(streams: &'a [(String, Vec<u8>)], media_urn: &str) -> Option<&'a [u8]> {
+pub fn find_stream<'a>(streams: &'a [(String, Vec<u8>, Option<StreamMeta>)], media_urn: &str) -> Option<&'a [u8]> {
     let target = match crate::MediaUrn::from_string(media_urn) {
         Ok(p) => p,
         Err(_) => return None,
     };
-    streams.iter().find_map(|(urn_str, bytes)| {
+    streams.iter().find_map(|(urn_str, bytes, _meta)| {
         let urn = crate::MediaUrn::from_string(urn_str).ok()?;
         if target.is_equivalent(&urn).unwrap_or(false) {
             Some(bytes.as_slice())
@@ -329,19 +359,35 @@ pub fn find_stream<'a>(streams: &'a [(String, Vec<u8>)], media_urn: &str) -> Opt
 }
 
 /// Like `find_stream` but returns a UTF-8 string.
-pub fn find_stream_str(streams: &[(String, Vec<u8>)], media_urn: &str) -> Option<String> {
+pub fn find_stream_str(streams: &[(String, Vec<u8>, Option<StreamMeta>)], media_urn: &str) -> Option<String> {
     find_stream(streams, media_urn).and_then(|b| String::from_utf8(b.to_vec()).ok())
 }
 
+/// Find the stream-level metadata (from STREAM_START) for a stream by media URN.
+pub fn find_stream_meta<'a>(streams: &'a [(String, Vec<u8>, Option<StreamMeta>)], media_urn: &str) -> Option<&'a StreamMeta> {
+    let target = match crate::MediaUrn::from_string(media_urn) {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
+    streams.iter().find_map(|(urn_str, _bytes, meta)| {
+        let urn = crate::MediaUrn::from_string(urn_str).ok()?;
+        if target.is_equivalent(&urn).unwrap_or(false) {
+            meta.as_ref()
+        } else {
+            None
+        }
+    })
+}
+
 /// Like `find_stream` but fails hard if not found.
-pub fn require_stream<'a>(streams: &'a [(String, Vec<u8>)], media_urn: &str) -> Result<&'a [u8], StreamError> {
+pub fn require_stream<'a>(streams: &'a [(String, Vec<u8>, Option<StreamMeta>)], media_urn: &str) -> Result<&'a [u8], StreamError> {
     find_stream(streams, media_urn).ok_or_else(|| StreamError::Protocol(
         format!("Missing required arg: {}", media_urn)
     ))
 }
 
 /// Like `require_stream` but returns a UTF-8 string.
-pub fn require_stream_str(streams: &[(String, Vec<u8>)], media_urn: &str) -> Result<String, StreamError> {
+pub fn require_stream_str(streams: &[(String, Vec<u8>, Option<StreamMeta>)], media_urn: &str) -> Result<String, StreamError> {
     let bytes = require_stream(streams, media_urn)?;
     String::from_utf8(bytes.to_vec()).map_err(|e| StreamError::Decode(
         format!("Arg '{}' is not valid UTF-8: {}", media_urn, e)
@@ -563,13 +609,16 @@ impl OutputStream {
     ///
     /// Unlike `emit_cbor` (which re-wraps each piece as a separate CBOR value),
     /// this sends raw CBOR bytes as frame payloads directly.
-    pub fn emit_list_item(&self, value: &ciborium::Value) -> Result<(), RuntimeError> {
+    ///
+    /// `meta` is per-item metadata, placed on the first chunk frame of this item only.
+    pub fn emit_list_item(&self, value: &ciborium::Value, meta: Option<StreamMeta>) -> Result<(), RuntimeError> {
         self.check_mode(true)?;
         let mut cbor_bytes = Vec::new();
         ciborium::into_writer(value, &mut cbor_bytes)
             .map_err(|e| RuntimeError::Handler(format!("Failed to encode CBOR: {}", e)))?;
 
         let mut offset = 0;
+        let mut first_chunk = true;
         while offset < cbor_bytes.len() {
             let chunk_size = (cbor_bytes.len() - offset).min(self.max_chunk);
             let chunk_payload = cbor_bytes[offset..offset + chunk_size].to_vec();
@@ -595,6 +644,11 @@ impl OutputStream {
                 checksum,
             );
             frame.routing_id = self.routing_id.clone();
+            // Per-item meta goes on the first chunk frame only
+            if first_chunk {
+                frame.meta = meta.clone();
+                first_chunk = false;
+            }
             self.sender.send(&frame)?;
             offset += chunk_size;
         }
@@ -701,9 +755,11 @@ impl OutputStream {
     /// Send STREAM_START with the given mode. Must be called exactly once
     /// before any write/emit_list_item/emit_cbor calls.
     ///
-    /// * `is_sequence = false` — write mode: each chunk is a complete CBOR value
-    /// * `is_sequence = true`  — sequence mode: chunks are CBOR fragments (RFC 8742)
-    pub fn start(&self, is_sequence: bool) -> Result<(), RuntimeError> {
+    /// * `is_sequence = false` — write mode: each chunk is a complete CBOR value.
+    ///   `meta` is placed on the STREAM_START frame (whole-stream metadata).
+    /// * `is_sequence = true`  — sequence mode: chunks are CBOR fragments (RFC 8742).
+    ///   `meta` is placed on the STREAM_START frame. Per-item metadata goes via `emit_list_item`.
+    pub fn start(&self, is_sequence: bool, meta: Option<StreamMeta>) -> Result<(), RuntimeError> {
         let mut mode = self.stream_mode.lock().unwrap();
         if mode.is_some() {
             return Err(RuntimeError::Handler("stream already started".to_string()));
@@ -717,6 +773,7 @@ impl OutputStream {
             Some(is_sequence),
         );
         start_frame.routing_id = self.routing_id.clone();
+        start_frame.meta = meta;
         self.sender.send(&start_frame)
     }
 
@@ -868,10 +925,23 @@ pub trait PeerInvoker: Send + Sync {
         cap_urn: &str,
         args: &[(&str, &[u8])],
     ) -> Result<PeerResponse, RuntimeError> {
+        self.call_with_bytes_and_meta(cap_urn, args, None).await
+    }
+
+    /// Like `call_with_bytes`, but sets stream metadata on each arg's STREAM_START.
+    ///
+    /// The meta carries provenance context (e.g. {"title": "page_3"}) through
+    /// peer calls so the receiving cap can propagate it to its output.
+    async fn call_with_bytes_and_meta(
+        &self,
+        cap_urn: &str,
+        args: &[(&str, &[u8])],
+        meta: Option<&crate::StreamMeta>,
+    ) -> Result<PeerResponse, RuntimeError> {
         let call = self.call(cap_urn)?;
         for &(media_urn, data) in args {
             let arg = call.arg(media_urn);
-            arg.start(false)?;
+            arg.start(false, meta.cloned())?;
             arg.write(data)?;
             arg.close()?;
         }
@@ -1151,17 +1221,27 @@ impl Op<()> for IdentityOp {
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
         let mut input = req.take_input()
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-        req.output().start(false)
-            .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+        let mut started = false;
         while let Some(stream_result) = input.recv().await {
             let mut stream = stream_result
                 .map_err(|e| OpError::ExecutionFailed(format!("Identity input error: {}", e)))?;
-            while let Some(chunk_result) = stream.recv().await {
+            // Start output with the first input stream's meta (propagates provenance context)
+            if !started {
+                req.output().start(false, stream.stream_meta().cloned())
+                    .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+                started = true;
+            }
+            while let Some(chunk_result) = stream.recv_data().await {
                 let chunk = chunk_result
                     .map_err(|e| OpError::ExecutionFailed(format!("Identity chunk error: {}", e)))?;
                 req.output().emit_cbor(&chunk)
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             }
+        }
+        // If no input streams arrived, still need to start and close the output
+        if !started {
+            req.output().start(false, None)
+                .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
         }
         Ok(())
     }
@@ -1187,7 +1267,7 @@ impl Op<()> for DiscardOp {
         while let Some(stream_result) = input.recv().await {
             let mut stream = stream_result
                 .map_err(|e| OpError::ExecutionFailed(format!("Discard input error: {}", e)))?;
-            while let Some(chunk_result) = stream.recv().await {
+            while let Some(chunk_result) = stream.recv_data().await {
                 let _ = chunk_result
                     .map_err(|e| OpError::ExecutionFailed(format!("Discard chunk error: {}", e)))?;
             }
@@ -1675,7 +1755,7 @@ fn demux_multi_stream(
 
     let handle = tokio::task::spawn_blocking(move || {
         // Per-stream channels: stream_id → chunk sender (tokio unbounded for async recv)
-        let mut stream_channels: HashMap<String, tokio::sync::mpsc::UnboundedSender<Result<ciborium::Value, StreamError>>> = HashMap::new();
+        let mut stream_channels: HashMap<String, tokio::sync::mpsc::UnboundedSender<Result<(ciborium::Value, Option<StreamMeta>), StreamError>>> = HashMap::new();
         // File-path accumulators: stream_id → (media_urn, accumulated_chunk_payloads)
         let mut fp_accumulators: HashMap<String, (String, Vec<Vec<u8>>)> = HashMap::new();
 
@@ -1702,6 +1782,7 @@ fn demux_multi_stream(
                         stream_channels.insert(stream_id.clone(), chunk_tx);
                         let input_stream = InputStream {
                             media_urn,
+                            stream_meta: frame.meta,
                             rx: chunk_rx,
                         };
                         if streams_tx.send(Ok(input_stream)).is_err() {
@@ -1721,7 +1802,7 @@ fn demux_multi_stream(
                         continue;
                     }
 
-                    // Regular stream — decode CBOR and forward
+                    // Regular stream — decode CBOR and forward with per-chunk meta
                     if let Some(tx) = stream_channels.get(&stream_id) {
                         if let Some(payload) = frame.payload {
                             // Checksum validation (MANDATORY in protocol v2)
@@ -1741,8 +1822,9 @@ fn demux_multi_stream(
                                 )));
                                 continue;
                             }
+                            let chunk_meta = frame.meta;
                             match ciborium::from_reader::<ciborium::Value, _>(&payload[..]) {
-                                Ok(value) => { let _ = tx.send(Ok(value)); }
+                                Ok(value) => { let _ = tx.send(Ok((value, chunk_meta))); }
                                 Err(e) => { let _ = tx.send(Err(StreamError::Decode(e.to_string()))); }
                             }
                         }
@@ -1786,10 +1868,11 @@ fn demux_multi_stream(
                                 match std::fs::read(path_str.as_ref()) {
                                     Ok(file_bytes) => {
                                         let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
-                                        let _ = chunk_tx.send(Ok(ciborium::Value::Bytes(file_bytes)));
+                                        let _ = chunk_tx.send(Ok((ciborium::Value::Bytes(file_bytes), None)));
                                         drop(chunk_tx);
                                         let input_stream = InputStream {
                                             media_urn: resolved_urn,
+                                            stream_meta: None,
                                             rx: chunk_rx,
                                         };
                                         if streams_tx.send(Ok(input_stream)).is_err() {
@@ -1813,10 +1896,11 @@ fn demux_multi_stream(
                         } else {
                             // No stdin source — pass through the path bytes as-is
                             let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
-                            let _ = chunk_tx.send(Ok(ciborium::Value::Bytes(path_bytes)));
+                            let _ = chunk_tx.send(Ok((ciborium::Value::Bytes(path_bytes), None)));
                             drop(chunk_tx);
                             let input_stream = InputStream {
                                 media_urn: media_urn.clone(),
+                                stream_meta: None,
                                 rx: chunk_rx,
                             };
                             if streams_tx.send(Ok(input_stream)).is_err() {
@@ -1890,7 +1974,7 @@ fn demux_single_stream(
                             None => {
                                 let _ = item_tx.send(PeerResponseItem::Data(Err(StreamError::Protocol(
                                     "CHUNK frame missing required checksum field".to_string()
-                                ))));
+                                )), None));
                                 continue;
                             }
                         };
@@ -1898,12 +1982,13 @@ fn demux_single_stream(
                         if actual != expected_checksum {
                             let _ = item_tx.send(PeerResponseItem::Data(Err(StreamError::Protocol(
                                 format!("Checksum mismatch: expected={}, actual={}", expected_checksum, actual)
-                            ))));
+                            )), None));
                             continue;
                         }
+                        let chunk_meta = frame.meta;
                         match ciborium::from_reader::<ciborium::Value, _>(&payload[..]) {
-                            Ok(value) => { let _ = item_tx.send(PeerResponseItem::Data(Ok(value))); }
-                            Err(e) => { let _ = item_tx.send(PeerResponseItem::Data(Err(StreamError::Decode(e.to_string())))); }
+                            Ok(value) => { let _ = item_tx.send(PeerResponseItem::Data(Ok(value), chunk_meta)); }
+                            Err(e) => { let _ = item_tx.send(PeerResponseItem::Data(Err(StreamError::Decode(e.to_string())), None)); }
                         }
                     }
                 }
@@ -1916,7 +2001,7 @@ fn demux_single_stream(
                 FrameType::Err => {
                     let code = frame.error_code().unwrap_or("UNKNOWN").to_string();
                     let message = frame.error_message().unwrap_or("Unknown error").to_string();
-                    let _ = item_tx.send(PeerResponseItem::Data(Err(StreamError::RemoteError { code, message })));
+                    let _ = item_tx.send(PeerResponseItem::Data(Err(StreamError::RemoteError { code, message }), None));
                     break;
                 }
                 _ => {}
@@ -3392,7 +3477,7 @@ mod tests {
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let _input = req.take_input()
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            req.output().start(false)
+            req.output().start(false, None)
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             req.output().emit_cbor(&ciborium::Value::Bytes(self.data.clone()))
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -3415,12 +3500,12 @@ mod tests {
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let mut input = req.take_input()
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            req.output().start(false)
+            req.output().start(false, None)
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let mut total = Vec::new();
             while let Some(stream) = input.recv().await {
                 let mut stream = stream.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                while let Some(chunk) = stream.recv().await {
+                while let Some(chunk) = stream.recv_data().await {
                     let chunk = chunk.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                     if let ciborium::Value::Bytes(ref b) = chunk {
                         total.extend(b);
@@ -3448,11 +3533,11 @@ mod tests {
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let mut input = req.take_input()
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            req.output().start(false)
+            req.output().start(false, None)
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             while let Some(stream) = input.recv().await {
                 let mut stream = stream.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                while let Some(chunk) = stream.recv().await {
+                while let Some(chunk) = stream.recv_data().await {
                     let chunk = chunk.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                     req.output().emit_cbor(&chunk)
                         .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
@@ -3476,7 +3561,7 @@ mod tests {
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let input = req.take_input()
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-            req.output().start(false)
+            req.output().start(false, None)
                 .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
             let bytes = input.collect_all_bytes().await
                 .map_err(|e| OpError::ExecutionFailed(format!("Stream error: {}", e)))?;
@@ -4189,7 +4274,7 @@ mod tests {
                     .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                 while let Some(stream_result) = input.recv().await {
                     let mut stream = stream_result.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
-                    while let Some(chunk) = stream.recv().await {
+                    while let Some(chunk) = stream.recv_data().await {
                         let _ = chunk.map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
                     }
                 }
@@ -6033,11 +6118,15 @@ mod tests {
     fn create_test_input_stream(media_urn: &str, chunks: Vec<Result<Value, StreamError>>) -> InputStream {
         let (tx, rx) = unbounded_channel();
         for chunk in chunks {
-            tx.send(chunk).unwrap();
+            match chunk {
+                Ok(value) => tx.send(Ok((value, None))).unwrap(),
+                Err(e) => tx.send(Err(e)).unwrap(),
+            }
         }
         drop(tx); // Close channel
         InputStream {
             media_urn: media_urn.to_string(),
+            stream_meta: None,
             rx,
         }
     }
@@ -6053,7 +6142,7 @@ mod tests {
         let mut stream = create_test_input_stream("media:test", chunks);
 
         let mut collected = Vec::new();
-        while let Some(item) = stream.recv().await {
+        while let Some(item) = stream.recv_data().await {
             collected.push(item);
         }
         assert_eq!(collected.len(), 3);
@@ -6135,11 +6224,12 @@ mod tests {
         // Send 3 streams
         for i in 0..3 {
             let (stream_tx, stream_rx) = unbounded_channel();
-            stream_tx.send(Ok(Value::Bytes(format!("stream{}", i).into_bytes()))).unwrap();
+            stream_tx.send(Ok((Value::Bytes(format!("stream{}", i).into_bytes()), None))).unwrap();
             drop(stream_tx);
 
             tx.send(Ok(InputStream {
                 media_urn: format!("media:stream{}", i),
+                stream_meta: None,
                 rx: stream_rx,
             })).unwrap();
         }
@@ -6170,19 +6260,21 @@ mod tests {
 
         // Stream 1: "hello"
         let (s1_tx, s1_rx) = unbounded_channel();
-        s1_tx.send(Ok(Value::Bytes(b"hello".to_vec()))).unwrap();
+        s1_tx.send(Ok((Value::Bytes(b"hello".to_vec()), None))).unwrap();
         drop(s1_tx);
         tx.send(Ok(InputStream {
             media_urn: "media:s1".to_string(),
+            stream_meta: None,
             rx: s1_rx,
         })).unwrap();
 
         // Stream 2: " world"
         let (s2_tx, s2_rx) = unbounded_channel();
-        s2_tx.send(Ok(Value::Bytes(b" world".to_vec()))).unwrap();
+        s2_tx.send(Ok((Value::Bytes(b" world".to_vec()), None))).unwrap();
         drop(s2_tx);
         tx.send(Ok(InputStream {
             media_urn: "media:s2".to_string(),
+            stream_meta: None,
             rx: s2_rx,
         })).unwrap();
 
@@ -6219,10 +6311,11 @@ mod tests {
 
         // Good stream
         let (s1_tx, s1_rx) = unbounded_channel();
-        s1_tx.send(Ok(Value::Bytes(b"data".to_vec()))).unwrap();
+        s1_tx.send(Ok((Value::Bytes(b"data".to_vec()), None))).unwrap();
         drop(s1_tx);
         tx.send(Ok(InputStream {
             media_urn: "media:good".to_string(),
+            stream_meta: None,
             rx: s1_rx,
         })).unwrap();
 
@@ -6232,6 +6325,7 @@ mod tests {
         drop(s2_tx);
         tx.send(Ok(InputStream {
             media_urn: "media:bad".to_string(),
+            stream_meta: None,
             rx: s2_rx,
         })).unwrap();
 
@@ -6281,7 +6375,7 @@ mod tests {
             256_000,
         );
 
-        stream.start(false).expect("start must succeed");
+        stream.start(false, None).expect("start must succeed");
         stream.emit_cbor(&Value::Bytes(b"test".to_vec())).expect("write must succeed");
 
         let captured = frames.lock().unwrap();
@@ -6305,7 +6399,7 @@ mod tests {
         );
 
         // Write 3 chunks
-        stream.start(false).unwrap();
+        stream.start(false, None).unwrap();
         stream.emit_cbor(&Value::Bytes(b"chunk1".to_vec())).unwrap();
         stream.emit_cbor(&Value::Bytes(b"chunk2".to_vec())).unwrap();
         stream.emit_cbor(&Value::Bytes(b"chunk3".to_vec())).unwrap();
@@ -6334,7 +6428,7 @@ mod tests {
         );
 
         // Write 250 bytes (should create 3 chunks: 100, 100, 50)
-        stream.start(false).unwrap();
+        stream.start(false, None).unwrap();
         let large_data = vec![0xAA; 250];
         stream.emit_cbor(&Value::Bytes(large_data)).unwrap();
         stream.close().unwrap();
@@ -6360,7 +6454,7 @@ mod tests {
             256_000,
         );
 
-        stream.start(false).expect("start must succeed");
+        stream.start(false, None).expect("start must succeed");
         stream.close().expect("close must succeed");
 
         let captured = frames.lock().unwrap();
@@ -6503,7 +6597,7 @@ mod tests {
                 assert_eq!(f.log_progress(), Some(0.1));
                 assert_eq!(f.log_message(), Some("downloading file 1/10"));
             }
-            PeerResponseItem::Data(_) => panic!("expected LOG frame, got Data"),
+            PeerResponseItem::Data(..) => panic!("expected LOG frame, got Data"),
         }
 
         let item2 = response.recv().await.expect("second LOG must arrive");
@@ -6512,7 +6606,7 @@ mod tests {
                 assert_eq!(f.log_progress(), Some(0.5));
                 assert_eq!(f.log_message(), Some("downloading file 5/10"));
             }
-            PeerResponseItem::Data(_) => panic!("expected LOG frame, got Data"),
+            PeerResponseItem::Data(..) => panic!("expected LOG frame, got Data"),
         }
 
         let item3 = response.recv().await.expect("third LOG must arrive");
@@ -6520,7 +6614,7 @@ mod tests {
             PeerResponseItem::Log(f) => {
                 assert_eq!(f.log_message(), Some("large file in progress"));
             }
-            PeerResponseItem::Data(_) => panic!("expected LOG frame, got Data"),
+            PeerResponseItem::Data(..) => panic!("expected LOG frame, got Data"),
         }
 
         // Now send the actual data (StreamStart, Chunk, StreamEnd, End)
@@ -6543,10 +6637,10 @@ mod tests {
         // Data must arrive after the LOGs
         let item4 = response.recv().await.expect("data item must arrive");
         match item4 {
-            PeerResponseItem::Data(Ok(value)) => {
+            PeerResponseItem::Data(Ok(value), _meta) => {
                 assert_eq!(value, Value::Bytes(b"model output".to_vec()));
             }
-            PeerResponseItem::Data(Err(e)) => panic!("expected data, got error: {}", e),
+            PeerResponseItem::Data(Err(e), _) => panic!("expected data, got error: {}", e),
             PeerResponseItem::Log(_) => panic!("expected Data, got LOG"),
         }
 
