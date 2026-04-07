@@ -934,6 +934,11 @@ pub struct BodyOutcome {
     pub failed_cap: Option<String>,
     /// Error message if the body failed.
     pub error: Option<String>,
+    /// Human-readable title for this body, from stream metadata.
+    /// ForEach: per-item meta "title" from prefix output (e.g. "page_3").
+    /// Linear: stream-level meta "title" from STREAM_START.
+    #[serde(default)]
+    pub title: Option<String>,
     /// File paths saved by this body's IncrementalWriter.
     pub saved_paths: Vec<String>,
     /// Total bytes written by this body.
