@@ -1656,13 +1656,22 @@ impl PeerInvoker for PeerInvokerImpl {
             });
         }
 
-        // Send REQ with empty payload
-        let req_frame = Frame::req(
+        // Send REQ with empty payload, stamped with parent_rid for cancel cascade
+        let mut req_frame = Frame::req(
             request_id.clone(),
             cap_urn,
             vec![],
             "application/cbor",
         );
+        let mut meta = req_frame.meta.take().unwrap_or_default();
+        meta.insert(
+            "parent_rid".to_string(),
+            match &self.origin_request_id {
+                MessageId::Uuid(bytes) => ciborium::Value::Bytes(bytes.to_vec()),
+                MessageId::Uint(n) => ciborium::Value::Integer((*n as i64).into()),
+            },
+        );
+        req_frame.meta = Some(meta);
         self.output_tx.send(req_frame).map_err(|_| {
             self.pending_requests.lock().unwrap().remove(&request_id);
             RuntimeError::PeerRequest("Output channel closed".to_string())
@@ -3144,8 +3153,12 @@ impl PluginRuntime {
         // handler is spawned.
         let mut active_requests: HashMap<MessageId, ActiveRequest> = HashMap::new();
 
-        // Track active handler tasks for cleanup
-        let mut active_handlers: Vec<JoinHandle<()>> = Vec::new();
+        // Track active handler tasks by request ID for per-request abort
+        let mut active_handlers: HashMap<MessageId, JoinHandle<()>> = HashMap::new();
+        // Track routing IDs per handler for stamping ERR frames on cancel
+        let mut handler_routing_ids: HashMap<MessageId, Option<MessageId>> = HashMap::new();
+        // Track cancelled requests to prevent duplicate ERR frames
+        let mut cancelled_requests: std::collections::HashSet<MessageId> = std::collections::HashSet::new();
 
         // Queue for requests waiting for a handler slot.
         // Each entry holds the crossbeam receiver (the sender side is in active_requests).
@@ -3189,7 +3202,15 @@ impl PluginRuntime {
         loop {
             // Reap finished handlers and drain the queue into freed slots.
             let prev_count = active_handlers.len();
-            active_handlers.retain(|h| !h.is_finished());
+            let finished_rids: Vec<MessageId> = active_handlers.iter()
+                .filter(|(_, h)| h.is_finished())
+                .map(|(rid, _)| rid.clone())
+                .collect();
+            for rid in &finished_rids {
+                active_handlers.remove(rid);
+                handler_routing_ids.remove(rid);
+                cancelled_requests.remove(rid);
+            }
             let finished = prev_count - active_handlers.len();
             running_handler_count = running_handler_count.saturating_sub(finished);
 
@@ -3214,6 +3235,8 @@ impl PluginRuntime {
                 dequeued_log.routing_id = queued.routing_id.clone();
                 let _ = output_tx.send(dequeued_log);
 
+                let handler_rid = queued.request_id.clone();
+                let handler_xid = queued.routing_id.clone();
                 let handle = spawn_handler(
                     queued.raw_rx,
                     queued.factory,
@@ -3226,7 +3249,8 @@ impl PluginRuntime {
                     negotiated_limits.max_chunk,
                     &handler_done_tx,
                 );
-                active_handlers.push(handle);
+                active_handlers.insert(handler_rid.clone(), handle);
+                handler_routing_ids.insert(handler_rid, handler_xid);
                 running_handler_count += 1;
             }
 
@@ -3315,13 +3339,16 @@ impl PluginRuntime {
                         });
                     } else {
                         // Under capacity — spawn handler immediately.
+                        let handler_rid = request_id.clone();
+                        let handler_xid = routing_id.clone();
                         let handle = spawn_handler(
                             raw_rx, factory, cap_urn, request_id, routing_id,
                             &output_tx, &pending_peer_requests, &self.manifest,
                             negotiated_limits.max_chunk,
                             &handler_done_tx,
                         );
-                        active_handlers.push(handle);
+                        active_handlers.insert(handler_rid.clone(), handle);
+                        handler_routing_ids.insert(handler_rid, handler_xid);
                         running_handler_count += 1;
                     }
                 }
@@ -3384,6 +3411,71 @@ impl PluginRuntime {
                     drop(peer);
                 }
 
+                FrameType::Cancel => {
+                    let target_rid = frame.id.clone();
+                    tracing::info!("[PluginRuntime] Cancel received: rid={:?} force_kill={:?}", target_rid, frame.force_kill);
+
+                    // Skip if already cancelled (prevent duplicate ERR)
+                    if cancelled_requests.contains(&target_rid) {
+                        tracing::debug!("[PluginRuntime] Cancel for already-cancelled rid={:?} — ignoring", target_rid);
+                        continue;
+                    }
+
+                    // Case 1: Request is in the queue — remove it, send ERR
+                    if let Some(pos) = request_queue.iter().position(|q| q.request_id == target_rid) {
+                        let queued = request_queue.remove(pos).unwrap();
+                        active_requests.remove(&target_rid);
+                        let mut err = Frame::err(target_rid.clone(), "CANCELLED", "Request cancelled while queued");
+                        err.routing_id = queued.routing_id;
+                        let _ = output_tx.send(err);
+                        tracing::info!("[PluginRuntime] Cancelled queued request rid={:?}", target_rid);
+                        continue;
+                    }
+
+                    // Case 2: Request has an active handler — abort it
+                    if let Some(handle) = active_handlers.remove(&target_rid) {
+                        cancelled_requests.insert(target_rid.clone());
+
+                        // Close the input channel so the handler's demux sees disconnect
+                        active_requests.remove(&target_rid);
+
+                        // Abort the handler task
+                        handle.abort();
+                        running_handler_count = running_handler_count.saturating_sub(1);
+
+                        // Cancel all peer calls originating from this request
+                        let peer_rids_to_cancel: Vec<(MessageId, Option<MessageId>)> = {
+                            let peer = pending_peer_requests.lock().unwrap();
+                            peer.iter()
+                                .filter(|(_, pr)| pr.origin_request_id == target_rid)
+                                .map(|(rid, pr)| (rid.clone(), pr.origin_routing_id.clone()))
+                                .collect()
+                        };
+                        for (peer_rid, _) in &peer_rids_to_cancel {
+                            let cancel = Frame::cancel(peer_rid.clone(), frame.force_kill.unwrap_or(false));
+                            let _ = output_tx.send(cancel);
+                        }
+                        // Remove cancelled peer requests
+                        {
+                            let mut peer = pending_peer_requests.lock().unwrap();
+                            for (peer_rid, _) in &peer_rids_to_cancel {
+                                peer.remove(peer_rid);
+                            }
+                        }
+
+                        // Send ERR "CANCELLED"
+                        let routing_id = handler_routing_ids.remove(&target_rid).flatten();
+                        let mut err = Frame::err(target_rid.clone(), "CANCELLED", "Request cancelled");
+                        err.routing_id = routing_id;
+                        let _ = output_tx.send(err);
+                        tracing::info!("[PluginRuntime] Cancelled in-flight request rid={:?}", target_rid);
+                        continue;
+                    }
+
+                    // Case 3: Unknown RID — silently ignore
+                    tracing::debug!("[PluginRuntime] Cancel for unknown rid={:?} — ignoring", target_rid);
+                }
+
                 FrameType::Heartbeat => {
                     let mut response = Frame::heartbeat(frame.id);
                     if let Some((footprint_mb, rss_mb)) = get_own_memory_mb() {
@@ -3416,7 +3508,7 @@ impl PluginRuntime {
 
         let _ = writer_handle.await;
 
-        for handle in active_handlers {
+        for (_, handle) in active_handlers {
             let _ = handle.await;
         }
 

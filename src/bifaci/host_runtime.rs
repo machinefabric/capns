@@ -84,6 +84,8 @@ pub enum ShutdownReason {
     /// Pending requests MUST get ERR frames with code "OOM_KILLED" so callers
     /// can fail fast instead of hanging forever.
     OomKill,
+    /// Request was cancelled. Pending requests get ERR frames with code "CANCELLED".
+    Cancelled,
 }
 
 /// Commands that can be sent to the host runtime from external code.
@@ -407,6 +409,9 @@ pub struct PluginHostRuntime {
     /// List 2: INCOMING_RXIDS - tracks incoming requests from relay ((XID, RID) → plugin_idx).
     /// Continuations for these requests are routed by this table.
     incoming_rxids: HashMap<(MessageId, MessageId), usize>,
+    /// Tracks which incoming request spawned which outgoing peer RIDs.
+    /// Maps parent (xid, rid) → list of child peer RIDs. Used for cancel cascade.
+    incoming_to_peer_rids: HashMap<(MessageId, MessageId), Vec<MessageId>>,
     /// Max-seen seq per flow for plugin-originated frames.
     /// Used to set seq on host-generated ERR frames (max_seen + 1).
     outgoing_max_seq: HashMap<FlowKey, u64>,
@@ -437,6 +442,7 @@ impl PluginHostRuntime {
             cap_table: Vec::new(),
             outgoing_rids: HashMap::new(),
             incoming_rxids: HashMap::new(),
+            incoming_to_peer_rids: HashMap::new(),
             outgoing_max_seq: HashMap::new(),
             capabilities: Vec::new(),
             event_tx,
@@ -831,6 +837,42 @@ impl PluginHostRuntime {
                 // If not a peer response LOG, ignore silently (stale routing)
                 Ok(())
             }
+            FrameType::Cancel => {
+                // Cancel from relay — route to the plugin handling this request.
+                let xid = frame.routing_id.clone().ok_or_else(|| {
+                    AsyncHostError::Protocol("Cancel frame missing XID".to_string())
+                })?;
+                let rid = frame.id.clone();
+                let key = (xid.clone(), rid.clone());
+                let force_kill = frame.force_kill.unwrap_or(false);
+
+                if let Some(&plugin_idx) = self.incoming_rxids.get(&key) {
+                    if force_kill {
+                        // Force kill: set shutdown reason and kill the process
+                        tracing::info!("[PluginHostRuntime] Cancel force_kill=true for plugin {} rid={:?}", plugin_idx, rid);
+                        self.plugins[plugin_idx].shutdown_reason = Some(ShutdownReason::Cancelled);
+                        if let Some(ref mut child) = self.plugins[plugin_idx].process {
+                            let _ = child.kill().await;
+                        }
+                    } else {
+                        // Cooperative cancel: forward Cancel frame to the plugin
+                        tracing::info!("[PluginHostRuntime] Cancel cooperative for plugin {} rid={:?}", plugin_idx, rid);
+                        let _ = self.send_to_plugin(plugin_idx, frame);
+
+                        // Also cascade: send Cancel to relay for each peer call spawned by this request
+                        if let Some(peer_rids) = self.incoming_to_peer_rids.get(&key) {
+                            for peer_rid in peer_rids.clone() {
+                                tracing::info!("[PluginHostRuntime] Cascading Cancel to peer call rid={:?}", peer_rid);
+                                let cancel = Frame::cancel(peer_rid, false);
+                                let _ = outbound_tx.send(cancel);
+                            }
+                        }
+                    }
+                } else {
+                    tracing::debug!("[PluginHostRuntime] Cancel for unknown request ({:?}, {:?}) — ignoring", xid, rid);
+                }
+                Ok(())
+            }
             FrameType::RelayNotify | FrameType::RelayState => Err(AsyncHostError::Protocol(
                 format!(
                     "{:?} reached runtime — relay must intercept these, never forward",
@@ -907,6 +949,30 @@ impl PluginHostRuntime {
                 // Record in List 1: OUTGOING_RIDS
                 tracing::debug!(target: "host_runtime", "PEER REQ from plugin {}: cap={:?} rid={:?} -> storing in outgoing_rids", plugin_idx, frame.cap, frame.id);
                 self.outgoing_rids.insert(frame.id.clone(), plugin_idx);
+
+                // Track parent→child peer call mapping for cancel cascade
+                if let Some(parent_rid) = frame.meta.as_ref().and_then(|m| m.get("parent_rid")).and_then(|v| {
+                    match v {
+                        ciborium::Value::Bytes(bytes) if bytes.len() == 16 => {
+                            let mut arr = [0u8; 16];
+                            arr.copy_from_slice(bytes);
+                            Some(MessageId::Uuid(arr))
+                        }
+                        ciborium::Value::Integer(i) => {
+                            let n: i128 = (*i).into();
+                            Some(MessageId::Uint(n as u64))
+                        }
+                        _ => None,
+                    }
+                }) {
+                    // Find the parent's incoming_rxids entry to get its (xid, rid) key
+                    let parent_key = self.incoming_rxids.keys()
+                        .find(|(_, rid)| *rid == parent_rid)
+                        .cloned();
+                    if let Some(pk) = parent_key {
+                        self.incoming_to_peer_rids.entry(pk).or_default().push(frame.id.clone());
+                    }
+                }
 
                 // Track max-seen seq for host-generated ERR on death
                 let flow_key = FlowKey::from_frame(&frame);
@@ -1069,6 +1135,11 @@ impl PluginHostRuntime {
             .collect();
         self.incoming_rxids.retain(|(_, _), &mut idx| idx != plugin_idx);
 
+        // Clean up incoming_to_peer_rids for all requests from this plugin
+        for (xid, rid, _) in &failed_incoming {
+            self.incoming_to_peer_rids.remove(&(xid.clone(), rid.clone()));
+        }
+
         // Determine error code and message based on shutdown reason.
         // Both unexpected deaths and OOM kills send ERR frames for pending work.
         // Only AppExit suppresses ERR frames (relay is closing, no callers left).
@@ -1092,6 +1163,10 @@ impl PluginHostRuntime {
                     format!("Plugin {} killed by OOM watchdog{}. stderr:\n{}", self.plugins[plugin_idx].path.display(), exit_suffix, stderr_content)
                 };
                 Some(("OOM_KILLED", error_message))
+            }
+            Some(ShutdownReason::Cancelled) => {
+                // Cancel-triggered kill — ERR "CANCELLED" for all pending work
+                Some(("CANCELLED", format!("Plugin {} killed by cancel request.", self.plugins[plugin_idx].path.display())))
             }
             Some(ShutdownReason::AppExit) => {
                 // Clean shutdown — no ERR frames, relay is closing

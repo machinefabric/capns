@@ -80,6 +80,8 @@ pub enum FrameType {
     RelayNotify = 10,
     /// Relay host system resources + cap demands (master → slave). Carries opaque resource payload.
     RelayState = 11,
+    /// Cancel a specific in-flight request by RID. Carries optional force_kill flag.
+    Cancel = 12,
 }
 
 impl FrameType {
@@ -97,6 +99,7 @@ impl FrameType {
             9 => Some(FrameType::StreamEnd),
             10 => Some(FrameType::RelayNotify),
             11 => Some(FrameType::RelayState),
+            12 => Some(FrameType::Cancel),
             _ => None,
         }
     }
@@ -226,6 +229,9 @@ pub struct Frame {
     /// Whether the producer used emit_list_item (true) or write (false).
     /// Present on STREAM_START frames only. None means unknown (empty stream).
     pub is_sequence: Option<bool>,
+    /// Whether Cancel should force-kill the plugin process (true) or cooperatively cancel (false).
+    /// Present on Cancel frames only.
+    pub force_kill: Option<bool>,
 }
 
 impl Frame {
@@ -250,6 +256,7 @@ impl Frame {
             chunk_count: None,
             checksum: None,
             is_sequence: None,
+            force_kill: None,
         }
     }
 
@@ -520,6 +527,17 @@ impl Frame {
         frame
     }
 
+    /// Create a CANCEL frame targeting a specific request by RID.
+    ///
+    /// # Arguments
+    /// * `target_rid` - The request ID to cancel
+    /// * `force_kill` - If true, force-kill the plugin process. If false, cooperative cancel.
+    pub fn cancel(target_rid: MessageId, force_kill: bool) -> Self {
+        let mut frame = Self::new(FrameType::Cancel, target_rid);
+        frame.force_kill = Some(force_kill);
+        frame
+    }
+
     /// Extract manifest from RelayNotify metadata.
     /// Returns None if not a RelayNotify frame or no manifest present.
     pub fn relay_notify_manifest(&self) -> Option<&[u8]> {
@@ -769,7 +787,7 @@ impl Frame {
     pub fn is_flow_frame(&self) -> bool {
         !matches!(
             self.frame_type,
-            FrameType::Hello | FrameType::Heartbeat | FrameType::RelayNotify | FrameType::RelayState
+            FrameType::Hello | FrameType::Heartbeat | FrameType::RelayNotify | FrameType::RelayState | FrameType::Cancel
         )
     }
 }
@@ -958,6 +976,7 @@ pub mod keys {
     pub const CHUNK_COUNT: u64 = 15;    // Total chunk count in STREAM_END
     pub const CHECKSUM: u64 = 16;       // FNV-1a checksum of payload for CHUNK frames
     pub const IS_SEQUENCE: u64 = 17;     // Whether producer used emit_list_item (true) or write (false)
+    pub const FORCE_KILL: u64 = 18;      // Whether Cancel should force-kill the plugin process
 }
 
 #[cfg(test)]
@@ -980,6 +999,7 @@ mod tests {
             FrameType::StreamEnd,
             FrameType::RelayNotify,
             FrameType::RelayState,
+            FrameType::Cancel,
         ] {
             let v = t as u8;
             let recovered = FrameType::from_u8(v).expect("should recover frame type");
@@ -990,7 +1010,7 @@ mod tests {
     // TEST172: Test FrameType::from_u8 returns None for values outside the valid discriminant range
     #[test]
     fn test172_invalid_frame_type() {
-        assert!(FrameType::from_u8(12).is_none(), "value 12 is one past RelayState");
+        assert!(FrameType::from_u8(13).is_none(), "value 13 is one past Cancel");
         assert!(FrameType::from_u8(100).is_none());
         assert!(FrameType::from_u8(255).is_none());
     }
@@ -1010,6 +1030,7 @@ mod tests {
         assert_eq!(FrameType::StreamEnd as u8, 9);
         assert_eq!(FrameType::RelayNotify as u8, 10);
         assert_eq!(FrameType::RelayState as u8, 11);
+        assert_eq!(FrameType::Cancel as u8, 12);
     }
 
     // TEST174: Test MessageId::new_uuid generates valid UUID that roundtrips through string conversion

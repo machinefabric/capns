@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RelayNotifyCapabilitiesPayload {
@@ -232,6 +233,7 @@ impl ResponseWriter {
 /// The main read loop routes response frames to the sender channel.
 struct PendingPeerRequest {
     sender: mpsc::UnboundedSender<Frame>,
+    origin_request_id: MessageId,
 }
 
 /// PeerInvoker implementation for in-process handlers.
@@ -242,6 +244,7 @@ struct PendingPeerRequest {
 struct InProcessPeerInvoker {
     write_tx: mpsc::UnboundedSender<Frame>,
     pending_requests: Arc<Mutex<HashMap<MessageId, PendingPeerRequest>>>,
+    origin_request_id: MessageId,
     max_chunk: usize,
 }
 
@@ -260,16 +263,28 @@ impl PeerInvoker for InProcessPeerInvoker {
         // Register before sending REQ
         {
             let mut pending = self.pending_requests.lock().unwrap();
-            pending.insert(request_id.clone(), PendingPeerRequest { sender });
+            pending.insert(request_id.clone(), PendingPeerRequest {
+                sender,
+                origin_request_id: self.origin_request_id.clone(),
+            });
         }
 
-        // Send REQ frame through the host's write channel
-        let req_frame = Frame::req(
+        // Send REQ frame through the host's write channel, stamped with parent_rid for cancel cascade
+        let mut req_frame = Frame::req(
             request_id.clone(),
             cap_urn,
             vec![],
             "application/cbor",
         );
+        let mut meta = req_frame.meta.take().unwrap_or_default();
+        meta.insert(
+            "parent_rid".to_string(),
+            match &self.origin_request_id {
+                MessageId::Uuid(bytes) => ciborium::Value::Bytes(bytes.to_vec()),
+                MessageId::Uint(n) => ciborium::Value::Integer((*n as i64).into()),
+            },
+        );
+        req_frame.meta = Some(meta);
         self.write_tx.send(req_frame).map_err(|_| {
             self.pending_requests.lock().unwrap().remove(&request_id);
             RuntimeError::PeerRequest("Host write channel closed".to_string())
@@ -595,6 +610,8 @@ impl InProcessPluginHost {
 
         // Active request channels: request_id → input_tx for forwarding frames to handler
         let mut active: HashMap<MessageId, mpsc::UnboundedSender<Frame>> = HashMap::new();
+        // Handler JoinHandles for per-request abort on Cancel
+        let mut handler_handles: HashMap<MessageId, JoinHandle<()>> = HashMap::new();
 
         // Pending peer requests: peer_rid → sender for routing response frames back
         // Shared with InProcessPeerInvoker instances (handlers insert, main loop routes)
@@ -678,6 +695,7 @@ impl InProcessPluginHost {
                     let peer: Arc<dyn PeerInvoker> = Arc::new(InProcessPeerInvoker {
                         write_tx: write_tx.clone(),
                         pending_requests: pending_peer_requests.clone(),
+                        origin_request_id: rid.clone(),
                         max_chunk,
                     });
 
@@ -689,11 +707,13 @@ impl InProcessPluginHost {
                         max_chunk,
                     );
                     let cap_urn_owned = cap_urn.clone();
-                    tokio::spawn(async move {
+                    let handler_rid = rid.clone();
+                    let handle = tokio::spawn(async move {
                         tracing::info!("[InProcessPluginHost] handler task starting for cap={}", cap_urn_owned);
                         handler.handle_request(&cap_urn_owned, input_rx, output, peer).await;
                         tracing::info!("[InProcessPluginHost] handler task completed for cap={}", cap_urn_owned);
                     });
+                    handler_handles.insert(handler_rid, handle);
                 }
 
                 // Continuation frames: forward to active request or peer response
@@ -718,7 +738,10 @@ impl InProcessPluginHost {
                 FrameType::End => {
                     // Try active request first — send END then remove
                     if let Some(tx) = active.remove(&frame.id) {
+                        let rid = frame.id.clone();
                         let _ = tx.send(frame);
+                        // Clean up handler handle (handler will exit naturally after receiving END)
+                        handler_handles.remove(&rid);
                         continue;
                     }
 
@@ -738,7 +761,9 @@ impl InProcessPluginHost {
                     );
                     // Try active request first — forward ERR then remove
                     if let Some(tx) = active.remove(&frame.id) {
+                        let rid = frame.id.clone();
                         let _ = tx.send(frame);
+                        handler_handles.remove(&rid);
                         continue;
                     }
 
@@ -748,6 +773,40 @@ impl InProcessPluginHost {
                         let _ = pr.sender.send(frame);
                     }
                     drop(pending);
+                }
+
+                FrameType::Cancel => {
+                    let target_rid = frame.id.clone();
+                    let xid = frame.routing_id.clone();
+                    let force_kill = frame.force_kill.unwrap_or(false);
+                    tracing::info!("[InProcessPluginHost] Cancel received: rid={:?} force_kill={}", target_rid, force_kill);
+
+                    // Drop active sender → handler's input recv() returns None
+                    active.remove(&target_rid);
+
+                    // Abort handler JoinHandle
+                    if let Some(handle) = handler_handles.remove(&target_rid) {
+                        handle.abort();
+                    }
+
+                    // Cancel peer calls originating from this request
+                    {
+                        let mut pending = pending_peer_requests.lock().unwrap();
+                        let peer_rids_to_cancel: Vec<MessageId> = pending.iter()
+                            .filter(|(_, pr)| pr.origin_request_id == target_rid)
+                            .map(|(rid, _)| rid.clone())
+                            .collect();
+                        for peer_rid in &peer_rids_to_cancel {
+                            pending.remove(peer_rid);
+                            let cancel = Frame::cancel(peer_rid.clone(), force_kill);
+                            let _ = write_tx.send(cancel);
+                        }
+                    }
+
+                    // Send ERR "CANCELLED"
+                    let mut err = Frame::err(target_rid, "CANCELLED", "Request cancelled");
+                    err.routing_id = xid;
+                    let _ = write_tx.send(err);
                 }
 
                 FrameType::Heartbeat => {
@@ -763,6 +822,11 @@ impl InProcessPluginHost {
 
         // Drop all active channels to signal handlers to exit
         active.clear();
+
+        // Abort any remaining handler tasks
+        for (_, handle) in handler_handles {
+            handle.abort();
+        }
 
         drop(write_tx);
         let _ = writer_task.await;

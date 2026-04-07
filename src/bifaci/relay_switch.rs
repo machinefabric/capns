@@ -199,6 +199,9 @@ pub struct RelaySwitch {
     request_routing: RwLock<HashMap<(MessageId, MessageId), RoutingEntry>>,
     /// Peer-initiated request (xid, rid) pairs for cleanup tracking
     peer_requests: RwLock<HashSet<(MessageId, MessageId)>>,
+    /// Parent→child peer call mapping for cancel cascade.
+    /// Maps parent (xid, rid) → list of child peer (xid, rid) pairs.
+    peer_call_parents: RwLock<HashMap<(MessageId, MessageId), Vec<(MessageId, MessageId)>>>,
     /// Origin tracking: (xid, rid) → upstream connection index (None = external caller)
     /// Used to know where to send frames back
     origin_map: RwLock<HashMap<(MessageId, MessageId), Option<usize>>>,
@@ -444,6 +447,7 @@ impl RelaySwitch {
             cap_table: RwLock::new(Vec::new()),
             request_routing: RwLock::new(HashMap::new()),
             peer_requests: RwLock::new(HashSet::new()),
+            peer_call_parents: RwLock::new(HashMap::new()),
             origin_map: RwLock::new(HashMap::new()),
             external_response_channels: RwLock::new(HashMap::new()),
             aggregate_capabilities: RwLock::new(Vec::new()),
@@ -675,6 +679,89 @@ impl RelaySwitch {
         tracing::info!("[RelaySwitch] register_external_request: registered key=({:?}, {:?}) dest_master={}", xid, rid, dest_idx);
 
         Ok((xid, rx))
+    }
+
+    /// Cancel a specific in-flight request by RID.
+    ///
+    /// 1. Looks up RID → XID → routing destination
+    /// 2. Sends Cancel frame to destination master
+    /// 3. Recursively cancels child peer calls via peer_call_parents
+    /// 4. Sends ERR "CANCELLED" to external response channels if present
+    /// 5. Cleans up all routing maps
+    pub async fn cancel_request(&self, rid: &MessageId, force_kill: bool) {
+        // Find XID for this RID
+        let xid = match self.rid_to_xid.read().await.get(rid).cloned() {
+            Some(xid) => xid,
+            None => {
+                tracing::debug!("[RelaySwitch] cancel_request: unknown RID {:?} — ignoring", rid);
+                return;
+            }
+        };
+
+        let key = (xid.clone(), rid.clone());
+
+        // Find destination master
+        let dest_idx = {
+            let routing = self.request_routing.read().await;
+            match routing.get(&key) {
+                Some(entry) => entry.destination_master_idx,
+                None => {
+                    tracing::debug!("[RelaySwitch] cancel_request: no routing for ({:?}, {:?}) — ignoring", xid, rid);
+                    return;
+                }
+            }
+        };
+
+        // Send Cancel frame to destination
+        let mut cancel_frame = Frame::cancel(rid.clone(), force_kill);
+        cancel_frame.routing_id = Some(xid.clone());
+        tracing::info!("[RelaySwitch] cancel_request: sending Cancel to master {} rid={:?} xid={:?} force_kill={}", dest_idx, rid, xid, force_kill);
+        let _ = self.write_to_master_idx(dest_idx, &mut cancel_frame).await;
+
+        // Collect child peer calls for recursive cancel
+        let children = self.peer_call_parents.write().await.remove(&key).unwrap_or_default();
+
+        // Recursively cancel children
+        for (child_xid, child_rid) in &children {
+            tracing::info!("[RelaySwitch] cancel_request: cascading cancel to child peer call rid={:?}", child_rid);
+            // Use Box::pin for recursive async
+            Box::pin(self.cancel_request(child_rid, force_kill)).await;
+        }
+
+        // Send ERR "CANCELLED" to external response channel if present
+        if let Some(tx) = self.external_response_channels.write().await.remove(&key) {
+            let mut err_frame = Frame::err(rid.clone(), "CANCELLED", "Request cancelled");
+            err_frame.routing_id = Some(xid.clone());
+            let _ = tx.send(err_frame);
+        }
+
+        // Clean up routing maps
+        self.request_routing.write().await.remove(&key);
+        self.origin_map.write().await.remove(&key);
+        self.peer_requests.write().await.remove(&key);
+        self.rid_to_xid.write().await.remove(rid);
+    }
+
+    /// Cancel all external-origin (engine-initiated) in-flight requests.
+    ///
+    /// Returns the list of cancelled RIDs.
+    pub async fn cancel_all_requests(&self, force_kill: bool) -> Vec<MessageId> {
+        // Snapshot all external-origin request RIDs (origin = None)
+        let rids: Vec<MessageId> = {
+            let origin_map = self.origin_map.read().await;
+            origin_map.iter()
+                .filter(|(_, origin)| origin.is_none())
+                .map(|((_, rid), _)| rid.clone())
+                .collect()
+        };
+
+        tracing::info!("[RelaySwitch] cancel_all_requests: cancelling {} external requests, force_kill={}", rids.len(), force_kill);
+
+        for rid in &rids {
+            self.cancel_request(rid, force_kill).await;
+        }
+
+        rids
     }
 
     /// Dynamically add a new master connection to the switch.
@@ -968,6 +1055,34 @@ impl RelaySwitch {
                 // Forward to destination
                 self.write_to_master_idx(dest_idx, &mut frame).await?;
 
+                Ok(())
+            }
+
+            FrameType::Cancel => {
+                // Cancel routes like a continuation frame — look up XID from RID
+                let xid = if let Some(ref existing_xid) = frame.routing_id {
+                    existing_xid.clone()
+                } else {
+                    let rid = &frame.id;
+                    let rid_to_xid = self.rid_to_xid.read().await;
+                    let looked_up_xid = rid_to_xid.get(rid).ok_or_else(|| {
+                        RelaySwitchError::UnknownRequest(rid.clone())
+                    })?.clone();
+                    frame.routing_id = Some(looked_up_xid.clone());
+                    looked_up_xid
+                };
+
+                let key = (xid.clone(), frame.id.clone());
+
+                let dest_idx = {
+                    let routing = self.request_routing.read().await;
+                    let entry = routing.get(&key).ok_or_else(|| {
+                        RelaySwitchError::UnknownRequest(frame.id.clone())
+                    })?;
+                    entry.destination_master_idx
+                };
+
+                self.write_to_master_idx(dest_idx, &mut frame).await?;
                 Ok(())
             }
 
@@ -1293,7 +1408,32 @@ impl RelaySwitch {
                 );
 
                 // Mark as peer request (for cleanup tracking)
-                self.peer_requests.write().await.insert(key);
+                self.peer_requests.write().await.insert(key.clone());
+
+                // Track parent→child for cancel cascade
+                if let Some(parent_rid) = frame.meta.as_ref().and_then(|m| m.get("parent_rid")).and_then(|v| {
+                    match v {
+                        ciborium::Value::Bytes(bytes) if bytes.len() == 16 => {
+                            let mut arr = [0u8; 16];
+                            arr.copy_from_slice(bytes);
+                            Some(MessageId::Uuid(arr))
+                        }
+                        ciborium::Value::Integer(i) => {
+                            let n: i128 = (*i).into();
+                            Some(MessageId::Uint(n as u64))
+                        }
+                        _ => None,
+                    }
+                }) {
+                    // Find parent's XID from its RID
+                    if let Some(parent_xid) = self.rid_to_xid.read().await.get(&parent_rid).cloned() {
+                        let parent_key = (parent_xid, parent_rid);
+                        self.peer_call_parents.write().await
+                            .entry(parent_key)
+                            .or_default()
+                            .push(key);
+                    }
+                }
 
                 // Forward to destination with XID
                 self.write_to_master_idx(dest_idx, &mut frame).await?;
@@ -1367,6 +1507,7 @@ impl RelaySwitch {
                                     self.request_routing.write().await.remove(&key);
                                     self.origin_map.write().await.remove(&key);
                                     self.peer_requests.write().await.remove(&key);
+                                    self.peer_call_parents.write().await.remove(&key);
                                     self.rid_to_xid.write().await.remove(&rid);
                                 }
 
@@ -1382,6 +1523,7 @@ impl RelaySwitch {
                                     self.request_routing.write().await.remove(&key);
                                     self.origin_map.write().await.remove(&key);
                                     self.peer_requests.write().await.remove(&key);
+                                    self.peer_call_parents.write().await.remove(&key);
                                     self.rid_to_xid.write().await.remove(&rid);
                                 }
 
@@ -1403,6 +1545,7 @@ impl RelaySwitch {
                                 self.request_routing.write().await.remove(&key);
                                 self.origin_map.write().await.remove(&key);
                                 self.peer_requests.write().await.remove(&key);
+                                self.peer_call_parents.write().await.remove(&key);
                                 self.rid_to_xid.write().await.remove(&rid);
                             }
 
@@ -1443,6 +1586,46 @@ impl RelaySwitch {
                     self.write_to_master_idx(dest_idx, &mut frame).await?;
                     return Ok(None);
                 }
+            }
+
+            FrameType::Cancel => {
+                // Cancel from plugin — route to destination like a continuation frame.
+                // Plugin is cancelling its own peer call.
+                let rid = frame.id.clone();
+
+                // Look up XID from RID (Cancel frames from plugins don't have XID)
+                let xid = if let Some(ref existing_xid) = frame.routing_id {
+                    existing_xid.clone()
+                } else {
+                    let rid_to_xid = self.rid_to_xid.read().await;
+                    match rid_to_xid.get(&rid).cloned() {
+                        Some(xid) => {
+                            frame.routing_id = Some(xid.clone());
+                            xid
+                        }
+                        None => {
+                            // Unknown RID — silently ignore (request may already be completed)
+                            tracing::debug!("[RelaySwitch] Cancel for unknown RID {:?} — ignoring", rid);
+                            return Ok(None);
+                        }
+                    }
+                };
+
+                let key = (xid.clone(), rid.clone());
+                let dest_idx = {
+                    let routing = self.request_routing.read().await;
+                    match routing.get(&key) {
+                        Some(entry) => entry.destination_master_idx,
+                        None => {
+                            tracing::debug!("[RelaySwitch] Cancel for unknown routing ({:?}, {:?}) — ignoring", xid, rid);
+                            return Ok(None);
+                        }
+                    }
+                };
+
+                tracing::info!("[RelaySwitch] Routing Cancel from master {} to master {} xid={:?} rid={:?}", source_idx, dest_idx, xid, rid);
+                self.write_to_master_idx(dest_idx, &mut frame).await?;
+                Ok(None)
             }
 
             FrameType::RelayNotify => {
@@ -1591,6 +1774,7 @@ impl RelaySwitch {
             self.request_routing.write().await.remove(&key);
             self.origin_map.write().await.remove(&key);
             self.peer_requests.write().await.remove(&key);
+            self.peer_call_parents.write().await.remove(&key);
         }
 
         // Rebuild tables

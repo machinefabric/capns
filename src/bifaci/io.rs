@@ -165,6 +165,10 @@ pub fn encode_frame(frame: &Frame) -> Result<Vec<u8>, CborError> {
         map.push((Value::Integer(keys::IS_SEQUENCE.into()), Value::Bool(is_sequence)));
     }
 
+    if let Some(force_kill) = frame.force_kill {
+        map.push((Value::Integer(keys::FORCE_KILL.into()), Value::Bool(force_kill)));
+    }
+
     let value = Value::Map(map);
     let mut buf = Vec::new();
     ciborium::into_writer(&value, &mut buf)
@@ -358,6 +362,11 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, CborError> {
         _ => None,
     });
 
+    let force_kill = lookup.get(&keys::FORCE_KILL).and_then(|v| match v {
+        Value::Bool(b) => Some(*b),
+        _ => None,
+    });
+
     let frame = Frame {
         version,
         frame_type,
@@ -377,6 +386,7 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, CborError> {
         chunk_count,
         checksum,
         is_sequence,
+        force_kill,
     };
 
     // Validate required fields based on frame type
