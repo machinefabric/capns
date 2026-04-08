@@ -26,9 +26,16 @@
 
 pub mod error;
 pub mod graph;
+pub mod notation_ast;
 pub mod parser;
 pub mod serializer;
 
 pub use error::{MachineAbstractionError, MachineSyntaxError};
 pub use graph::{Machine, MachineEdge, MachineRun, MachineRunStatus};
+pub use notation_ast::{
+    parse_notation_ast, get_completion_context, get_hover_info, emit_semantic_tokens,
+    byte_offset_to_position,
+    CompletionContextType, NotationAST, NotationPosition, NotationSpan,
+    ParsedHeader, ParsedStatement, ParsedWiring, SemanticTokenInfo, SemanticTokenType,
+};
 pub use parser::parse_machine;
