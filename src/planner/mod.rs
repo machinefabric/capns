@@ -57,7 +57,7 @@ pub use plan_builder::{
 pub use executor::MachineExecutor;
 pub use live_cap_graph::{
     LiveCapGraph, LiveMachinePlanEdge, LiveMachinePlanEdgeType,
-    ReachableTargetInfo, StrandStep, StrandStepType, Strand,
+    PathFindingEvent, ReachableTargetInfo, StrandStep, StrandStepType, Strand,
 };
 
 // =============================================================================

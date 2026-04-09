@@ -186,6 +186,28 @@ impl InputStream {
         }
     }
 
+    /// Collect each chunk as a separate item with its metadata.
+    /// For sequence streams (is_sequence=true), each chunk is one item.
+    /// Returns a Vec of (raw_bytes, optional_per_item_meta).
+    pub async fn collect_items(mut self) -> Result<Vec<(Vec<u8>, Option<StreamMeta>)>, StreamError> {
+        let mut items = Vec::new();
+        while let Some(item) = self.recv().await {
+            let (value, meta) = item?;
+            let bytes = match value {
+                ciborium::Value::Bytes(b) => b,
+                ciborium::Value::Text(s) => s.into_bytes(),
+                other => {
+                    let mut buf = Vec::new();
+                    ciborium::into_writer(&other, &mut buf)
+                        .map_err(|e| StreamError::Decode(format!("Failed to encode CBOR: {}", e)))?;
+                    buf
+                }
+            };
+            items.push((bytes, meta));
+        }
+        Ok(items)
+    }
+
     /// Collect all chunks into a single byte vector.
     /// Extracts inner bytes from Value::Bytes/Text and concatenates.
     /// Per-item metadata is discarded.

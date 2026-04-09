@@ -232,6 +232,8 @@ impl Machine {
                     cap_urn: edge.cap_urn.clone(),
                     title,
                     specificity: edge.cap_urn.specificity(),
+                    input_is_sequence: false,
+                    output_is_sequence: edge.is_loop,
                 },
                 from_spec: edge
                     .sources
@@ -429,6 +431,8 @@ mod tests {
                         .unwrap(),
                         title: "Disbind PDF Into Pages".to_string(),
                         specificity: 4,
+                        input_is_sequence: false,
+                        output_is_sequence: true,
                     },
                     from_spec: MediaUrn::from_string("media:pdf").unwrap(),
                     to_spec: MediaUrn::from_string("media:page;textable").unwrap(),

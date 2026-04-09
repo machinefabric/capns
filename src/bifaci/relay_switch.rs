@@ -514,6 +514,24 @@ impl RelaySwitch {
         graph.find_paths_to_exact_target(source, target, is_sequence, max_depth, max_paths)
     }
 
+    /// Find paths with streaming progress callback.
+    pub async fn find_paths_streaming<F>(
+        &self,
+        source: &MediaUrn,
+        target: &MediaUrn,
+        is_sequence: bool,
+        max_depth: usize,
+        max_paths: usize,
+        cancelled: &std::sync::atomic::AtomicBool,
+        on_event: F,
+    ) -> Vec<Strand>
+    where
+        F: FnMut(crate::planner::PathFindingEvent),
+    {
+        let graph = self.live_cap_graph.read().await;
+        graph.find_paths_streaming(source, target, is_sequence, max_depth, max_paths, cancelled, on_event)
+    }
+
     /// Get the cap registry used by this switch.
     pub fn cap_registry(&self) -> &Arc<CapRegistry> {
         &self.cap_registry

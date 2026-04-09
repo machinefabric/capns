@@ -66,6 +66,25 @@ pub enum LiveMachinePlanEdgeType {
     Collect,
 }
 
+/// Event emitted during streaming path finding.
+#[derive(Debug, Clone)]
+pub enum PathFindingEvent {
+    /// A depth level of IDDFS has completed
+    DepthComplete {
+        depth: usize,
+        max_depth: usize,
+        nodes_explored: u64,
+        paths_found: usize,
+    },
+    /// A new path was discovered
+    PathFound(Strand),
+    /// Search is complete
+    Complete {
+        total_paths: usize,
+        total_nodes_explored: u64,
+    },
+}
+
 /// An edge in the live capability graph.
 ///
 /// Stored edges represent capabilities that transform one media type to another.
@@ -166,6 +185,10 @@ pub enum StrandStepType {
         cap_urn: CapUrn,
         title: String,
         specificity: usize,
+        /// Whether the cap's main input expects a sequence
+        input_is_sequence: bool,
+        /// Whether the cap's output produces a sequence
+        output_is_sequence: bool,
     },
     /// Fan-out: iterate over sequence items (is_sequence flips true → false).
     /// The media URN does not change — ForEach is a shape transition, not a type transition.
@@ -687,6 +710,7 @@ impl LiveCapGraph {
         // Iterative deepening: find ALL paths at depth N before any at depth N+1.
         let mut all_paths: Vec<Strand> = Vec::new();
         let mut total_nodes_explored: u64 = 0;
+        let not_cancelled = std::sync::atomic::AtomicBool::new(false);
 
         for depth_limit in 1..=max_depth {
             if all_paths.len() >= max_paths {
@@ -709,6 +733,7 @@ impl LiveCapGraph {
                 depth_limit,
                 max_paths,
                 &mut nodes_this_depth,
+                &not_cancelled,
             );
 
             total_nodes_explored += nodes_this_depth;
@@ -718,12 +743,6 @@ impl LiveCapGraph {
                     "  IDDFS depth={}: explored {} nodes, found {} new paths (total {})",
                     depth_limit, nodes_this_depth, new_paths, all_paths.len()
                 );
-            }
-
-            // If we found paths at this depth, deeper paths are strictly longer
-            // (worse). Stop searching — we have the shortest paths.
-            if new_paths > 0 {
-                break;
             }
 
             // Safety: abort if exploring too many nodes (combinatorial explosion)
@@ -748,6 +767,89 @@ impl LiveCapGraph {
         all_paths
     }
 
+    /// Find paths with streaming progress reporting.
+    ///
+    /// Calls `on_event` for each progress update and each path found.
+    /// Returns the final sorted list of paths.
+    pub fn find_paths_streaming<F>(
+        &self,
+        source: &MediaUrn,
+        target: &MediaUrn,
+        is_sequence: bool,
+        max_depth: usize,
+        max_paths: usize,
+        cancelled: &std::sync::atomic::AtomicBool,
+        mut on_event: F,
+    ) -> Vec<Strand>
+    where
+        F: FnMut(PathFindingEvent),
+    {
+        if source.is_equivalent(target).unwrap_or(false) {
+            on_event(PathFindingEvent::Complete {
+                total_paths: 0,
+                total_nodes_explored: 0,
+            });
+            return vec![];
+        }
+
+        let mut all_paths: Vec<Strand> = Vec::new();
+        let mut total_nodes_explored: u64 = 0;
+
+        for depth_limit in 1..=max_depth {
+            if all_paths.len() >= max_paths {
+                break;
+            }
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+
+            let mut current_path: Vec<StrandStep> = Vec::new();
+            let mut visited: HashSet<(String, bool)> = HashSet::new();
+            let paths_before = all_paths.len();
+            let mut nodes_this_depth: u64 = 0;
+
+            self.iddfs_find_paths(
+                source, target, source, is_sequence,
+                &mut current_path, &mut visited, &mut all_paths,
+                depth_limit, max_paths, &mut nodes_this_depth,
+                cancelled,
+            );
+
+            total_nodes_explored += nodes_this_depth;
+            let new_paths = all_paths.len() - paths_before;
+
+            // Report progress after each depth
+            on_event(PathFindingEvent::DepthComplete {
+                depth: depth_limit,
+                max_depth,
+                nodes_explored: total_nodes_explored,
+                paths_found: all_paths.len(),
+            });
+
+            // Report each new path found at this depth
+            for path in &all_paths[paths_before..] {
+                on_event(PathFindingEvent::PathFound(path.clone()));
+            }
+
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+
+            if total_nodes_explored > 100_000 {
+                break;
+            }
+        }
+
+        all_paths.sort_by(|a, b| Self::compare_paths(a, b));
+
+        on_event(PathFindingEvent::Complete {
+            total_paths: all_paths.len(),
+            total_nodes_explored,
+        });
+
+        all_paths
+    }
+
     /// Depth-limited DFS helper for iterative deepening path finding.
     ///
     /// `is_sequence` tracks the current cardinality state through the path.
@@ -764,9 +866,13 @@ impl LiveCapGraph {
         depth_limit: usize,
         max_paths: usize,
         nodes_explored: &mut u64,
+        cancelled: &std::sync::atomic::AtomicBool,
     ) {
         *nodes_explored += 1;
         if all_paths.len() >= max_paths {
+            return;
+        }
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         // Safety: bail out if exploring too many nodes
@@ -816,11 +922,13 @@ impl LiveCapGraph {
 
             if !visited.contains(&next_visit_key) {
                 let step_type = match &edge.edge_type {
-                    LiveMachinePlanEdgeType::Cap { cap_urn, cap_title, specificity, .. } => {
+                    LiveMachinePlanEdgeType::Cap { cap_urn, cap_title, specificity, input_is_sequence, output_is_sequence } => {
                         StrandStepType::Cap {
                             cap_urn: cap_urn.clone(),
                             title: cap_title.clone(),
                             specificity: *specificity,
+                            input_is_sequence: *input_is_sequence,
+                            output_is_sequence: *output_is_sequence,
                         }
                     }
                     LiveMachinePlanEdgeType::ForEach => {
@@ -852,6 +960,7 @@ impl LiveCapGraph {
                     depth_limit,
                     max_paths,
                     nodes_explored,
+                    cancelled,
                 );
 
                 current_path.pop();
@@ -1446,6 +1555,8 @@ mod tests {
                         .unwrap(),
                         title: "Disbind PDF Into Pages".to_string(),
                         specificity: 4,
+                        input_is_sequence: false,
+                        output_is_sequence: true,
                     },
                     from_spec: MediaUrn::from_string("media:pdf").unwrap(),
                     to_spec: MediaUrn::from_string("media:page;textable").unwrap(),
