@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use pest::Parser;
+use uuid::Uuid;
 
 use crate::urn::cap_urn::CapUrn;
 use crate::urn::media_urn::MediaUrn;
@@ -116,6 +117,8 @@ pub struct NotationAST {
     pub alias_map: BTreeMap<String, ParsedHeader>,
     /// Node name → derived media URN mapping.
     pub node_media: HashMap<String, MediaUrn>,
+    /// Node name → whether the node carries a sequence shape.
+    pub node_is_sequence: HashMap<String, bool>,
     /// Successfully resolved machine graph, if no errors.
     pub machine: Option<Machine>,
     /// First error encountered during parsing, if any.
@@ -159,6 +162,64 @@ pub struct SemanticTokenInfo {
 }
 
 // =============================================================================
+// Editor model
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotationEntityKind {
+    AliasDefinition,
+    CapUrn,
+    Node,
+    CapAliasReference,
+    LoopKeyword,
+    Arrow,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotationEntityInfo {
+    /// Stable UUID for the logical token this entity represents. Entities
+    /// that share a `token_id` are all source-span occurrences of the same
+    /// underlying concept and should be highlighted together.
+    pub token_id: String,
+    pub kind: NotationEntityKind,
+    pub range: NotationSpan,
+    pub label: String,
+    pub detail: Option<String>,
+    pub hover_markdown: Option<String>,
+    pub linked_cap_urn: Option<String>,
+    pub color_index: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotationGraphElementKind {
+    Node,
+    Cap,
+    Edge,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotationGraphElementInfo {
+    /// Stable UUID for the logical token this graph element represents.
+    /// Shared with all `NotationEntityInfo` records that represent the
+    /// same token in the source text.
+    pub token_id: String,
+    /// Graph-local identifier used by Cytoscape for layout and edge
+    /// wiring. Distinct from `token_id` so edges can reference their
+    /// endpoints directly without having to resolve token identity.
+    pub graph_id: String,
+    pub kind: NotationGraphElementKind,
+    pub label: String,
+    pub detail: Option<String>,
+    pub linked_cap_urn: Option<String>,
+    pub linked_media_urn: Option<String>,
+    pub is_sequence: Option<bool>,
+    pub source_graph_id: Option<String>,
+    pub target_graph_id: Option<String>,
+    pub color_index: Option<i32>,
+    pub is_loop: bool,
+}
+
+// =============================================================================
 // Completion context
 // =============================================================================
 
@@ -199,6 +260,7 @@ pub fn parse_notation_ast(input: &str) -> NotationAST {
         bracket_spans: Vec::new(),
         alias_map: BTreeMap::new(),
         node_media: HashMap::new(),
+        node_is_sequence: HashMap::new(),
         machine: None,
         error: None,
     };
@@ -406,6 +468,7 @@ pub fn parse_notation_ast(input: &str) -> NotationAST {
 
     // Build node_media from AST wirings + alias_map
     build_node_media(&ast.statements, &ast.alias_map, &mut ast.node_media);
+    build_node_sequence_map(&ast.statements, &ast.alias_map, &mut ast.node_is_sequence);
 
     ast
 }
@@ -444,6 +507,72 @@ fn build_node_media(
     }
 }
 
+/// Build node sequence-shape metadata from wiring statements and their loop flags.
+fn build_node_sequence_map(
+    statements: &[ParsedStatement],
+    alias_map: &BTreeMap<String, ParsedHeader>,
+    node_is_sequence: &mut HashMap<String, bool>,
+) {
+    for stmt in statements {
+        if let ParsedStatement::Wiring(w) = stmt {
+            if w.is_loop {
+                if let Some((source_name, _)) = w.sources.first() {
+                    if !alias_map.contains_key(source_name) {
+                        node_is_sequence.insert(source_name.clone(), true);
+                    }
+                }
+            }
+
+            if !alias_map.contains_key(&w.target) {
+                node_is_sequence
+                    .entry(w.target.clone())
+                    .and_modify(|existing| *existing = *existing || w.is_loop)
+                    .or_insert(w.is_loop);
+            }
+        }
+    }
+}
+
+/// Whether LOOP is valid at the given cursor position.
+///
+/// LOOP may only appear in the cap position of a wiring (`source -> LOOP alias -> target`)
+/// and only when the primary source node carries sequence-shaped data.
+pub fn should_suggest_loop_keyword(ast: &NotationAST, line: usize, character: usize) -> bool {
+    for stmt in &ast.statements {
+        let ParsedStatement::Wiring(wiring) = stmt else {
+            continue;
+        };
+
+        if !wiring.statement_span.contains(line, character) {
+            continue;
+        }
+
+        let Some(first_arrow_span) = wiring.arrow_spans.first() else {
+            continue;
+        };
+
+        let at_or_after_first_arrow =
+            line > first_arrow_span.end.line
+                || (line == first_arrow_span.end.line && character >= first_arrow_span.end.character);
+        let before_second_arrow = wiring.arrow_spans.get(1).map_or(true, |second_arrow_span| {
+            line < second_arrow_span.start.line
+                || (line == second_arrow_span.start.line && character <= second_arrow_span.start.character)
+        });
+
+        if !at_or_after_first_arrow || !before_second_arrow {
+            continue;
+        }
+
+        let Some((source_name, _)) = wiring.sources.first() else {
+            return false;
+        };
+
+        return ast.node_is_sequence.get(source_name).copied().unwrap_or(false);
+    }
+
+    false
+}
+
 // =============================================================================
 // Completion context detection
 // =============================================================================
@@ -468,20 +597,21 @@ pub fn get_completion_context(text: &str, line: usize, character: usize) -> (Com
     // Find the start of the current statement context: either the
     // innermost unclosed `[` (bracketed mode) or the start of the
     // current line (line-based mode).
-    let (context_start, skip) = match find_innermost_open_bracket(text, offset) {
-        Some(pos) => (pos, 1), // skip the `[`
+    let (context_start, skip, open_bracket) = match find_innermost_open_bracket(text, offset) {
+        Some(pos) => (pos, 1, Some(pos)), // skip the `[`
         None => {
             // Line-based mode: find start of current line
             let line_start = text[..offset].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            (line_start, 0)
+            (line_start, 0, None)
         }
     };
-
-    let inside = &text[context_start + skip..offset];
+    let statement_end = find_statement_end(text, context_start, skip, open_bracket);
+    let statement_body = &text[context_start + skip..statement_end];
+    let before_cursor = &text[context_start + skip..offset];
 
     // Check if we're inside a cap URN (contains "cap:" prefix)
-    if let Some(cap_pos) = inside.find("cap:") {
-        let after_cap = &inside[cap_pos..];
+    if let Some(cap_pos) = before_cursor.find("cap:") {
+        let after_cap = &before_cursor[cap_pos..];
 
         // Check if cursor is after `in=` or `out=` — media URN context
         // Look for the last `in=` or `out=` before cursor
@@ -522,26 +652,67 @@ pub fn get_completion_context(text: &str, line: usize, character: usize) -> (Com
         return (CompletionContextType::CapUrn, prefix);
     }
 
-    // Check if we're in a wiring (contains `->`)
-    if inside.contains("->") {
-        // Count arrows to determine source vs target
-        let arrow_count = inside.matches("->").count();
-
-        // Extract prefix (word being typed)
-        let prefix = extract_word_prefix(inside);
-
-        if arrow_count >= 2 {
-            return (CompletionContextType::WiringTarget, prefix);
-        } else {
-            // After first `->`, we're at the cap alias or target position
-            // If cursor is right after `->`, it's wiring target (cap alias position)
-            return (CompletionContextType::WiringTarget, prefix);
+    // Check if the current statement is a wiring, even if the cursor is before
+    // the first arrow in an existing line. This is what allows manual
+    // completion to surface document-local node and alias references anywhere
+    // inside a wiring statement.
+    if statement_body.contains("->") {
+        let prefix = extract_word_prefix(before_cursor);
+        let arrows_before_cursor = before_cursor.matches("->").count();
+        if arrows_before_cursor == 0 {
+            return (CompletionContextType::WiringSource, prefix);
         }
+        return (CompletionContextType::WiringTarget, prefix);
     }
 
-    // Default: header start — alias or new header
-    let prefix = extract_word_prefix(inside);
+    // Default: identifier/header start — line-based notation is valid without
+    // brackets, so a plain identifier position is a completion site.
+    let prefix = extract_word_prefix(before_cursor);
     (CompletionContextType::HeaderStart, prefix)
+}
+
+/// Compute the full token replacement span for completions at a cursor
+/// position. The returned span covers the token under the caret, not just the
+/// left-side prefix, so the UI can replace an in-progress identifier without
+/// reconstructing token boundaries locally.
+pub fn get_completion_replacement_span(
+    text: &str,
+    line: usize,
+    character: usize,
+) -> Option<NotationSpan> {
+    let cursor_offset = line_char_to_offset(text, line, character)?;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+
+    let mut start_byte = cursor_offset;
+    let mut end_byte = cursor_offset;
+
+    for (byte_idx, ch) in chars.iter().rev() {
+        if *byte_idx >= cursor_offset {
+            continue;
+        }
+        if is_completion_boundary_char(*ch) {
+            break;
+        }
+        start_byte = *byte_idx;
+    }
+
+    for (byte_idx, ch) in chars.iter() {
+        if *byte_idx < cursor_offset {
+            continue;
+        }
+        if is_completion_boundary_char(*ch) {
+            end_byte = *byte_idx;
+            break;
+        }
+        end_byte = *byte_idx + ch.len_utf8();
+    }
+
+    Some(NotationSpan {
+        start: byte_offset_to_position(text, start_byte),
+        end: byte_offset_to_position(text, end_byte),
+        start_byte,
+        end_byte,
+    })
 }
 
 // =============================================================================
@@ -558,58 +729,248 @@ pub fn get_completion_context(text: &str, line: usize, character: usize) -> (Com
 /// - media_details: media URN string → (title, description)
 ///
 /// Returns (markdown_content, token_span) or None if no hoverable token.
-pub fn get_hover_info(
+/// Build a digested editor model from the parsed AST.
+///
+/// Every logical token (node, cap invocation, alias definition, cap URN,
+/// arrow, LOOP keyword) gets a stable UUID `token_id`. That same id is
+/// stamped on every `NotationEntityInfo` record that anchors the token in
+/// the source text, AND on every `NotationGraphElementInfo` record that
+/// represents the token in the graph preview. The UI can then cross-
+/// highlight in either direction by a trivial `token_id == token_id`
+/// lookup — no walks over `graph_element_ids` / `linked_entity_ids`
+/// arrays, no reconstruction of identity from labels or positions.
+///
+/// Identity rules:
+///   - A node name is one logical token, even if it appears in multiple
+///     wirings. All text entities for that name share one `token_id`, and
+///     the single graph node carries the same id.
+///   - A cap invocation (the `alias` in `foo -> alias -> bar`) is one
+///     logical token per wiring statement. The cap's `token_id` is shared
+///     by: the cap alias reference text entity, the LOOP keyword text
+///     entity (if any), any arrows in that wiring, and the graph's cap
+///     element.
+///   - Each alias definition in a header and each cap URN in a header is
+///     its own logical token with no corresponding graph element.
+///   - Each wiring edge is its own logical token. The arrows flanking the
+///     cap alias share that wiring's cap token_id (they are interaction
+///     surfaces on the cap) rather than being separate edge tokens —
+///     this is what the user intuitively expects when hovering an arrow.
+pub fn build_editor_model(
     ast: &NotationAST,
-    line: usize,
-    character: usize,
     cap_details: &HashMap<String, (String, String)>,
     media_details: &HashMap<String, (String, String)>,
-) -> Option<(String, NotationSpan)> {
+) -> (Vec<NotationEntityInfo>, Vec<NotationGraphElementInfo>) {
+    let mut entities = Vec::new();
+    let mut graph_elements = Vec::new();
+    // Node name → (token_id, graph_id). Ensures the same node name
+    // always resolves to one logical token and one graph node.
+    let mut node_identity_by_name: HashMap<String, (String, String)> = HashMap::new();
+    let mut wiring_index = 0usize;
+
     for stmt in &ast.statements {
         match stmt {
-            ParsedStatement::Header(h) => {
-                // Alias in header definition
-                if h.alias_span.contains(line, character) {
-                    let md = format_alias_hover(h, cap_details);
-                    return Some((md, h.alias_span.clone()));
-                }
-                // Cap URN in header
-                if h.cap_urn_span.contains(line, character) {
-                    let md = format_cap_urn_hover(&h.cap_urn_str, &h.cap_urn, cap_details);
-                    return Some((md, h.cap_urn_span.clone()));
-                }
+            ParsedStatement::Header(header) => {
+                entities.push(NotationEntityInfo {
+                    token_id: new_token_id(),
+                    kind: NotationEntityKind::AliasDefinition,
+                    range: header.alias_span.clone(),
+                    label: header.alias.clone(),
+                    detail: Some("Capability alias definition".to_string()),
+                    hover_markdown: Some(format_alias_hover(header, cap_details)),
+                    linked_cap_urn: Some(header.cap_urn_str.clone()),
+                    color_index: None,
+                });
+                entities.push(NotationEntityInfo {
+                    token_id: new_token_id(),
+                    kind: NotationEntityKind::CapUrn,
+                    range: header.cap_urn_span.clone(),
+                    label: header.cap_urn_str.clone(),
+                    detail: cap_details.get(&header.cap_urn_str).map(|(title, _)| title.clone()),
+                    hover_markdown: Some(format_cap_urn_hover(
+                        &header.cap_urn_str,
+                        &header.cap_urn,
+                        cap_details,
+                    )),
+                    linked_cap_urn: Some(header.cap_urn_str.clone()),
+                    color_index: None,
+                });
             }
-            ParsedStatement::Wiring(w) => {
-                // Source nodes
-                for (name, span) in &w.sources {
-                    if span.contains(line, character) {
-                        let md = format_node_hover(name, &ast.node_media, media_details);
-                        return Some((md, span.clone()));
-                    }
+            ParsedStatement::Wiring(wiring) => {
+                let color_index = wiring_index as i32;
+                let cap_token_id = new_token_id();
+                let cap_graph_id = format!("cap-{wiring_index}");
+
+                let linked_cap_urn = ast
+                    .alias_map
+                    .get(&wiring.cap_alias)
+                    .map(|header| header.cap_urn_str.clone());
+
+                // Cap alias reference in the wiring body (the `alias` in
+                // `src -> alias -> dst`).
+                entities.push(NotationEntityInfo {
+                    token_id: cap_token_id.clone(),
+                    kind: NotationEntityKind::CapAliasReference,
+                    range: wiring.cap_alias_span.clone(),
+                    label: wiring.cap_alias.clone(),
+                    detail: linked_cap_urn.clone(),
+                    hover_markdown: ast
+                        .alias_map
+                        .get(&wiring.cap_alias)
+                        .map(|header| format_alias_hover(header, cap_details)),
+                    linked_cap_urn: linked_cap_urn.clone(),
+                    color_index: Some(color_index),
+                });
+
+                // LOOP keyword shares the cap's token_id — it's an
+                // attribute of the cap invocation, not its own thing.
+                if let Some(loop_span) = &wiring.loop_keyword_span {
+                    entities.push(NotationEntityInfo {
+                        token_id: cap_token_id.clone(),
+                        kind: NotationEntityKind::LoopKeyword,
+                        range: loop_span.clone(),
+                        label: "LOOP".to_string(),
+                        detail: Some("ForEach iteration".to_string()),
+                        hover_markdown: Some(
+                            "**LOOP** (ForEach)\n\nApplies the capability to each item in the input list individually. Each body instance runs concurrently."
+                                .to_string(),
+                        ),
+                        linked_cap_urn: linked_cap_urn.clone(),
+                        color_index: Some(color_index),
+                    });
                 }
-                // Cap alias in wiring
-                if w.cap_alias_span.contains(line, character) {
-                    if let Some(header) = ast.alias_map.get(&w.cap_alias) {
-                        let md = format_alias_hover(header, cap_details);
-                        return Some((md, w.cap_alias_span.clone()));
-                    }
+
+                // Source nodes: each named node resolves to ONE logical
+                // token and ONE graph node, shared across all wirings.
+                let mut source_identities: Vec<(String, String)> = Vec::new();
+                for (source_name, source_span) in &wiring.sources {
+                    let (source_token_id, source_graph_id) = ensure_graph_node(
+                        &mut graph_elements,
+                        &mut node_identity_by_name,
+                        source_name,
+                        ast,
+                        media_details,
+                    );
+                    source_identities.push((source_token_id.clone(), source_graph_id));
+
+                    entities.push(NotationEntityInfo {
+                        token_id: source_token_id,
+                        kind: NotationEntityKind::Node,
+                        range: source_span.clone(),
+                        label: source_name.clone(),
+                        detail: ast.node_media.get(source_name).map(|urn| urn.to_string()),
+                        hover_markdown: Some(format_node_hover(
+                            source_name,
+                            &ast.node_media,
+                            media_details,
+                        )),
+                        linked_cap_urn: None,
+                        color_index: None,
+                    });
                 }
-                // Target node
-                if w.target_span.contains(line, character) {
-                    let md = format_node_hover(&w.target, &ast.node_media, media_details);
-                    return Some((md, w.target_span.clone()));
+
+                // Target node.
+                let (target_token_id, target_graph_id) = ensure_graph_node(
+                    &mut graph_elements,
+                    &mut node_identity_by_name,
+                    &wiring.target,
+                    ast,
+                    media_details,
+                );
+                entities.push(NotationEntityInfo {
+                    token_id: target_token_id.clone(),
+                    kind: NotationEntityKind::Node,
+                    range: wiring.target_span.clone(),
+                    label: wiring.target.clone(),
+                    detail: ast.node_media.get(&wiring.target).map(|urn| urn.to_string()),
+                    hover_markdown: Some(format_node_hover(
+                        &wiring.target,
+                        &ast.node_media,
+                        media_details,
+                    )),
+                    linked_cap_urn: None,
+                    color_index: None,
+                });
+
+                // Arrows in this wiring share the cap's token_id. Hovering
+                // an arrow highlights the cap and its adjacent nodes.
+                for arrow_span in &wiring.arrow_spans {
+                    entities.push(NotationEntityInfo {
+                        token_id: cap_token_id.clone(),
+                        kind: NotationEntityKind::Arrow,
+                        range: arrow_span.clone(),
+                        label: "->".to_string(),
+                        detail: Some("Wiring edge".to_string()),
+                        hover_markdown: None,
+                        linked_cap_urn: linked_cap_urn.clone(),
+                        color_index: Some(color_index),
+                    });
                 }
-                // LOOP keyword
-                if let Some(ref loop_span) = w.loop_keyword_span {
-                    if loop_span.contains(line, character) {
-                        let md = "**LOOP** (ForEach)\n\nApplies the capability to each item in the input list individually. Each body instance runs concurrently.".to_string();
-                        return Some((md, loop_span.clone()));
-                    }
+
+                // Graph edges: one per source connection + one output
+                // edge. They share the cap's token_id so hovering the
+                // cap in text lights up all its edges in the graph.
+                for (source_idx, (_, source_graph_id)) in source_identities.iter().enumerate() {
+                    let edge_label = if source_identities.len() == 1 {
+                        "in".to_string()
+                    } else {
+                        format!("in {}", source_idx + 1)
+                    };
+                    graph_elements.push(NotationGraphElementInfo {
+                        token_id: cap_token_id.clone(),
+                        graph_id: format!("edge-{wiring_index}-in-{source_idx}"),
+                        kind: NotationGraphElementKind::Edge,
+                        label: edge_label,
+                        detail: Some("Source connection".to_string()),
+                        linked_cap_urn: linked_cap_urn.clone(),
+                        linked_media_urn: None,
+                        is_sequence: None,
+                        source_graph_id: Some(source_graph_id.clone()),
+                        target_graph_id: Some(cap_graph_id.clone()),
+                        color_index: Some(color_index),
+                        is_loop: wiring.is_loop,
+                    });
                 }
+
+                graph_elements.push(NotationGraphElementInfo {
+                    token_id: cap_token_id.clone(),
+                    graph_id: format!("edge-{wiring_index}-out"),
+                    kind: NotationGraphElementKind::Edge,
+                    label: "out".to_string(),
+                    detail: Some("Result connection".to_string()),
+                    linked_cap_urn: linked_cap_urn.clone(),
+                    linked_media_urn: None,
+                    is_sequence: None,
+                    source_graph_id: Some(cap_graph_id.clone()),
+                    target_graph_id: Some(target_graph_id),
+                    color_index: Some(color_index),
+                    is_loop: wiring.is_loop,
+                });
+
+                graph_elements.push(NotationGraphElementInfo {
+                    token_id: cap_token_id,
+                    graph_id: cap_graph_id,
+                    kind: NotationGraphElementKind::Cap,
+                    label: wiring.cap_alias.clone(),
+                    detail: linked_cap_urn.clone(),
+                    linked_cap_urn,
+                    linked_media_urn: None,
+                    is_sequence: Some(wiring.is_loop),
+                    source_graph_id: None,
+                    target_graph_id: None,
+                    color_index: Some(color_index),
+                    is_loop: wiring.is_loop,
+                });
+
+                wiring_index += 1;
             }
         }
     }
-    None
+
+    (entities, graph_elements)
+}
+
+fn new_token_id() -> String {
+    Uuid::new_v4().to_string()
 }
 
 // =============================================================================
@@ -638,13 +999,15 @@ pub fn emit_semantic_tokens(ast: &NotationAST, _input: &str) -> Vec<SemanticToke
                 // Alias in header
                 tokens.push(span_to_token(&h.alias_span, SemanticTokenType::Alias));
 
-                // Cap URN internals
-                tokenize_cap_urn_body(
-                    &h.cap_urn_str,
-                    h.cap_urn_span.start.line,
-                    h.cap_urn_span.start.character,
-                    &mut tokens,
-                );
+                // Whole cap URN rendered in one color. The URN internals
+                // (cap:, in=, media:, op=, etc.) are a single notation-
+                // level concept — breaking them up into a rainbow of
+                // per-subtoken colors is noise. The `CapPrefix` token
+                // type acts as the "cap URN" color.
+                tokens.push(span_to_token(
+                    &h.cap_urn_span,
+                    SemanticTokenType::CapPrefix,
+                ));
             }
             ParsedStatement::Wiring(w) => {
                 // Parens for fan-in groups
@@ -688,163 +1051,6 @@ pub fn emit_semantic_tokens(ast: &NotationAST, _input: &str) -> Vec<SemanticToke
     });
 
     tokens
-}
-
-/// Tokenize the interior of a cap URN string for semantic coloring.
-///
-/// Given `cap:in="media:pdf";op=extract;out="media:txt;textable"`,
-/// emits tokens for: cap_prefix, keyword_in, assignment, string,
-/// semicolon, keyword_op, assignment, tag_value, etc.
-///
-/// `base_line` and `base_col` are the 0-based position of the first
-/// character of the cap URN string in the document.
-pub fn tokenize_cap_urn_body(
-    cap_urn_str: &str,
-    base_line: usize,
-    base_col: usize,
-    tokens: &mut Vec<SemanticTokenInfo>,
-) {
-    if !cap_urn_str.starts_with("cap:") {
-        return;
-    }
-
-    // "cap:" prefix
-    tokens.push(SemanticTokenInfo {
-        line: base_line,
-        start_character: base_col,
-        length: 4,
-        token_type: SemanticTokenType::CapPrefix,
-    });
-
-    // Parse the body after "cap:"
-    let body = &cap_urn_str[4..];
-    let mut i = 0;
-    let chars: Vec<char> = body.chars().collect();
-
-    while i < chars.len() {
-        let ch = chars[i];
-        let col = base_col + 4 + i;
-
-        match ch {
-            ';' => {
-                tokens.push(SemanticTokenInfo {
-                    line: base_line,
-                    start_character: col,
-                    length: 1,
-                    token_type: SemanticTokenType::Semicolon,
-                });
-                i += 1;
-            }
-            '=' => {
-                tokens.push(SemanticTokenInfo {
-                    line: base_line,
-                    start_character: col,
-                    length: 1,
-                    token_type: SemanticTokenType::Assignment,
-                });
-                i += 1;
-            }
-            '"' => {
-                // Quoted string — scan to closing quote, handling escapes
-                let start = i;
-                i += 1; // skip opening quote
-                while i < chars.len() {
-                    if chars[i] == '\\' && i + 1 < chars.len() {
-                        i += 2; // skip escape sequence
-                    } else if chars[i] == '"' {
-                        i += 1; // skip closing quote
-                        break;
-                    } else {
-                        i += 1;
-                    }
-                }
-                let str_len = i - start;
-                tokens.push(SemanticTokenInfo {
-                    line: base_line,
-                    start_character: base_col + 4 + start,
-                    length: str_len,
-                    token_type: SemanticTokenType::String,
-                });
-
-                // Check for media: prefix inside the quoted string
-                let inner_start = start + 1;
-                let inner_end = if i > 0 && start + str_len > 1 { start + str_len - 1 } else { inner_start };
-                let inner: String = chars[inner_start..inner_end].iter().collect();
-                if inner.starts_with("media:") {
-                    tokens.push(SemanticTokenInfo {
-                        line: base_line,
-                        start_character: base_col + 4 + inner_start,
-                        length: 6, // "media:"
-                        token_type: SemanticTokenType::MediaPrefix,
-                    });
-                }
-            }
-            _ if ch.is_alphanumeric() || ch == '_' || ch == '-' => {
-                // Identifier: could be a tag key (before =) or tag value (after =)
-                let start = i;
-                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-') {
-                    i += 1;
-                }
-                let word: String = chars[start..i].iter().collect();
-                let word_len = i - start;
-
-                // Determine if this is a keyword (in, out, op) or a tag key/value
-                let next_char = if i < chars.len() { Some(chars[i]) } else { None };
-                let is_key = next_char == Some('=');
-
-                let token_type = if is_key {
-                    match word.as_str() {
-                        "in" => SemanticTokenType::KeywordIn,
-                        "out" => SemanticTokenType::KeywordOut,
-                        "op" => SemanticTokenType::KeywordOp,
-                        _ => SemanticTokenType::TagKey,
-                    }
-                } else {
-                    // Unquoted value after = or standalone
-                    // Check if it starts with "media:"
-                    if word == "media" && i < chars.len() && chars[i] == ':' {
-                        // This is "media:" prefix in an unquoted context
-                        tokens.push(SemanticTokenInfo {
-                            line: base_line,
-                            start_character: base_col + 4 + start,
-                            length: word_len + 1, // include the ':'
-                            token_type: SemanticTokenType::MediaPrefix,
-                        });
-                        i += 1; // skip the ':'
-                        // Continue scanning the rest as tag value
-                        let val_start = i;
-                        while i < chars.len() && chars[i] != ';' && chars[i] != '"' {
-                            i += 1;
-                        }
-                        if i > val_start {
-                            tokens.push(SemanticTokenInfo {
-                                line: base_line,
-                                start_character: base_col + 4 + val_start,
-                                length: i - val_start,
-                                token_type: SemanticTokenType::TagValue,
-                            });
-                        }
-                        continue;
-                    }
-                    SemanticTokenType::TagValue
-                };
-
-                tokens.push(SemanticTokenInfo {
-                    line: base_line,
-                    start_character: base_col + 4 + start,
-                    length: word_len,
-                    token_type,
-                });
-            }
-            ':' => {
-                // Standalone colon (after "media" would have been handled above)
-                i += 1;
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
 }
 
 // =============================================================================
@@ -921,6 +1127,61 @@ fn line_char_to_offset(text: &str, line: usize, character: usize) -> Option<usiz
     }
 
     None
+}
+
+fn is_completion_boundary_char(ch: char) -> bool {
+    matches!(ch, ' ' | '[' | ']' | ';' | '=' | '>' | '(' | ')' | ',' | '\n' | '\r' | '\t')
+}
+
+/// Resolve the `(token_id, graph_id)` pair for a node by name, creating
+/// the graph element on first sight. Subsequent calls for the same node
+/// name reuse the existing identity so every occurrence of the name in
+/// the source text maps to exactly one logical token and one graph node.
+fn ensure_graph_node(
+    graph_elements: &mut Vec<NotationGraphElementInfo>,
+    node_identity_by_name: &mut HashMap<String, (String, String)>,
+    node_name: &str,
+    ast: &NotationAST,
+    media_details: &HashMap<String, (String, String)>,
+) -> (String, String) {
+    if let Some(existing) = node_identity_by_name.get(node_name) {
+        return existing.clone();
+    }
+
+    let token_id = new_token_id();
+    let graph_id = format!("node-{node_name}");
+    let linked_media_urn = ast.node_media.get(node_name).map(|urn| urn.to_string());
+    let detail = linked_media_urn
+        .as_ref()
+        .and_then(|urn| {
+            media_details.get(urn).map(|(title, description)| {
+                if title.is_empty() {
+                    description.clone()
+                } else if description.is_empty() {
+                    title.clone()
+                } else {
+                    format!("{title} — {description}")
+                }
+            })
+        })
+        .or_else(|| linked_media_urn.clone());
+
+    graph_elements.push(NotationGraphElementInfo {
+        token_id: token_id.clone(),
+        graph_id: graph_id.clone(),
+        kind: NotationGraphElementKind::Node,
+        label: node_name.to_string(),
+        detail,
+        linked_cap_urn: None,
+        linked_media_urn,
+        is_sequence: ast.node_is_sequence.get(node_name).copied(),
+        source_graph_id: None,
+        target_graph_id: None,
+        color_index: None,
+        is_loop: false,
+    });
+    node_identity_by_name.insert(node_name.to_string(), (token_id.clone(), graph_id.clone()));
+    (token_id, graph_id)
 }
 
 // =============================================================================
@@ -1270,6 +1531,55 @@ fn find_innermost_open_bracket(text: &str, before_offset: usize) -> Option<usize
     bracket_stack.last().copied()
 }
 
+/// Find the end byte offset of the current statement.
+///
+/// In bracketed mode this is the matching `]` if present, otherwise EOF. In
+/// line-based mode this is the next newline or EOF.
+fn find_statement_end(
+    text: &str,
+    statement_start: usize,
+    skip: usize,
+    bracket_start: Option<usize>,
+) -> usize {
+    if let Some(open_bracket) = bracket_start {
+        let mut depth = 0usize;
+        let mut in_quote = false;
+        let mut escaped = false;
+
+        for (i, ch) in text.char_indices() {
+            if i < open_bracket {
+                continue;
+            }
+
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' if in_quote => escaped = true,
+                '"' => in_quote = !in_quote,
+                '[' if !in_quote => depth += 1,
+                ']' if !in_quote => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return i;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        return text.len();
+    }
+
+    let line_body_start = statement_start + skip;
+    text[line_body_start..]
+        .find('\n')
+        .map(|idx| line_body_start + idx)
+        .unwrap_or(text.len())
+}
+
 /// Extract the word prefix being typed at the end of a string.
 /// Scans backwards from the end to find the start of the current word.
 fn extract_word_prefix(s: &str) -> String {
@@ -1444,7 +1754,7 @@ mod tests {
     #[test]
     fn context_outside_brackets() {
         let (ctx, _) = get_completion_context("hello", 0, 3);
-        assert_eq!(ctx, CompletionContextType::Unknown);
+        assert_eq!(ctx, CompletionContextType::HeaderStart);
     }
 
     // =========================================================================
@@ -1483,56 +1793,175 @@ mod tests {
     // Hover
     // =========================================================================
 
-    #[test]
-    fn hover_on_alias_in_header() {
-        let input = r#"[extract cap:in="media:pdf";op=extract;out="media:txt"]
-[doc -> extract -> text]"#;
-        let ast = parse_notation_ast(input);
-
-        let cap_details = HashMap::new();
-        let media_details = HashMap::new();
-
-        // Hover on "extract" at line 0, character 1 (inside the alias)
-        let result = get_hover_info(&ast, 0, 1, &cap_details, &media_details);
-        assert!(result.is_some(), "expected hover info for alias");
-        let (md, _) = result.unwrap();
-        assert!(md.contains("extract"), "hover should mention alias name");
-        assert!(md.contains("capability alias"), "hover should identify type");
+    fn entity_at<'a>(
+        entities: &'a [NotationEntityInfo],
+        line: usize,
+        character: usize,
+    ) -> &'a NotationEntityInfo {
+        entities
+            .iter()
+            .find(|e| e.range.contains(line, character))
+            .expect("expected an entity at the given position")
     }
 
     #[test]
-    fn hover_on_node_in_wiring() {
+    fn editor_model_entity_hover_for_alias_definition() {
         let input = r#"[extract cap:in="media:pdf";op=extract;out="media:txt"]
 [doc -> extract -> text]"#;
         let ast = parse_notation_ast(input);
+        let (entities, _) = build_editor_model(&ast, &HashMap::new(), &HashMap::new());
 
-        let cap_details = HashMap::new();
-        let media_details = HashMap::new();
-
-        // "doc" is at line 1, character 1
-        let result = get_hover_info(&ast, 1, 1, &cap_details, &media_details);
-        assert!(result.is_some(), "expected hover info for node");
-        let (md, _) = result.unwrap();
-        assert!(md.contains("doc"), "hover should mention node name");
-        assert!(md.contains("node"), "hover should identify type");
+        let entity = entity_at(&entities, 0, 1);
+        assert_eq!(entity.kind, NotationEntityKind::AliasDefinition);
+        let md = entity.hover_markdown.as_deref().unwrap_or("");
+        assert!(md.contains("extract"), "alias hover should mention alias name");
+        assert!(
+            md.contains("capability alias"),
+            "alias hover should identify type"
+        );
     }
 
     #[test]
-    fn hover_on_loop_keyword() {
+    fn editor_model_entity_hover_for_wiring_source_node() {
+        let input = r#"[extract cap:in="media:pdf";op=extract;out="media:txt"]
+[doc -> extract -> text]"#;
+        let ast = parse_notation_ast(input);
+        let (entities, _) = build_editor_model(&ast, &HashMap::new(), &HashMap::new());
+
+        let entity = entity_at(&entities, 1, 1);
+        assert_eq!(entity.kind, NotationEntityKind::Node);
+        let md = entity.hover_markdown.as_deref().unwrap_or("");
+        assert!(md.contains("doc"), "node hover should mention node name");
+        assert!(md.contains("node"), "node hover should identify type");
+    }
+
+    #[test]
+    fn editor_model_entity_hover_for_loop_keyword() {
         let input = concat!(
             r#"[p2t cap:in="media:page";op=page_to_text;out="media:txt"]"#,
             "\n[pages -> LOOP p2t -> texts]"
         );
         let ast = parse_notation_ast(input);
+        let (entities, _) = build_editor_model(&ast, &HashMap::new(), &HashMap::new());
 
-        let cap_details = HashMap::new();
-        let media_details = HashMap::new();
+        let entity = entity_at(&entities, 1, 10);
+        assert_eq!(entity.kind, NotationEntityKind::LoopKeyword);
+        let md = entity.hover_markdown.as_deref().unwrap_or("");
+        assert!(md.contains("ForEach"), "loop hover should explain semantics");
+    }
 
-        // LOOP is at line 1, character 10
-        let result = get_hover_info(&ast, 1, 10, &cap_details, &media_details);
-        assert!(result.is_some(), "expected hover info for LOOP");
-        let (md, _) = result.unwrap();
-        assert!(md.contains("ForEach"), "hover should explain LOOP semantics");
+    #[test]
+    fn editor_model_graph_contains_nodes_and_edges() {
+        let input = r#"[extract cap:in="media:pdf";op=extract;out="media:txt"]
+[doc -> extract -> text]"#;
+        let ast = parse_notation_ast(input);
+        let (_, graph) = build_editor_model(&ast, &HashMap::new(), &HashMap::new());
+
+        let node_count = graph
+            .iter()
+            .filter(|e| e.kind == NotationGraphElementKind::Node)
+            .count();
+        let cap_count = graph
+            .iter()
+            .filter(|e| e.kind == NotationGraphElementKind::Cap)
+            .count();
+        let edge_count = graph
+            .iter()
+            .filter(|e| e.kind == NotationGraphElementKind::Edge)
+            .count();
+
+        assert_eq!(node_count, 2, "expected one node element per unique node name");
+        assert_eq!(cap_count, 1, "expected one cap element per wiring");
+        assert_eq!(edge_count, 2, "expected one input edge and one output edge");
+    }
+
+    #[test]
+    fn editor_model_cap_alias_and_arrows_share_token_id_with_graph_cap() {
+        let input = r#"[extract cap:in="media:pdf";op=extract;out="media:txt"]
+[doc -> extract -> text]"#;
+        let ast = parse_notation_ast(input);
+        let (entities, graph) = build_editor_model(&ast, &HashMap::new(), &HashMap::new());
+
+        let cap_alias_entity = entities
+            .iter()
+            .find(|e| e.kind == NotationEntityKind::CapAliasReference)
+            .expect("expected a cap alias reference entity");
+        let arrow_entities: Vec<&NotationEntityInfo> = entities
+            .iter()
+            .filter(|e| e.kind == NotationEntityKind::Arrow)
+            .collect();
+        let graph_cap = graph
+            .iter()
+            .find(|e| e.kind == NotationGraphElementKind::Cap)
+            .expect("expected a graph cap element");
+
+        assert_eq!(
+            cap_alias_entity.token_id, graph_cap.token_id,
+            "cap alias entity and graph cap must share the same token_id"
+        );
+        assert_eq!(arrow_entities.len(), 2, "expected two arrow entities");
+        for arrow in &arrow_entities {
+            assert_eq!(
+                arrow.token_id, graph_cap.token_id,
+                "arrows in a wiring must share the cap's token_id"
+            );
+        }
+
+        let graph_edges: Vec<&NotationGraphElementInfo> = graph
+            .iter()
+            .filter(|e| e.kind == NotationGraphElementKind::Edge)
+            .collect();
+        for edge in &graph_edges {
+            assert_eq!(
+                edge.token_id, graph_cap.token_id,
+                "graph edges in a wiring must share the cap's token_id"
+            );
+        }
+    }
+
+    #[test]
+    fn editor_model_node_references_share_token_id_with_graph_node() {
+        // Same node name referenced from two wirings should resolve to
+        // ONE logical token and ONE graph node with a shared token_id.
+        let input = concat!(
+            r#"[a cap:in="media:text";op=upper;out="media:text"]"#,
+            "\n",
+            r#"[b cap:in="media:text";op=lower;out="media:text"]"#,
+            "\n",
+            "[shared -> a -> mid]\n",
+            "[mid -> b -> shared]"
+        );
+        let ast = parse_notation_ast(input);
+        let (entities, graph) = build_editor_model(&ast, &HashMap::new(), &HashMap::new());
+
+        let shared_entities: Vec<&NotationEntityInfo> = entities
+            .iter()
+            .filter(|e| e.kind == NotationEntityKind::Node && e.label == "shared")
+            .collect();
+        assert_eq!(
+            shared_entities.len(),
+            2,
+            "expected two text-side occurrences of 'shared'"
+        );
+        let shared_token_id = &shared_entities[0].token_id;
+        assert_eq!(
+            shared_entities[1].token_id, *shared_token_id,
+            "both text occurrences of the same node name must share a token_id"
+        );
+
+        let shared_graph_nodes: Vec<&NotationGraphElementInfo> = graph
+            .iter()
+            .filter(|e| e.kind == NotationGraphElementKind::Node && e.label == "shared")
+            .collect();
+        assert_eq!(
+            shared_graph_nodes.len(),
+            1,
+            "expected exactly one graph node for repeated node name 'shared'"
+        );
+        assert_eq!(
+            shared_graph_nodes[0].token_id, *shared_token_id,
+            "graph node must share its token_id with the text entities for the same node name"
+        );
     }
 
     // =========================================================================
@@ -1579,9 +2008,51 @@ doc -> extract -> text"#;
     }
 
     #[test]
+    fn line_based_completion_context_existing_wiring_source() {
+        let (ctx, prefix) = get_completion_context("document -> extract -> text", 0, 3);
+        assert_eq!(ctx, CompletionContextType::WiringSource);
+        assert_eq!(prefix, "doc");
+    }
+
+    #[test]
+    fn bracketed_completion_context_existing_wiring_source() {
+        let (ctx, prefix) = get_completion_context("[document -> extract -> text]", 0, 4);
+        assert_eq!(ctx, CompletionContextType::WiringSource);
+        assert_eq!(prefix, "doc");
+    }
+
+    #[test]
     fn line_based_completion_context_start() {
         let (ctx, _) = get_completion_context("ex", 0, 2);
         assert_eq!(ctx, CompletionContextType::HeaderStart);
+    }
+
+    #[test]
+    fn loop_keyword_suggested_only_for_sequence_source() {
+        let ast = parse_notation_ast(concat!(
+            r#"p2t cap:in="media:page";op=page_to_text;out="media:txt""#,
+            "\n",
+            "pages -> LOOP p2t -> texts"
+        ));
+
+        assert!(
+            should_suggest_loop_keyword(&ast, 1, 12),
+            "sequence source should allow LOOP suggestion in cap position"
+        );
+    }
+
+    #[test]
+    fn loop_keyword_not_suggested_for_scalar_source() {
+        let ast = parse_notation_ast(concat!(
+            r#"extract cap:in="media:pdf";op=extract;out="media:txt""#,
+            "\n",
+            "doc -> extract -> text"
+        ));
+
+        assert!(
+            !should_suggest_loop_keyword(&ast, 1, 8),
+            "scalar source should not allow LOOP suggestion in cap position"
+        );
     }
 
     #[test]

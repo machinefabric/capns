@@ -42,9 +42,10 @@ pub mod serializer;
 pub use error::{MachineAbstractionError, MachineSyntaxError};
 pub use graph::{Machine, MachineEdge, MachineRun, MachineRunStatus};
 pub use notation_ast::{
-    parse_notation_ast, get_completion_context, get_hover_info, emit_semantic_tokens,
-    byte_offset_to_position,
-    CompletionContextType, NotationAST, NotationPosition, NotationSpan,
+    parse_notation_ast, get_completion_context, emit_semantic_tokens,
+    build_editor_model, byte_offset_to_position,
+    CompletionContextType, NotationAST, NotationEntityInfo, NotationEntityKind,
+    NotationGraphElementInfo, NotationGraphElementKind, NotationPosition, NotationSpan,
     ParsedHeader, ParsedStatement, ParsedWiring, SemanticTokenInfo, SemanticTokenType,
 };
 pub use parser::parse_machine;
