@@ -53,23 +53,52 @@ impl Machine {
     /// Convert a `Strand` (resolved linear path) into a `Machine`.
     ///
     /// The conversion:
-    /// - Each `Cap` step becomes a `MachineEdge` with a single source
-    /// - `ForEach` steps set `is_loop: true` on the next Cap edge
-    /// - `Collect` steps are elided (implicit in transitions)
+    /// - Each `Cap` step becomes a `MachineEdge` with a single source.
+    /// - `ForEach` steps set `is_loop: true` on the next Cap edge.
+    /// - `Collect` steps are elided (implicit in transitions).
+    ///
+    /// ## Source URN chaining
+    ///
+    /// Each cap step carries its cap-declared `from_spec`, which is
+    /// a pattern the cap's input conforms to — NOT necessarily the
+    /// exact URN of the preceding cap's output. For example,
+    /// `Disbind` may produce `media:page;textable` while
+    /// `MakeDecision` declares its input as `media:textable`. The
+    /// planner links them because `media:page;textable` conforms
+    /// to `media:textable`, but using `from_spec` verbatim as the
+    /// edge's source URN produces a machine with disconnected
+    /// strands (each cap has a different media URN as source/
+    /// target, so the serializer's node-naming emits two parallel
+    /// chains instead of one).
+    ///
+    /// To preserve linear topology through the serializer, the
+    /// source URN of each cap edge is set to the PRECEDING cap
+    /// step's target URN (which is the exact URN flowing into the
+    /// next cap at runtime). The very first cap uses the strand's
+    /// `source_spec` as its source.
     pub fn from_path(path: &Strand) -> Result<Self, MachineAbstractionError> {
         let mut edges = Vec::new();
         let mut pending_loop = false;
+        // Track the URN of the most recent cap's output so the
+        // next cap's source URN can be pinned to it — this is
+        // what wires successive caps into a single linear strand
+        // in the serializer's node-naming pass.
+        let mut prev_target: Option<MediaUrn> = None;
 
         for step in &path.steps {
             match &step.step_type {
                 StrandStepType::Cap { cap_urn, .. } => {
+                    let source = prev_target
+                        .clone()
+                        .unwrap_or_else(|| path.source_spec.clone());
                     edges.push(MachineEdge {
-                        sources: vec![step.from_spec.clone()],
+                        sources: vec![source],
                         cap_urn: cap_urn.clone(),
                         target: step.to_spec.clone(),
                         is_loop: pending_loop,
                     });
                     pending_loop = false;
+                    prev_target = Some(step.to_spec.clone());
                 }
                 StrandStepType::ForEach { .. } => {
                     pending_loop = true;
@@ -200,33 +229,145 @@ impl Machine {
         output
     }
 
+    /// Topological sort of the edges by data-flow dependency.
+    ///
+    /// Edge A precedes edge B iff some URN in B.sources equals
+    /// A.target. Ties (edges at the same topological "level") are
+    /// broken lexicographically by cap URN so two semantically
+    /// equivalent machines produce byte-identical output
+    /// regardless of the order edges were added.
+    ///
+    /// The input is the `Machine`'s raw edge vector. The output
+    /// is a permutation of `0..edges.len()` ordered such that
+    /// every edge's predecessors appear before it.
+    ///
+    /// If the graph has a cycle (which a well-formed `Machine`
+    /// should never have — all DAGs by contract), any edges that
+    /// can't be ordered fall at the end in cap-URN order. This
+    /// is a fail-visible fallback: the serialized notation will
+    /// parse but round-trip to a non-equivalent graph, signaling
+    /// the caller that their `Machine` had a structural problem.
+    fn topological_edge_order(edges: &[MachineEdge]) -> Vec<usize> {
+        use std::collections::VecDeque;
+
+        let n = edges.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        // Build the predecessor relation: for each edge B, which
+        // other edges A have A.target equal to one of B.sources?
+        // Because `MediaUrn::is_equivalent` is the canonical
+        // identity check, we compare via that — not by raw
+        // string equality on `.to_string()`.
+        let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut indegree: Vec<usize> = vec![0; n];
+
+        for (b_idx, b) in edges.iter().enumerate() {
+            for (a_idx, a) in edges.iter().enumerate() {
+                if a_idx == b_idx {
+                    continue;
+                }
+                let matches = b.sources.iter().any(|src| {
+                    match a.target.is_equivalent(src) {
+                        Ok(eq) => eq,
+                        Err(_) => false,
+                    }
+                });
+                if matches {
+                    predecessors[b_idx].push(a_idx);
+                    successors[a_idx].push(b_idx);
+                    indegree[b_idx] += 1;
+                }
+            }
+        }
+
+        // Kahn's algorithm: repeatedly remove a zero-indegree
+        // edge, breaking ties by cap URN string. Edges whose
+        // source URN is consumed by another edge's target wait
+        // their turn.
+        let mut result: Vec<usize> = Vec::with_capacity(n);
+        let mut ready: VecDeque<usize> = edges
+            .iter()
+            .enumerate()
+            .filter_map(|(i, _)| if indegree[i] == 0 { Some(i) } else { None })
+            .collect();
+
+        // Maintain `ready` sorted by cap URN so the first pop is
+        // deterministic. Sort it once before the loop and
+        // re-sort on each insertion (the set is small — a
+        // machine with more than a few dozen edges is unusual).
+        fn sort_ready(ready: &mut VecDeque<usize>, edges: &[MachineEdge]) {
+            let mut v: Vec<usize> = ready.drain(..).collect();
+            v.sort_by(|a, b| {
+                let ea = &edges[*a];
+                let eb = &edges[*b];
+                let cap_cmp = ea.cap_urn.to_string().cmp(&eb.cap_urn.to_string());
+                if cap_cmp != std::cmp::Ordering::Equal {
+                    return cap_cmp;
+                }
+                let src_a: Vec<String> = ea.sources.iter().map(|s| s.to_string()).collect();
+                let src_b: Vec<String> = eb.sources.iter().map(|s| s.to_string()).collect();
+                let src_cmp = src_a.cmp(&src_b);
+                if src_cmp != std::cmp::Ordering::Equal {
+                    return src_cmp;
+                }
+                ea.target.to_string().cmp(&eb.target.to_string())
+            });
+            ready.extend(v);
+        }
+
+        sort_ready(&mut ready, edges);
+
+        while let Some(idx) = ready.pop_front() {
+            result.push(idx);
+            for &succ in &successors[idx] {
+                indegree[succ] -= 1;
+                if indegree[succ] == 0 {
+                    ready.push_back(succ);
+                }
+            }
+            sort_ready(&mut ready, edges);
+        }
+
+        // If the DAG has a cycle, some edges will never reach
+        // zero in-degree. Append them in cap-URN order so the
+        // output is still deterministic (and the cycle is
+        // visible to whoever inspects the notation).
+        if result.len() < n {
+            let mut remaining: Vec<usize> = (0..n)
+                .filter(|i| !result.contains(i))
+                .collect();
+            remaining.sort_by(|a, b| {
+                edges[*a].cap_urn.to_string().cmp(&edges[*b].cap_urn.to_string())
+            });
+            result.extend(remaining);
+        }
+
+        result
+    }
+
     /// Build the alias map, node name map, and edge ordering for serialization.
     ///
     /// Returns:
     /// - `aliases`: alias → (edge_index, cap_urn_string)
     /// - `node_names`: media_urn_canonical_string → node_name
     /// - `edge_order`: edge indices in canonical order
+    ///
+    /// Edge ordering is a **topological sort** of the data-flow
+    /// DAG: an edge A precedes an edge B if A.target matches any
+    /// URN in B.sources. This produces a linear reading order
+    /// when the machine IS linear (upstream caps come first),
+    /// and respects partial order in fan-out / fan-in. Ties at
+    /// the same topological level are broken lexicographically
+    /// by cap URN for determinism — the existing
+    /// `reordered_edges_produce_same_notation` contract still
+    /// holds because the underlying predecessor relation is a
+    /// property of the edge set, not the construction order.
     fn build_serialization_maps(&self) -> (BTreeMap<String, (usize, String)>, HashMap<String, String>, Vec<usize>) {
-        // Step 1: Generate canonical edge ordering
-        let mut edge_order: Vec<usize> = (0..self.edges().len()).collect();
-        edge_order.sort_by(|a, b| {
-            let ea = &self.edges()[*a];
-            let eb = &self.edges()[*b];
-
-            let cap_cmp = ea.cap_urn.to_string().cmp(&eb.cap_urn.to_string());
-            if cap_cmp != std::cmp::Ordering::Equal {
-                return cap_cmp;
-            }
-
-            let src_a: Vec<String> = ea.sources.iter().map(|s| s.to_string()).collect();
-            let src_b: Vec<String> = eb.sources.iter().map(|s| s.to_string()).collect();
-            let src_cmp = src_a.cmp(&src_b);
-            if src_cmp != std::cmp::Ordering::Equal {
-                return src_cmp;
-            }
-
-            ea.target.to_string().cmp(&eb.target.to_string())
-        });
+        // Step 1: Topological sort with deterministic tiebreaker.
+        let edge_order = Self::topological_edge_order(self.edges());
 
         // Step 2: Generate aliases from op= tag
         let mut aliases: BTreeMap<String, (usize, String)> = BTreeMap::new();
@@ -833,5 +974,171 @@ mod tests {
             Machine::from_path(&path),
             Err(MachineAbstractionError::NoCapabilitySteps)
         ));
+    }
+
+    // =========================================================================
+    // Serializer respects topology, not URN string equality
+    // =========================================================================
+
+    /// Real-world case that triggered the topological-sort fix:
+    /// `[Disbind, ForEach, make_decision]`. Disbind outputs
+    /// `media:page;textable`; make_decision declares its input
+    /// as `media:textable`. The URNs differ by string, but the
+    /// planner links them via conformance because ForEach unwraps
+    /// the sequence item. The serializer must produce a **single
+    /// linear strand** n0 -> disbind -> n1, n1 -> LOOP make_decision -> n2
+    /// — not two disconnected strands.
+    #[test]
+    fn from_path_chains_disbind_foreach_make_decision_into_single_strand() {
+        use crate::planner::live_cap_graph::{StrandStep, StrandStepType};
+
+        let path = Strand {
+            steps: vec![
+                StrandStep {
+                    step_type: StrandStepType::Cap {
+                        cap_urn: cap("cap:in=\"media:pdf\";op=disbind;out=\"media:page;textable\""),
+                        title: "Disbind".to_string(),
+                        specificity: 5,
+                        input_is_sequence: false,
+                        output_is_sequence: true,
+                    },
+                    from_spec: media("media:pdf"),
+                    to_spec: media("media:page;textable"),
+                },
+                StrandStep {
+                    step_type: StrandStepType::ForEach {
+                        media_spec: media("media:page;textable"),
+                    },
+                    from_spec: media("media:page;textable"),
+                    to_spec: media("media:page;textable"),
+                },
+                StrandStep {
+                    step_type: StrandStepType::Cap {
+                        // Note: cap's declared from_spec is
+                        // `media:textable`, NOT
+                        // `media:page;textable`. The from_path
+                        // chaining fix must override this with
+                        // the preceding cap's target URN so the
+                        // serializer sees a single chain.
+                        cap_urn: cap("cap:constrained;in=\"media:textable\";op=make_decision;out=\"media:decision;json;record;textable\""),
+                        title: "Make a Decision".to_string(),
+                        specificity: 4,
+                        input_is_sequence: false,
+                        output_is_sequence: false,
+                    },
+                    from_spec: media("media:textable"),
+                    to_spec: media("media:decision;json;record;textable"),
+                },
+            ],
+            source_spec: media("media:pdf"),
+            target_spec: media("media:decision;json;record;textable"),
+            total_steps: 3,
+            cap_step_count: 2,
+            description: "Disbind → ForEach → Make a Decision".to_string(),
+        };
+
+        let graph = Machine::from_path(&path).unwrap();
+        assert_eq!(graph.edge_count(), 2);
+
+        // First edge: disbind, sources=[media:pdf], target=media:page;textable, not looped
+        let disbind = &graph.edges()[0];
+        assert_eq!(disbind.sources.len(), 1);
+        assert_eq!(disbind.sources[0].to_string(), media("media:pdf").to_string());
+        assert_eq!(disbind.target.to_string(), media("media:page;textable").to_string());
+        assert!(!disbind.is_loop);
+
+        // Second edge: make_decision, sources MUST be the
+        // preceding cap's target (media:page;textable), NOT the
+        // cap's declared from_spec (media:textable). This is the
+        // chaining fix that allows a single linear strand.
+        let make_decision = &graph.edges()[1];
+        assert_eq!(make_decision.sources.len(), 1);
+        assert_eq!(
+            make_decision.sources[0].to_string(),
+            media("media:page;textable").to_string(),
+            "make_decision's source must be pinned to disbind's target (ForEach chaining)"
+        );
+        assert_eq!(
+            make_decision.target.to_string(),
+            media("media:decision;json;record;textable").to_string()
+        );
+        assert!(make_decision.is_loop, "make_decision must be LOOP (inside ForEach)");
+
+        // Serialize and assert the notation is a single connected strand.
+        let notation = graph.to_machine_notation_multiline();
+        assert!(
+            notation.contains("[n0 -> disbind -> n1]"),
+            "Expected 'n0 -> disbind -> n1' in notation:\n{}",
+            notation
+        );
+        assert!(
+            notation.contains("[n1 -> LOOP make_decision -> n2]"),
+            "Expected 'n1 -> LOOP make_decision -> n2' in notation:\n{}",
+            notation
+        );
+    }
+
+    /// The reorder-determinism contract must still hold even
+    /// when edges are chained through the ForEach fix. Two
+    /// Machines built from the same edge set in different orders
+    /// must serialize identically under the topological sort.
+    #[test]
+    fn reordered_chained_edges_produce_same_notation() {
+        let disbind_edge = edge(
+            &["media:pdf"],
+            "cap:in=\"media:pdf\";op=disbind;out=\"media:page;textable\"",
+            "media:page;textable",
+            false,
+        );
+        let make_decision_edge = edge(
+            &["media:page;textable"],
+            "cap:constrained;in=\"media:textable\";op=make_decision;out=\"media:decision;json;record;textable\"",
+            "media:decision;json;record;textable",
+            true,
+        );
+
+        let g1 = Machine::new(vec![disbind_edge.clone(), make_decision_edge.clone()]);
+        let g2 = Machine::new(vec![make_decision_edge, disbind_edge]);
+        assert_eq!(
+            g1.to_machine_notation(),
+            g2.to_machine_notation(),
+            "Topological sort must produce identical output regardless of input edge order"
+        );
+    }
+
+    /// Topological sort respects partial order — a downstream
+    /// edge whose sources match an upstream edge's target must
+    /// come second, even if its cap URN sorts first
+    /// alphabetically. This test pins that the topological
+    /// predecessor relation dominates the cap-URN tiebreaker.
+    #[test]
+    fn topological_sort_dominates_alphabetical_cap_urn() {
+        // "aaa_first" sorts before "zzz_second" alphabetically,
+        // but "zzz_second" produces the URN that "aaa_first"
+        // consumes, so topologically zzz_second must come first.
+        let g = Machine::new(vec![
+            edge(
+                &["media:middle"],
+                "cap:in=\"media:middle\";op=aaa_first;out=\"media:end\"",
+                "media:end",
+                false,
+            ),
+            edge(
+                &["media:start"],
+                "cap:in=\"media:start\";op=zzz_second;out=\"media:middle\"",
+                "media:middle",
+                false,
+            ),
+        ]);
+        let notation = g.to_machine_notation_multiline();
+        // In the wiring section, zzz_second must appear before
+        // aaa_first because it's the topological predecessor.
+        let zzz_pos = notation.find("-> zzz_second ->").expect("zzz_second wiring missing");
+        let aaa_pos = notation.find("-> aaa_first ->").expect("aaa_first wiring missing");
+        assert!(
+            zzz_pos < aaa_pos,
+            "zzz_second (upstream) must appear before aaa_first (downstream) in:\n{}",
+            notation
+        );
     }
 }
