@@ -757,8 +757,8 @@ pub fn get_completion_replacement_span(
 ///     this is what the user intuitively expects when hovering an arrow.
 pub fn build_editor_model(
     ast: &NotationAST,
-    cap_details: &HashMap<String, (String, String)>,
-    media_details: &HashMap<String, (String, String)>,
+    cap_details: &HashMap<String, (String, String, Option<String>)>,
+    media_details: &HashMap<String, (String, String, Option<String>)>,
 ) -> (Vec<NotationEntityInfo>, Vec<NotationGraphElementInfo>) {
     let mut entities = Vec::new();
     let mut graph_elements = Vec::new();
@@ -785,7 +785,7 @@ pub fn build_editor_model(
                     kind: NotationEntityKind::CapUrn,
                     range: header.cap_urn_span.clone(),
                     label: header.cap_urn_str.clone(),
-                    detail: cap_details.get(&header.cap_urn_str).map(|(title, _)| title.clone()),
+                    detail: cap_details.get(&header.cap_urn_str).map(|(title, _, _)| title.clone()),
                     hover_markdown: Some(format_cap_urn_hover(
                         &header.cap_urn_str,
                         &header.cap_urn,
@@ -1142,7 +1142,7 @@ fn ensure_graph_node(
     node_identity_by_name: &mut HashMap<String, (String, String)>,
     node_name: &str,
     ast: &NotationAST,
-    media_details: &HashMap<String, (String, String)>,
+    media_details: &HashMap<String, (String, String, Option<String>)>,
 ) -> (String, String) {
     if let Some(existing) = node_identity_by_name.get(node_name) {
         return existing.clone();
@@ -1154,7 +1154,7 @@ fn ensure_graph_node(
     let detail = linked_media_urn
         .as_ref()
         .and_then(|urn| {
-            media_details.get(urn).map(|(title, description)| {
+            media_details.get(urn).map(|(title, description, _)| {
                 if title.is_empty() {
                     description.clone()
                 } else if description.is_empty() {
@@ -1410,7 +1410,7 @@ fn parse_loop_cap_with_spans(
 // Helper: Hover formatting
 // =============================================================================
 
-fn format_alias_hover(header: &ParsedHeader, cap_details: &HashMap<String, (String, String)>) -> String {
+fn format_alias_hover(header: &ParsedHeader, cap_details: &HashMap<String, (String, String, Option<String>)>) -> String {
     let mut md = format!("**{}** — capability alias\n\n", header.alias);
 
     md.push_str(&format!("`{}`\n\n", header.cap_urn_str));
@@ -1426,12 +1426,19 @@ fn format_alias_hover(header: &ParsedHeader, cap_details: &HashMap<String, (Stri
     }
 
     // Registry enrichment
-    if let Some((title, description)) = cap_details.get(&header.cap_urn_str) {
+    if let Some((title, description, documentation)) = cap_details.get(&header.cap_urn_str) {
         if !title.is_empty() {
             md.push_str(&format!("\n**{}**\n", title));
         }
         if !description.is_empty() {
             md.push_str(&format!("\n{}\n", description));
+        }
+        if let Some(doc) = documentation {
+            if !doc.is_empty() {
+                md.push_str("\n---\n\n");
+                md.push_str(doc);
+                md.push('\n');
+            }
         }
     }
 
@@ -1441,7 +1448,7 @@ fn format_alias_hover(header: &ParsedHeader, cap_details: &HashMap<String, (Stri
 fn format_cap_urn_hover(
     cap_urn_str: &str,
     cap_urn: &Option<CapUrn>,
-    cap_details: &HashMap<String, (String, String)>,
+    cap_details: &HashMap<String, (String, String, Option<String>)>,
 ) -> String {
     let mut md = format!("**Cap URN**\n\n`{}`\n\n", cap_urn_str);
 
@@ -1455,12 +1462,19 @@ fn format_cap_urn_hover(
         md.push_str(&format!("| out | `{}` |\n", cap_urn.out_spec()));
     }
 
-    if let Some((title, description)) = cap_details.get(cap_urn_str) {
+    if let Some((title, description, documentation)) = cap_details.get(cap_urn_str) {
         if !title.is_empty() {
             md.push_str(&format!("\n**{}**\n", title));
         }
         if !description.is_empty() {
             md.push_str(&format!("\n{}\n", description));
+        }
+        if let Some(doc) = documentation {
+            if !doc.is_empty() {
+                md.push_str("\n---\n\n");
+                md.push_str(doc);
+                md.push('\n');
+            }
         }
     }
 
@@ -1470,7 +1484,7 @@ fn format_cap_urn_hover(
 fn format_node_hover(
     node_name: &str,
     node_media: &HashMap<String, MediaUrn>,
-    media_details: &HashMap<String, (String, String)>,
+    media_details: &HashMap<String, (String, String, Option<String>)>,
 ) -> String {
     let mut md = format!("**{}** — node\n\n", node_name);
 
@@ -1478,12 +1492,19 @@ fn format_node_hover(
         let urn_str = media_urn.to_string();
         md.push_str(&format!("Media type: `{}`\n", urn_str));
 
-        if let Some((title, description)) = media_details.get(&urn_str) {
+        if let Some((title, description, documentation)) = media_details.get(&urn_str) {
             if !title.is_empty() {
                 md.push_str(&format!("\n**{}**\n", title));
             }
             if !description.is_empty() {
                 md.push_str(&format!("\n{}\n", description));
+            }
+            if let Some(doc) = documentation {
+                if !doc.is_empty() {
+                    md.push_str("\n---\n\n");
+                    md.push_str(doc);
+                    md.push('\n');
+                }
             }
         }
     }
