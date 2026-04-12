@@ -148,7 +148,7 @@ media:integer;textable;form=list   # Array of integers
 
 ## 6. Matching Semantics
 
-Media URN matching follows Tagged URN semantics from [01-TAGGED-URN-DOMAIN](./01-TAGGED-URN-DOMAIN.md).
+Media URN matching follows Tagged URN semantics from [01-TAGGED-URN-DOMAIN](./03-TAGGED-URN-DOMAIN.md).
 
 ### 6.1 Pattern Matching
 
@@ -206,7 +206,7 @@ cap:in=*;op=convert;out=*
 
 ### 7.3 Dispatch
 
-For dispatch (see [05-DISPATCH](./05-DISPATCH.md)):
+For dispatch (see [05-DISPATCH](./07-DISPATCH.md)):
 
 - **Input**: Request input must conform to provider input (contravariant)
 - **Output**: Provider output must conform to request output (covariant)

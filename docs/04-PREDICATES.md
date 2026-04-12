@@ -2,7 +2,7 @@
 
 ## 1. Foundation
 
-All predicates are derived from the base relation ⪯ defined in [01-TAGGED-URN-DOMAIN](./01-TAGGED-URN-DOMAIN.md):
+All predicates are derived from the base relation ⪯ defined in [01-TAGGED-URN-DOMAIN](./03-TAGGED-URN-DOMAIN.md):
 
 ```
 a ⪯ b   iff   a is at least as specific as b
@@ -194,7 +194,7 @@ if urn_a.is_equivalent(&urn_b) {
 if registered.accepts(&request) { /* route here */ }
 ```
 
-**Problem**: A generic provider accepts a specific request, but may not meet the request's output requirements. Dispatch requires the 3-axis check (see [05-DISPATCH](./05-DISPATCH.md)).
+**Problem**: A generic provider accepts a specific request, but may not meet the request's output requirements. Dispatch requires the 3-axis check (see [05-DISPATCH](./07-DISPATCH.md)).
 
 ### 5.2 Using `conforms_to` for dispatch
 
@@ -272,4 +272,4 @@ The four predicates provide complementary views of the base relation ⪯:
 | "Are these related?" | `is_comparable(a, b)` |
 | "Are these identical?" | `is_equivalent(a, b)` |
 
-For Cap URN dispatch, none of these alone is sufficient. See [05-DISPATCH](./05-DISPATCH.md) for the correct routing predicate.
+For Cap URN dispatch, none of these alone is sufficient. See [05-DISPATCH](./07-DISPATCH.md) for the correct routing predicate.

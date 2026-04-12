@@ -187,7 +187,7 @@ Where:
 
 This differs from a naive `spec_U(i) + spec_U(o) + spec_U(y)` because direction specs are Media URNs (counted by tag presence) while y-tags use binary wildcard/non-wildcard distinction.
 
-This is a derived scalar used only for ranking among already valid candidates. See [03-SPECIFICITY](./03-SPECIFICITY.md) for full details.
+This is a derived scalar used only for ranking among already valid candidates. See [03-SPECIFICITY](./05-SPECIFICITY.md) for full details.
 
 ---
 

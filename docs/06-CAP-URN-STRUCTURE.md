@@ -223,7 +223,7 @@ let op: Option<&str> = cap.tag("op"); // Some("extract")
 
 ## 7. Specificity
 
-Cap URN specificity is defined in [03-SPECIFICITY](./03-SPECIFICITY.md):
+Cap URN specificity is defined in [03-SPECIFICITY](./05-SPECIFICITY.md):
 
 ```
 spec_C(i, o, y) = tags(i) + tags(o) + count(non-* y-tags)
@@ -254,7 +254,7 @@ cap:in=media:pdf;op=extract    cap:op=extract;out=media:object
 cap:in=media:pdf;v=2.0;op=extract;out=media:object;target=metadata  (more specific)
 ```
 
-The ordering follows from the dispatch relation (see [05-DISPATCH](./05-DISPATCH.md)).
+The ordering follows from the dispatch relation (see [05-DISPATCH](./07-DISPATCH.md)).
 
 ---
 
@@ -339,4 +339,4 @@ The identity morphism. Required in all capsets.
 | Direction defaults | Missing or `*` → `media:` |
 | Canonical form | Always includes `in` and `out` |
 
-Cap URNs extend Tagged URNs with three-dimensional structure. The dispatch relation (next document) defines how these dimensions interact for routing. Once dispatch is in place, multiple Cap URNs can be wired into a data-flow graph and serialized via [07-MACHINE-NOTATION](./07-MACHINE-NOTATION.md).
+Cap URNs extend Tagged URNs with three-dimensional structure. The dispatch relation (next document) defines how these dimensions interact for routing. Once dispatch is in place, multiple Cap URNs can be wired into a data-flow graph and serialized via [07-MACHINE-NOTATION](./09-MACHINE-NOTATION.md).

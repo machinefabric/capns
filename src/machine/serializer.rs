@@ -28,7 +28,7 @@
 //! ## Aliases and node names
 //!
 //! Aliases and node names are opaque labels — see
-//! `07-MACHINE-NOTATION.md` §4 for the rationale. The
+//! `09-MACHINE-NOTATION.md` §4 for the rationale. The
 //! serializer generates them as:
 //!
 //! - `edge_<global_index>` for each cap edge in the order it

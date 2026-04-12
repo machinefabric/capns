@@ -7,7 +7,7 @@ The system distinguishes two phases:
 1. **Dispatch Validity** — Is this provider legal for this request?
 2. **Ranking** — Among valid providers, which should be selected?
 
-This document covers ranking. Dispatch validity is defined in [05-DISPATCH](./05-DISPATCH.md).
+This document covers ranking. Dispatch validity is defined in [05-DISPATCH](./07-DISPATCH.md).
 
 **Critical**: Ranking applies ONLY to dispatch-valid providers. Never rank before validating.
 
@@ -35,7 +35,7 @@ For a provider `p` and request `r`:
 dist(p, r) = spec_C(p) - spec_C(r)
 ```
 
-Where `spec_C` is Cap URN specificity (see [03-SPECIFICITY](./03-SPECIFICITY.md)).
+Where `spec_C` is Cap URN specificity (see [03-SPECIFICITY](./05-SPECIFICITY.md)).
 
 ### 3.2 Interpretation
 
@@ -250,7 +250,7 @@ Invalidate on provider registration/unregistration.
 
 ## 10. Relationship to is_comparable
 
-The `is_comparable` predicate from [02-PREDICATES](./02-PREDICATES.md) is sometimes used for **discovery** but NOT for ranking:
+The `is_comparable` predicate from [02-PREDICATES](./04-PREDICATES.md) is sometimes used for **discovery** but NOT for ranking:
 
 ```
 is_comparable(p, r)  ⟹̸  Dispatch(p, r)
@@ -269,4 +269,4 @@ Comparable providers may not be dispatchable. Always check `is_dispatchable` fir
 | Preference | Exact (0) > Refinement (+) > Fallback (-) |
 | Tie-break | First registered (default) |
 
-Ranking is policy, not semantics. The dispatch predicate defines validity; ranking determines selection among valid options. Once a sequence of caps has been resolved into a workflow, that workflow is encoded as a graph and serialized via [07-MACHINE-NOTATION](./07-MACHINE-NOTATION.md).
+Ranking is policy, not semantics. The dispatch predicate defines validity; ranking determines selection among valid options. Once a sequence of caps has been resolved into a workflow, that workflow is encoded as a graph and serialized via [07-MACHINE-NOTATION](./09-MACHINE-NOTATION.md).

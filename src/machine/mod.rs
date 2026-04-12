@@ -5,7 +5,7 @@
 //! a `MachineStrand` — a maximal connected sub-graph of resolved
 //! cap edges with explicit input and output anchors.
 //!
-//! See [`07-MACHINE-NOTATION`](../../docs/07-MACHINE-NOTATION.md)
+//! See [`09-MACHINE-NOTATION`](../../docs/09-MACHINE-NOTATION.md)
 //! for the full specification.
 //!
 //! ## Layers

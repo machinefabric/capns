@@ -168,7 +168,7 @@ Interpretation:
 2. **Refinement** (dist > 0) — provider specializes request
 3. **Fallback** (dist < 0) — provider is generic, use as last resort
 
-See [06-RANKING](./06-RANKING.md) for complete ranking policy.
+See [06-RANKING](./08-RANKING.md) for complete ranking policy.
 
 ---
 

@@ -10,7 +10,7 @@ It is used for:
 2. **Round-trip serialization** — Persist a machine to text, parse it back, get an equivalent machine.
 3. **Human authoring** — A compact, readable form a user can write or edit directly.
 
-This document describes the language. The dispatch and ranking semantics for individual caps are defined in [05-DISPATCH](./05-DISPATCH.md) and [06-RANKING](./06-RANKING.md); machine notation builds on top of them.
+This document describes the language. The dispatch and ranking semantics for individual caps are defined in [05-DISPATCH](./07-DISPATCH.md) and [06-RANKING](./08-RANKING.md); machine notation builds on top of them.
 
 ---
 
@@ -73,7 +73,7 @@ extract cap:in="media:pdf";op=extract;out="media:txt;textable"
 embed cap:in="media:textable";op=embed;out="media:embedding-vector;record;textable"
 ```
 
-The cap URN is parsed by `CapUrn::from_string` (see [04-CAP-URN-STRUCTURE](./04-CAP-URN-STRUCTURE.md)). The header is consumed in exactly one place: each matching wiring references it by alias.
+The cap URN is parsed by `CapUrn::from_string` (see [04-CAP-URN-STRUCTURE](./06-CAP-URN-STRUCTURE.md)). The header is consumed in exactly one place: each matching wiring references it by alias.
 
 ### 4.2 Wirings
 
@@ -128,16 +128,26 @@ Strand declaration order matters: strands are listed in the resulting `Machine` 
 
 ## 7. Source-to-Cap-Arg Resolution
 
-Each cap defines its input arguments in its `args` list (see [04-CAP-URN-STRUCTURE](./04-CAP-URN-STRUCTURE.md)). [10-VALIDATION-RULES](./10-VALIDATION-RULES.md) RULE1 enforces that the `media_urn` of each arg is unique within a cap. Resolution is the process of matching each source position in a wiring to a unique cap arg.
+Each cap defines its input arguments in its `args` list. Each arg has a `media_urn` (the **slot identity**, unique per cap per RULE1) and a `sources` list describing how the arg receives data at runtime. The source types are:
 
-The matching is a **minimum-cost bipartite assignment with a uniqueness check**:
+- `Stdin { stdin: "<media URN>" }` — the arg receives data via the stdin stream. The inner URN is the **data-flow type** (e.g. `media:pdf`). This is the type the runtime delivers on the wire.
+- `Position { position: N }` — positional CLI argument.
+- `CliFlag { cli_flag: "--name" }` — named CLI flag.
 
-- **Cost**. For source URN `s` and cap arg URN `a`: if `s.conforms_to(a)` is false, the pair is impossible. Otherwise the cost is `spec(s) - spec(a)`, the **specificity distance** (always non-negative because `s ⪯ a` implies `spec(s) ≥ spec(a)`). Smaller distance = the arg is the tightest fit for the source.
-- **Algorithm**. Brute-force enumeration of all perfect injections from sources to args. The minimum-cost matching wins.
+**Only args with a Stdin source participate in source-to-cap-arg matching.** Args with only CLI/positional sources are runtime configuration — they receive their values at execution time from cap settings, slot values, or defaults, not from upstream caps in the data flow.
+
+The slot identity (`arg.media_urn`, e.g. `media:file-path;textable`) may differ from the stdin source URN (`media:pdf`). The slot identity is the cap's internal label for the arg slot; the stdin URN is the type of data that actually flows on the wire. The runtime handles the translation transparently (e.g. reading a file path and piping the file's bytes into stdin). The resolver matches against the **stdin source URN**, not the slot identity.
+
+### Matching algorithm
+
+The matching is a **minimum-cost bipartite assignment with a uniqueness check** over the wiring's source URNs and the cap's stdin-source URNs:
+
+- **Cost**. For source URN `s` and stdin arg URN `a`: if `s.conforms_to(a)` is false, the pair is impossible. Otherwise the cost is `spec(s) - spec(a)`, the **specificity distance** (always non-negative because `s ⪯ a` implies `spec(s) ≥ spec(a)`). Smaller distance = the arg is the tightest fit for the source.
+- **Algorithm**. Brute-force enumeration of all perfect injections from sources to stdin args. The minimum-cost matching wins.
 - **Uniqueness**. The minimum-cost matching must be unique. If two distinct assignments tie at the same minimum total cost, the resolver fails with `AmbiguousMachineNotation`. **Source vec position is not used as a tiebreaker.**
-- **Unmatched source**. If any source has no candidate cap arg (no arg whose URN it conforms to), the resolver fails with `UnmatchedSourceInCapArgs`.
+- **Unmatched source**. If any source has no candidate stdin arg (no stdin arg whose URN it conforms to), the resolver fails with `UnmatchedSourceInCapArgs`.
 
-The result is a `Vec<EdgeAssignmentBinding>` of `(cap_arg_media_urn, source_node)` pairs, sorted by `cap_arg_media_urn` for canonical comparison.
+The result is a `Vec<EdgeAssignmentBinding>` of `(cap_arg_media_urn, source_node)` pairs, where `cap_arg_media_urn` is the **slot identity** (the arg's outer `media_urn`, for RULE1-based identification), sorted by `cap_arg_media_urn` for canonical comparison.
 
 Resolution requires the cap registry to look up each cap's `args` list. All `Machine` constructors (`from_strand`, `from_strands`, `from_string`) take `&CapRegistry`.
 
@@ -199,6 +209,16 @@ The two programmatic constructors (`from_strand`, `from_strands`) treat each inp
 
 For each Cap step in a planner strand, `from_strand` builds one resolved edge whose source is the step's `from_spec` and whose target is the step's `to_spec`. `ForEach` sets `is_loop = true` on the next cap edge; `Collect` is elided (cardinality transitions are implicit in the resolved data flow).
 
+### Positional interning (planner path)
+
+The planner chains caps by conformance: a cap's declared input (`in=media:textable`) may be less specific than the preceding cap's declared output (`out=media:page;textable`). At runtime the more-specific data flows through both. The resolver uses **positional interning** to collapse these into one shared data position:
+
+- Each cap step's **source** reuses the preceding cap step's target NodeId iff the two URNs are on the same specialization chain (`is_comparable`). The more-specific URN wins as the canonical representative.
+- Each cap step's **target** always allocates a fresh NodeId.
+- `ForEach` and `Collect` preserve the boundary position through the cardinality transition.
+
+This ensures that consecutive caps in a strand share an intermediate node even when their declared URNs differ by specificity.
+
 ---
 
 ## 12. Failure Modes
@@ -209,11 +229,14 @@ Building a `Machine` from notation can fail in several distinct ways:
 |---|---|---|
 | `MachineSyntaxError::Empty` | parser | Input is empty or whitespace-only. |
 | `MachineSyntaxError::ParseError` | parser | Pest grammar parse failed (malformed brackets, unrecognized tokens, etc.). |
+| `MachineSyntaxError::UnterminatedStatement` | parser | A bracket `[` was opened but never closed with `]`. |
 | `MachineSyntaxError::DuplicateAlias` | parser | Two header statements define the same alias. |
 | `MachineSyntaxError::UndefinedAlias` | parser | A wiring references an alias that no header defines. |
 | `MachineSyntaxError::NodeAliasCollision` | parser | A wiring uses a node name that is also a header alias. |
 | `MachineSyntaxError::InvalidWiring` | parser | Two URNs bound to the same node name are not on the same specialization chain (`is_comparable` returns false). |
 | `MachineSyntaxError::InvalidCapUrn` | parser | A cap URN in a header failed to parse. |
+| `MachineSyntaxError::InvalidMediaUrn` | parser | A media URN referenced in a cap's `in=` or `out=` spec failed to parse. |
+| `MachineSyntaxError::InvalidHeader` | parser | A header statement has invalid structure. |
 | `MachineSyntaxError::NoEdges` | parser | The notation has headers but no wirings. |
 | `MachineAbstractionError::NoCapabilitySteps` | resolver | The strand or wiring set contains no Cap step. |
 | `MachineAbstractionError::UnknownCap` | resolver | A cap referenced by a wiring is not in the cap registry's cache. |
