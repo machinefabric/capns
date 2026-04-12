@@ -1,6 +1,6 @@
 //! CapSet registry for unified capability host discovery
 //!
-//! Provides unified interface for finding cap sets (both providers and plugins)
+//! Provides unified interface for finding cap sets (both providers and cartridges)
 //! that can satisfy capability requests using subset matching.
 //!
 //! Also provides CapGraph for representing capabilities as a directed graph
@@ -504,7 +504,7 @@ pub struct CapGraphStats {
     pub output_spec_count: usize,
 }
 
-/// Unified registry for cap sets (providers and plugins)
+/// Unified registry for cap sets (providers and cartridges)
 #[derive(Debug)]
 pub struct CapMatrix {
     /// Map of host name to entry. pub(crate) for CapBlock access.
@@ -667,7 +667,7 @@ pub struct BestCapSetMatch {
 /// On tie, defaults to the first registry that was added (priority order).
 ///
 /// This registry holds Arc references to child registries, allowing
-/// the original owners (e.g., ProviderRegistry, PluginGateway) to retain
+/// the original owners (e.g., ProviderRegistry, CartridgeGateway) to retain
 /// ownership while still participating in unified capability lookup.
 #[derive(Debug)]
 pub struct CapBlock {
@@ -1166,12 +1166,12 @@ mod tests {
     // TEST121: Test CapBlock selects more specific cap over less specific regardless of registry order
     #[tokio::test]
     async fn test121_cap_block_more_specific_wins() {
-        // This is the key test: provider has less specific cap, plugin has more specific
+        // This is the key test: provider has less specific cap, cartridge has more specific
         // The more specific one should win regardless of registry order
         let (media_registry, _temp_dir) = test_media_registry();
 
         let mut provider_registry = CapMatrix::new(media_registry.clone());
-        let mut plugin_registry = CapMatrix::new(media_registry.clone());
+        let mut cartridge_registry = CapMatrix::new(media_registry.clone());
 
         // Provider: less specific cap
         let provider_host = Box::new(MockCapSet { name: "provider".to_string() });
@@ -1185,33 +1185,33 @@ mod tests {
             vec![provider_cap]
         ).unwrap();
 
-        // Plugin: more specific cap (has ext=pdf)
-        let plugin_host = Box::new(MockCapSet { name: "plugin".to_string() });
-        let plugin_cap = make_cap(
+        // Cartridge: more specific cap (has ext=pdf)
+        let cartridge_host = Box::new(MockCapSet { name: "cartridge".to_string() });
+        let cartridge_cap = make_cap(
             r#"cap:ext=pdf;in="media:binary";op=generate_thumbnail;out="media:binary""#,
-            "Plugin PDF Thumbnail Generator (specific)"
+            "Cartridge PDF Thumbnail Generator (specific)"
         );
-        plugin_registry.register_cap_set(
-            "plugin".to_string(),
-            plugin_host,
-            vec![plugin_cap]
+        cartridge_registry.register_cap_set(
+            "cartridge".to_string(),
+            cartridge_host,
+            vec![cartridge_cap]
         ).unwrap();
 
         // Create composite with provider first (normally would have priority on ties)
         let mut composite = CapBlock::new(media_registry.clone());
         composite.add_registry("providers".to_string(), Arc::new(RwLock::new(provider_registry)));
-        composite.add_registry("plugins".to_string(), Arc::new(RwLock::new(plugin_registry)));
+        composite.add_registry("cartridges".to_string(), Arc::new(RwLock::new(cartridge_registry)));
 
-        // Request for PDF thumbnails - plugin's more specific cap should win
+        // Request for PDF thumbnails - cartridge's more specific cap should win
         let request = r#"cap:ext=pdf;in="media:binary";op=generate_thumbnail;out="media:binary""#;
         let best = composite.find_best_cap_set(request).unwrap();
 
-        // Plugin registry has specificity 4 (in, op, out, ext)
+        // Cartridge registry has specificity 4 (in, op, out, ext)
         // Provider registry has specificity 3 (in, op, out)
-        // Plugin should win even though providers were added first
-        assert_eq!(best.registry_name, "plugins", "More specific plugin should win over less specific provider");
-        assert_eq!(best.specificity, 4, "Plugin cap has 4 specific tags");
-        assert_eq!(best.cap.title, "Plugin PDF Thumbnail Generator (specific)");
+        // Cartridge should win even though providers were added first
+        assert_eq!(best.registry_name, "cartridges", "More specific cartridge should win over less specific provider");
+        assert_eq!(best.specificity, 4, "Cartridge cap has 4 specific tags");
+        assert_eq!(best.cap.title, "Cartridge PDF Thumbnail Generator (specific)");
     }
 
     // TEST122: Test CapBlock breaks specificity ties by first registered registry
@@ -1292,18 +1292,18 @@ mod tests {
         assert!(matches!(result, Err(CapMatrixError::NoSetsFound(_))));
     }
 
-    // TEST125: Test CapBlock prefers specific plugin over generic provider fallback
+    // TEST125: Test CapBlock prefers specific cartridge over generic provider fallback
     #[tokio::test]
     async fn test125_cap_block_fallback_scenario() {
         // Test the exact scenario from the user's issue:
         // Provider: generic fallback (can handle any file type)
-        // Plugin:   PDF-specific handler
+        // Cartridge:   PDF-specific handler
         // Request:  PDF thumbnail
-        // Expected: Plugin wins (more specific)
+        // Expected: Cartridge wins (more specific)
         let (media_registry, _temp_dir) = test_media_registry();
 
         let mut provider_registry = CapMatrix::new(media_registry.clone());
-        let mut plugin_registry = CapMatrix::new(media_registry.clone());
+        let mut cartridge_registry = CapMatrix::new(media_registry.clone());
 
         // Provider with generic fallback (can handle any file type)
         let provider_host = Box::new(MockCapSet { name: "provider_fallback".to_string() });
@@ -1317,44 +1317,44 @@ mod tests {
             vec![provider_cap]
         ).unwrap();
 
-        // Plugin with PDF-specific handler
-        let plugin_host = Box::new(MockCapSet { name: "pdf_plugin".to_string() });
-        let plugin_cap = make_cap(
+        // Cartridge with PDF-specific handler
+        let cartridge_host = Box::new(MockCapSet { name: "pdf_cartridge".to_string() });
+        let cartridge_cap = make_cap(
             r#"cap:ext=pdf;in="media:binary";op=generate_thumbnail;out="media:binary""#,
-            "PDF Thumbnail Plugin"
+            "PDF Thumbnail Cartridge"
         );
-        plugin_registry.register_cap_set(
-            "pdf_plugin".to_string(),
-            plugin_host,
-            vec![plugin_cap]
+        cartridge_registry.register_cap_set(
+            "pdf_cartridge".to_string(),
+            cartridge_host,
+            vec![cartridge_cap]
         ).unwrap();
 
         // Providers first (would win on tie)
         let mut composite = CapBlock::new(media_registry.clone());
         composite.add_registry("providers".to_string(), Arc::new(RwLock::new(provider_registry)));
-        composite.add_registry("plugins".to_string(), Arc::new(RwLock::new(plugin_registry)));
+        composite.add_registry("cartridges".to_string(), Arc::new(RwLock::new(cartridge_registry)));
 
         // Request for PDF thumbnail
         let request = r#"cap:ext=pdf;in="media:binary";op=generate_thumbnail;out="media:binary""#;
         let best = composite.find_best_cap_set(request).unwrap();
 
-        // Plugin (specificity 4) should beat provider (specificity 3)
-        assert_eq!(best.registry_name, "plugins");
-        assert_eq!(best.cap.title, "PDF Thumbnail Plugin");
+        // Cartridge (specificity 4) should beat provider (specificity 3)
+        assert_eq!(best.registry_name, "cartridges");
+        assert_eq!(best.cap.title, "PDF Thumbnail Cartridge");
         assert_eq!(best.specificity, 4);
 
         // Test that request requiring ext=wav matches NEITHER provider
         // - Generic provider lacks ext tag (cannot satisfy ext=wav constraint)
-        // - PDF plugin has ext=pdf (value conflict with ext=wav)
+        // - PDF cartridge has ext=pdf (value conflict with ext=wav)
         let request_wav = r#"cap:ext=wav;in="media:binary";op=generate_thumbnail;out="media:binary""#;
         assert!(composite.find_best_cap_set(request_wav).is_err(),
             "Neither provider can dispatch ext=wav request");
 
         // Test that generic request (no ext constraint) matches BOTH providers
-        // Both can dispatch, but PDF plugin is more specific
+        // Both can dispatch, but PDF cartridge is more specific
         let request_any = r#"cap:in="media:binary";op=generate_thumbnail;out="media:binary""#;
         let best_any = composite.find_best_cap_set(request_any).unwrap();
-        assert_eq!(best_any.registry_name, "plugins", "More specific PDF plugin should win");
+        assert_eq!(best_any.registry_name, "cartridges", "More specific PDF cartridge should win");
     }
 
     // TEST126: Test composite can method returns CapCaller for capability execution
@@ -1700,7 +1700,7 @@ mod tests {
         let (media_registry, _temp_dir) = test_media_registry();
 
         let mut provider_registry = CapMatrix::new(media_registry.clone());
-        let mut plugin_registry = CapMatrix::new(media_registry.clone());
+        let mut cartridge_registry = CapMatrix::new(media_registry.clone());
 
         // Provider: binary -> str
         let provider_host = Box::new(MockCapSet { name: "provider".to_string() });
@@ -1723,11 +1723,11 @@ mod tests {
             vec![provider_cap]
         ).unwrap();
 
-        // Plugin: str -> obj
-        let plugin_host = Box::new(MockCapSet { name: "plugin".to_string() });
-        let plugin_cap = Cap {
+        // Cartridge: str -> obj
+        let cartridge_host = Box::new(MockCapSet { name: "cartridge".to_string() });
+        let cartridge_cap = Cap {
             urn: CapUrn::from_string(r#"cap:in="media:string";op=parse;out="media:object""#).unwrap(),
-            title: "Plugin JSON Parser".to_string(),
+            title: "Cartridge JSON Parser".to_string(),
             cap_description: None,
             documentation: None,
             metadata: HashMap::new(),
@@ -1738,15 +1738,15 @@ mod tests {
             metadata_json: None,
             registered_by: None,
         };
-        plugin_registry.register_cap_set(
-            "plugin".to_string(),
-            plugin_host,
-            vec![plugin_cap]
+        cartridge_registry.register_cap_set(
+            "cartridge".to_string(),
+            cartridge_host,
+            vec![cartridge_cap]
         ).unwrap();
 
         let mut cube = CapBlock::new(media_registry.clone());
         cube.add_registry("providers".to_string(), Arc::new(RwLock::new(provider_registry)));
-        cube.add_registry("plugins".to_string(), Arc::new(RwLock::new(plugin_registry)));
+        cube.add_registry("cartridges".to_string(), Arc::new(RwLock::new(cartridge_registry)));
 
         // Build graph
         let graph = cube.graph().unwrap();
@@ -1774,10 +1774,10 @@ mod tests {
             .collect();
         assert_eq!(provider_edges.len(), 1);
 
-        let plugin_edges: Vec<_> = graph.get_edges().iter()
-            .filter(|e| e.registry_name == "plugins")
+        let cartridge_edges: Vec<_> = graph.get_edges().iter()
+            .filter(|e| e.registry_name == "cartridges")
             .collect();
-        assert_eq!(plugin_edges.len(), 1);
+        assert_eq!(cartridge_edges.len(), 1);
     }
 
     // TEST134: Test CapGraph stats provides counts of nodes and edges

@@ -1,7 +1,7 @@
 //! Unified cap-based manifest interface
 //! 
 //! This module defines the unified manifest interface with standardized cap-based declarations.
-//! This replaces the separate ProviderManifest and PluginManifest types with a single canonical format.
+//! This replaces the separate ProviderManifest and CartridgeManifest types with a single canonical format.
 
 use crate::Cap;
 use crate::urn::cap_urn::CapUrn;
@@ -27,7 +27,7 @@ pub struct CapManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
 
-    /// Human-readable page URL for the plugin (e.g., repository page, documentation)
+    /// Human-readable page URL for the cartridge (e.g., repository page, documentation)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_url: Option<String>,
 }
@@ -56,7 +56,7 @@ impl CapManifest {
         self
     }
 
-    /// Set the page URL for the plugin (human-readable page, e.g., repository)
+    /// Set the page URL for the cartridge (human-readable page, e.g., repository)
     pub fn with_page_url(mut self, page_url: String) -> Self {
         self.page_url = Some(page_url);
         self
@@ -296,7 +296,7 @@ mod tests {
         let identity_urn = CapUrn::from_string(CAP_IDENTITY).unwrap();
         let cap = Cap::new(identity_urn, "Identity".to_string(), "identity".to_string());
         let manifest = CapManifest::new(
-            "TestPlugin".to_string(),
+            "TestCartridge".to_string(),
             "1.0.0".to_string(),
             "Test".to_string(),
             vec![cap],
@@ -310,7 +310,7 @@ mod tests {
         let specific_urn = CapUrn::from_string(&test_urn("op=convert")).unwrap();
         let cap = Cap::new(specific_urn, "Convert".to_string(), "convert".to_string());
         let manifest = CapManifest::new(
-            "TestPlugin".to_string(),
+            "TestCartridge".to_string(),
             "1.0.0".to_string(),
             "Test".to_string(),
             vec![cap],

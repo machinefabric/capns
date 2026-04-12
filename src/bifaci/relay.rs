@@ -1,9 +1,9 @@
 //! CborRelay — Transparent CBOR frame relay with two relay-specific frame types.
 //!
-//! The relay is a byte-stream bridge between an engine (master) and a plugin host runtime
+//! The relay is a byte-stream bridge between an engine (master) and a cartridge host runtime
 //! (slave). Two relay-specific frame types are intercepted and never leaked through:
 //!
-//! - **RelayNotify** (slave → master): Capability advertisement from the slave's plugin host runtime.
+//! - **RelayNotify** (slave → master): Capability advertisement from the slave's cartridge host runtime.
 //! - **RelayState** (master → slave): Host system resources + cap demands from the engine.
 //!
 //! All other frames pass through transparently in both directions.
@@ -17,22 +17,22 @@ use tokio::io::{AsyncRead, AsyncWrite};
 // RELAY TYPES
 // =============================================================================
 
-/// Slave endpoint of the relay. Sits inside the plugin host process (e.g., XPC service).
+/// Slave endpoint of the relay. Sits inside the cartridge host process (e.g., XPC service).
 ///
 /// - Reads frames from the socket (from master): RelayState → store; others → forward to local side
-/// - Reads frames from local side (from PluginHostRuntime): forward to socket
+/// - Reads frames from local side (from CartridgeHostRuntime): forward to socket
 /// - Can inject RelayNotify frames into the socket stream on demand
 pub struct RelaySlave<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
-    /// Read from PluginHostRuntime
+    /// Read from CartridgeHostRuntime
     local_reader: FrameReader<R>,
-    /// Write to PluginHostRuntime
+    /// Write to CartridgeHostRuntime
     local_writer: FrameWriter<W>,
     /// Latest RelayState payload from master
     resource_state: Arc<Mutex<Vec<u8>>>,
 }
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
-    /// Create a new relay slave with local I/O streams (to/from PluginHostRuntime).
+    /// Create a new relay slave with local I/O streams (to/from CartridgeHostRuntime).
     pub fn new(local_read: R, local_write: W) -> Self {
         Self {
             local_reader: FrameReader::new(local_read),
@@ -87,7 +87,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
 
         let first_error: Arc<tokio::sync::Mutex<Option<CborError>>> = Arc::new(tokio::sync::Mutex::new(None));
 
-        // Task 1: socket → local (master sends frames to slave's PluginHost)
+        // Task 1: socket → local (master sends frames to slave's CartridgeHost)
         let err1 = Arc::clone(&first_error);
         let rs1 = Arc::clone(&resource_state);
         let t1 = tokio::spawn(async move {
@@ -149,7 +149,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
             }
         });
 
-        // Task 2: local → socket (PluginHost sends frames to master)
+        // Task 2: local → socket (CartridgeHost sends frames to master)
         let err2 = Arc::clone(&first_error);
         let t2 = tokio::spawn(async move {
             tracing::info!("[RelaySlave] t2 (local→socket) started");
@@ -219,7 +219,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
     }
 
     /// Send a RelayNotify frame directly to the socket writer.
-    /// Used when capabilities change (plugin discovered, plugin died).
+    /// Used when capabilities change (cartridge discovered, cartridge died).
     pub async fn send_notify<SW: AsyncWrite + Unpin>(
         socket_write: &mut FrameWriter<SW>,
         manifest: &[u8],

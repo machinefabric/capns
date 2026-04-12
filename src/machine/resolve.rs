@@ -256,7 +256,7 @@ pub fn resolve_pre_interned(
         // matters for matching is the stdin source's inner
         // type (e.g. `media:image;png`), NOT the arg's outer
         // `media_urn` (e.g. `media:file-path;textable`). The
-        // outer is the slot identity that plugin_runtime uses
+        // outer is the slot identity that cartridge_runtime uses
         // to label the stream and to drive file-path
         // auto-conversion; the inner is the type the runtime
         // actually delivers into the slot. The resolver
@@ -1185,7 +1185,7 @@ mod tests {
         // from its stdin source URN. The disbind cap declares
         // `media:file-path;textable` as the slot identity but
         // its stdin source delivers `media:pdf` (this is the
-        // wire-level wraparound: plugin_runtime auto-converts
+        // wire-level wraparound: cartridge_runtime auto-converts
         // a file-path argument into a stdin byte stream of
         // the inner type).
         //

@@ -355,12 +355,12 @@ impl LiveCapGraph {
     /// Rebuild the graph from a list of cap URN strings using the registry.
     ///
     /// This is the primary method for RelaySwitch integration. Given the list of
-    /// available cap URN strings (from plugins), it looks up the Cap definitions
+    /// available cap URN strings (from cartridges), it looks up the Cap definitions
     /// from the registry and builds the graph.
     ///
-    /// Caps are matched by equivalence (`is_equivalent`): the plugin's reported URN
+    /// Caps are matched by equivalence (`is_equivalent`): the cartridge's reported URN
     /// must have an exact semantic match in the registry. Unmatched caps are rejected
-    /// with an error and excluded from the graph — a plugin advertising an unregistered
+    /// with an error and excluded from the graph — a cartridge advertising an unregistered
     /// capability is a configuration bug that must be fixed.
     pub async fn sync_from_cap_urns(&mut self, cap_urns: &[String], registry: &Arc<CapRegistry>) {
         self.clear();
@@ -394,7 +394,7 @@ impl LiveCapGraph {
                     tracing::error!(
                         cap_urn = cap_urn_str,
                         error = %e,
-                        "[LiveCapGraph] Plugin reported invalid cap URN - this is a bug in the plugin"
+                        "[LiveCapGraph] Cartridge reported invalid cap URN - this is a bug in the cartridge"
                     );
                     continue;
                 }
@@ -407,7 +407,7 @@ impl LiveCapGraph {
             }
 
             // Find the exact matching Cap in registry using is_equivalent.
-            // The plugin reports the specific cap URN it implements — we need to find
+            // The cartridge reports the specific cap URN it implements — we need to find
             // that same cap in the registry. Using is_dispatchable here was wrong because
             // it would match a wildcard registry cap (e.g. in=media:) before reaching
             // the specific one (e.g. in=media:txt;textable), since .find() returns the
@@ -426,9 +426,9 @@ impl LiveCapGraph {
                     tracing::error!(
                         cap_urn = %cap_urn,
                         cap_urn_raw = cap_urn_str,
-                        "[LiveCapGraph] REJECTED: plugin reported cap URN has no equivalent \
-                        in the registry. Every cap a plugin provides must have a matching \
-                        registry definition. Either the plugin is advertising an unknown \
+                        "[LiveCapGraph] REJECTED: cartridge reported cap URN has no equivalent \
+                        in the registry. Every cap a cartridge provides must have a matching \
+                        registry definition. Either the cartridge is advertising an unknown \
                         capability or the registry is missing a cap definition for this URN. \
                         This cap will NOT be added to the graph."
                     );
@@ -1602,7 +1602,7 @@ mod tests {
         );
         registry.add_caps_to_cache(vec![disbind.clone(), choose.clone()]);
 
-        // Create cap URN strings as plugins would report them
+        // Create cap URN strings as cartridges would report them
         let cap_urns: Vec<String> = vec![
             disbind.urn.to_string(),
             choose.urn.to_string(),

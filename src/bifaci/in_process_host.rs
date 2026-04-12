@@ -1,12 +1,12 @@
-//! In-Process Plugin Host — Direct dispatch to FrameHandler trait objects
+//! In-Process Cartridge Host — Direct dispatch to FrameHandler trait objects
 //!
-//! Sits where PluginHostRuntime sits (connected to RelaySlave via local socket pair),
-//! but routes requests to `Arc<dyn FrameHandler>` trait objects instead of plugin binaries.
+//! Sits where CartridgeHostRuntime sits (connected to RelaySlave via local socket pair),
+//! but routes requests to `Arc<dyn FrameHandler>` trait objects instead of cartridge binaries.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! RelaySlave ←→ InProcessPluginHost ←→ Handler A (streaming frames)
+//! RelaySlave ←→ InProcessCartridgeHost ←→ Handler A (streaming frames)
 //!                                   ←→ Handler B (streaming frames)
 //!                                   ←→ Handler C (streaming frames)
 //! ```
@@ -18,15 +18,15 @@
 //! END) are forwarded to the handler. The handler processes frames natively —
 //! streaming or accumulating as it sees fit.
 //!
-//! This matches how real plugins work: PluginRuntime forwards frames to handlers,
+//! This matches how real cartridges work: CartridgeRuntime forwards frames to handlers,
 //! and each handler decides how to consume/produce data.
 
 use crate::bifaci::frame::{FlowKey, Frame, FrameType, Limits, MessageId, SeqAssigner};
 use crate::bifaci::io::{CborError, FrameReader, FrameWriter};
-use crate::bifaci::plugin_runtime::{
+use crate::bifaci::cartridge_runtime::{
     ChannelFrameSender, FrameSender, PeerCall, PeerInvoker, RuntimeError,
 };
-use crate::bifaci::relay_switch::InstalledPluginIdentity;
+use crate::bifaci::relay_switch::InstalledCartridgeIdentity;
 use crate::cap::caller::CapArgumentValue;
 use crate::cap::definition::Cap;
 use crate::standard::caps::CAP_IDENTITY;
@@ -41,7 +41,7 @@ use tokio::task::JoinHandle;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RelayNotifyCapabilitiesPayload {
     caps: Vec<String>,
-    installed_plugins: Vec<InstalledPluginIdentity>,
+    installed_cartridges: Vec<InstalledCartridgeIdentity>,
 }
 
 // =============================================================================
@@ -55,7 +55,7 @@ struct RelayNotifyCapabilitiesPayload {
 /// accumulates — handlers decide how to process input (stream or accumulate).
 ///
 /// Handlers can invoke other caps via `peer` (a PeerInvoker). This mirrors the
-/// peer call mechanism in external plugins: the handler sends a REQ frame
+/// peer call mechanism in external cartridges: the handler sends a REQ frame
 /// through the host, the relay routes it to the destination cap, and response
 /// frames (including LOG frames with queue/progress status) flow back to the
 /// handler through the PeerResponse.
@@ -269,7 +269,7 @@ impl PeerInvoker for InProcessPeerInvoker {
     fn call(&self, cap_urn: &str) -> Result<PeerCall, RuntimeError> {
         let request_id = MessageId::new_uuid();
         tracing::info!(
-            "[InProcessPluginHost] PEER_CALL: cap='{}' peer_rid={:?}",
+            "[InProcessCartridgeHost] PEER_CALL: cap='{}' peer_rid={:?}",
             cap_urn, request_id
         );
 
@@ -451,7 +451,7 @@ impl FrameHandler for IdentityHandler {
 }
 
 // =============================================================================
-// IN-PROCESS PLUGIN HOST
+// IN-PROCESS CARTRIDGE HOST
 // =============================================================================
 
 /// Entry for a registered in-process handler.
@@ -465,25 +465,25 @@ struct HandlerEntry {
 /// Cap table entry: (cap_urn_string, handler_index).
 type CapTable = Vec<(String, usize)>;
 
-/// A plugin host that dispatches to in-process FrameHandler implementations.
+/// A cartridge host that dispatches to in-process FrameHandler implementations.
 ///
 /// Speaks the Frame protocol to a RelaySlave, but routes requests to
 /// `Arc<dyn FrameHandler>` trait objects via frame channels — no accumulation
 /// at the host level, handlers own the streaming.
-pub struct InProcessPluginHost {
+pub struct InProcessCartridgeHost {
     handlers: Vec<HandlerEntry>,
 }
 
-impl std::fmt::Debug for InProcessPluginHost {
+impl std::fmt::Debug for InProcessCartridgeHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InProcessPluginHost")
+        f.debug_struct("InProcessCartridgeHost")
             .field("handler_count", &self.handlers.len())
             .finish()
     }
 }
 
-impl InProcessPluginHost {
-    /// Create a new in-process plugin host with the given handlers.
+impl InProcessCartridgeHost {
+    /// Create a new in-process cartridge host with the given handlers.
     ///
     /// Each handler is a tuple of (name, caps, handler).
     pub fn new(handlers: Vec<(String, Vec<Cap>, Arc<dyn FrameHandler>)>) -> Self {
@@ -508,10 +508,10 @@ impl InProcessPluginHost {
         }
         let payload = RelayNotifyCapabilitiesPayload {
             caps: cap_urns,
-            installed_plugins: Vec::new(),
+            installed_cartridges: Vec::new(),
         };
         serde_json::to_vec(&payload)
-            .expect("BUG: InProcessPluginHost RelayNotify payload must serialize")
+            .expect("BUG: InProcessCartridgeHost RelayNotify payload must serialize")
     }
 
     /// Build the cap table for routing: flat list of (cap_urn, handler_idx).
@@ -585,36 +585,36 @@ impl InProcessPluginHost {
         local_read: R,
         local_write: W,
     ) -> Result<(), CborError> {
-        tracing::info!("[InProcessPluginHost] run() starting, handler_count={}", self.handlers.len());
+        tracing::info!("[InProcessCartridgeHost] run() starting, handler_count={}", self.handlers.len());
         let mut reader = FrameReader::new(local_read);
 
         // Writer runs in a separate task with SeqAssigner
         let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Frame>();
         let writer_task = tokio::spawn(async move {
-            tracing::info!("[InProcessPluginHost] writer task started");
+            tracing::info!("[InProcessCartridgeHost] writer task started");
             let mut writer = FrameWriter::new(local_write);
             let mut seq_assigner = SeqAssigner::new();
 
             while let Some(mut frame) = write_rx.recv().await {
                 seq_assigner.assign(&mut frame);
                 tracing::debug!(
-                    "[InProcessPluginHost] writer: type={:?} id={} seq={}",
+                    "[InProcessCartridgeHost] writer: type={:?} id={} seq={}",
                     frame.frame_type, frame.id, frame.seq
                 );
                 if let Err(e) = writer.write(&frame).await {
-                    tracing::error!("[InProcessPluginHost] writer error: {}", e);
+                    tracing::error!("[InProcessCartridgeHost] writer error: {}", e);
                     break;
                 }
                 if matches!(frame.frame_type, FrameType::End | FrameType::Err) {
                     seq_assigner.remove(&FlowKey::from_frame(&frame));
                 }
             }
-            tracing::info!("[InProcessPluginHost] writer task exiting");
+            tracing::info!("[InProcessCartridgeHost] writer task exiting");
         });
 
         // Send initial RelayNotify with aggregate caps
         let manifest = self.build_manifest();
-        tracing::info!("[InProcessPluginHost] sending RelayNotify, manifest_len={}", manifest.len());
+        tracing::info!("[InProcessCartridgeHost] sending RelayNotify, manifest_len={}", manifest.len());
         let notify = Frame::relay_notify(&manifest, &Limits::default());
         write_tx
             .send(notify)
@@ -640,20 +640,20 @@ impl InProcessPluginHost {
         let max_chunk = Limits::default().max_chunk;
 
         // Main read loop — forward frames to handlers or peer response channels
-        tracing::info!("[InProcessPluginHost] entering main read loop");
+        tracing::info!("[InProcessCartridgeHost] entering main read loop");
         loop {
-            tracing::info!("[InProcessPluginHost] waiting for frame...");
+            tracing::info!("[InProcessCartridgeHost] waiting for frame...");
             let frame = match reader.read().await {
                 Ok(Some(f)) => {
-                    tracing::info!("[InProcessPluginHost] received frame type={:?} id={}", f.frame_type, f.id);
+                    tracing::info!("[InProcessCartridgeHost] received frame type={:?} id={}", f.frame_type, f.id);
                     f
                 }
                 Ok(None) => {
-                    tracing::info!("[InProcessPluginHost] read EOF — RelaySlave closed");
+                    tracing::info!("[InProcessCartridgeHost] read EOF — RelaySlave closed");
                     break;
                 }
                 Err(e) => {
-                    tracing::error!("[InProcessPluginHost] read error: {}", e);
+                    tracing::error!("[InProcessCartridgeHost] read error: {}", e);
                     break;
                 }
             };
@@ -675,22 +675,22 @@ impl InProcessPluginHost {
 
                     // Identity cap is "cap:" — exact string match, NOT conforms_to.
                     let is_identity = cap_urn == CAP_IDENTITY;
-                    tracing::info!("[InProcessPluginHost] REQ cap_urn={} is_identity={}", cap_urn, is_identity);
+                    tracing::info!("[InProcessCartridgeHost] REQ cap_urn={} is_identity={}", cap_urn, is_identity);
 
                     let handler: Arc<dyn FrameHandler> = if is_identity {
                         Arc::clone(&identity_handler)
                     } else {
-                        tracing::debug!("[InProcessPluginHost] searching cap_table with {} entries", cap_table.len());
+                        tracing::debug!("[InProcessCartridgeHost] searching cap_table with {} entries", cap_table.len());
                         for (i, (cap, idx)) in cap_table.iter().enumerate() {
-                            tracing::info!("[InProcessPluginHost]   cap_table[{}]: cap={} handler_idx={}", i, cap, idx);
+                            tracing::info!("[InProcessCartridgeHost]   cap_table[{}]: cap={} handler_idx={}", i, cap, idx);
                         }
                         match Self::find_handler_for_cap(&cap_table, &cap_urn) {
                             Some(idx) => {
-                                tracing::info!("[InProcessPluginHost] found handler at idx={}", idx);
+                                tracing::info!("[InProcessCartridgeHost] found handler at idx={}", idx);
                                 Arc::clone(&handlers[idx].handler)
                             }
                             None => {
-                                tracing::info!("[InProcessPluginHost] NO_HANDLER for cap={}", cap_urn);
+                                tracing::info!("[InProcessCartridgeHost] NO_HANDLER for cap={}", cap_urn);
                                 let mut err = Frame::err(
                                     rid,
                                     "NO_HANDLER",
@@ -725,9 +725,9 @@ impl InProcessPluginHost {
                     let cap_urn_owned = cap_urn.clone();
                     let handler_rid = rid.clone();
                     let handle = tokio::spawn(async move {
-                        tracing::info!("[InProcessPluginHost] handler task starting for cap={}", cap_urn_owned);
+                        tracing::info!("[InProcessCartridgeHost] handler task starting for cap={}", cap_urn_owned);
                         handler.handle_request(&cap_urn_owned, input_rx, output, peer).await;
-                        tracing::info!("[InProcessPluginHost] handler task completed for cap={}", cap_urn_owned);
+                        tracing::info!("[InProcessCartridgeHost] handler task completed for cap={}", cap_urn_owned);
                     });
                     handler_handles.insert(handler_rid, handle);
                 }
@@ -743,10 +743,10 @@ impl InProcessPluginHost {
                     // Try peer response (response to handler's peer call)
                     let pending = pending_peer_requests.lock().unwrap();
                     if let Some(pr) = pending.get(&frame.id) {
-                        tracing::debug!("[InProcessPluginHost] routing {:?} to peer_response rid={:?}", frame.frame_type, frame.id);
+                        tracing::debug!("[InProcessCartridgeHost] routing {:?} to peer_response rid={:?}", frame.frame_type, frame.id);
                         let _ = pr.sender.send(frame);
                     } else {
-                        tracing::warn!("[InProcessPluginHost] {:?} rid={:?} not found in active or pending_peer_requests", frame.frame_type, frame.id);
+                        tracing::warn!("[InProcessCartridgeHost] {:?} rid={:?} not found in active or pending_peer_requests", frame.frame_type, frame.id);
                     }
                     drop(pending);
                 }
@@ -764,7 +764,7 @@ impl InProcessPluginHost {
                     // Try peer response — send END then remove
                     let mut pending = pending_peer_requests.lock().unwrap();
                     if let Some(pr) = pending.remove(&frame.id) {
-                        tracing::info!("[InProcessPluginHost] PEER_END received: peer_rid={:?}", frame.id);
+                        tracing::info!("[InProcessCartridgeHost] PEER_END received: peer_rid={:?}", frame.id);
                         let _ = pr.sender.send(frame);
                     }
                     drop(pending);
@@ -772,7 +772,7 @@ impl InProcessPluginHost {
 
                 FrameType::Err => {
                     tracing::error!(
-                        "[InProcessPluginHost] ERR received: rid={:?} code={:?} msg={:?}",
+                        "[InProcessCartridgeHost] ERR received: rid={:?} code={:?} msg={:?}",
                         frame.id, frame.error_code(), frame.error_message()
                     );
                     // Try active request first — forward ERR then remove
@@ -795,7 +795,7 @@ impl InProcessPluginHost {
                     let target_rid = frame.id.clone();
                     let xid = frame.routing_id.clone();
                     let force_kill = frame.force_kill.unwrap_or(false);
-                    tracing::info!("[InProcessPluginHost] Cancel received: rid={:?} force_kill={}", target_rid, force_kill);
+                    tracing::info!("[InProcessCartridgeHost] Cancel received: rid={:?} force_kill={}", target_rid, force_kill);
 
                     // Drop active sender → handler's input recv() returns None
                     active.remove(&target_rid);
@@ -908,7 +908,7 @@ mod tests {
         buf
     }
 
-    // TEST654: InProcessPluginHost routes REQ to matching handler and returns response
+    // TEST654: InProcessCartridgeHost routes REQ to matching handler and returns response
     #[tokio::test]
     async fn test654_routes_req_to_handler() {
         let cap_urn = "cap:in=\"media:text\";op=echo;out=\"media:text\"";
@@ -919,7 +919,7 @@ mod tests {
             Arc::new(EchoHandler) as Arc<dyn FrameHandler>,
         )];
 
-        let host = InProcessPluginHost::new(handlers);
+        let host = InProcessCartridgeHost::new(handlers);
 
         let (host_sock, test_sock) = UnixStream::pair().unwrap();
         let (host_read, host_write) = host_sock.into_split();
@@ -939,7 +939,7 @@ mod tests {
         let payload: RelayNotifyCapabilitiesPayload = serde_json::from_slice(manifest).unwrap();
         assert!(payload.caps.len() >= 2); // identity + echo cap
         assert_eq!(payload.caps[0], CAP_IDENTITY);
-        assert!(payload.installed_plugins.is_empty());
+        assert!(payload.installed_cartridges.is_empty());
 
         // Send a REQ + STREAM_START + CHUNK (CBOR-encoded) + STREAM_END + END
         let rid = MessageId::new_uuid();
@@ -988,10 +988,10 @@ mod tests {
         host_task.await.unwrap().unwrap();
     }
 
-    // TEST655: InProcessPluginHost handles identity verification (echo nonce)
+    // TEST655: InProcessCartridgeHost handles identity verification (echo nonce)
     #[tokio::test]
     async fn test655_identity_verification() {
-        let host = InProcessPluginHost::new(vec![]);
+        let host = InProcessCartridgeHost::new(vec![]);
 
         let (host_sock, test_sock) = UnixStream::pair().unwrap();
         let (host_read, host_write) = host_sock.into_split();
@@ -1059,10 +1059,10 @@ mod tests {
         host_task.await.unwrap().unwrap();
     }
 
-    // TEST656: InProcessPluginHost returns NO_HANDLER for unregistered cap
+    // TEST656: InProcessCartridgeHost returns NO_HANDLER for unregistered cap
     #[tokio::test]
     async fn test656_no_handler_returns_err() {
-        let host = InProcessPluginHost::new(vec![]);
+        let host = InProcessCartridgeHost::new(vec![]);
 
         let (host_sock, test_sock) = UnixStream::pair().unwrap();
         let (host_read, host_write) = host_sock.into_split();
@@ -1099,12 +1099,12 @@ mod tests {
         host_task.await.unwrap().unwrap();
     }
 
-    // TEST657: InProcessPluginHost manifest includes identity cap and handler caps
+    // TEST657: InProcessCartridgeHost manifest includes identity cap and handler caps
     #[test]
     fn test657_manifest_includes_all_caps() {
         let cap_urn = "cap:in=\"media:pdf\";op=thumbnail;out=\"media:image;png\"";
         let cap = make_test_cap(cap_urn);
-        let host = InProcessPluginHost::new(vec![(
+        let host = InProcessCartridgeHost::new(vec![(
             "thumb".to_string(),
             vec![cap],
             Arc::new(EchoHandler) as Arc<dyn FrameHandler>,
@@ -1114,13 +1114,13 @@ mod tests {
         let payload: RelayNotifyCapabilitiesPayload = serde_json::from_slice(&manifest).unwrap();
         assert_eq!(payload.caps[0], CAP_IDENTITY);
         assert!(payload.caps.iter().any(|u| u.contains("thumbnail")));
-        assert!(payload.installed_plugins.is_empty());
+        assert!(payload.installed_cartridges.is_empty());
     }
 
-    // TEST658: InProcessPluginHost handles heartbeat by echoing same ID
+    // TEST658: InProcessCartridgeHost handles heartbeat by echoing same ID
     #[tokio::test]
     async fn test658_heartbeat_response() {
-        let host = InProcessPluginHost::new(vec![]);
+        let host = InProcessCartridgeHost::new(vec![]);
 
         let (host_sock, test_sock) = UnixStream::pair().unwrap();
         let (host_read, host_write) = host_sock.into_split();
@@ -1149,7 +1149,7 @@ mod tests {
         host_task.await.unwrap().unwrap();
     }
 
-    // TEST659: InProcessPluginHost handler error returns ERR frame
+    // TEST659: InProcessCartridgeHost handler error returns ERR frame
     #[tokio::test]
     async fn test659_handler_error_returns_err_frame() {
         /// Handler that always fails.
@@ -1177,7 +1177,7 @@ mod tests {
 
         let cap_urn = "cap:in=\"media:void\";op=fail;out=\"media:void\"";
         let cap = make_test_cap(cap_urn);
-        let host = InProcessPluginHost::new(vec![(
+        let host = InProcessCartridgeHost::new(vec![(
             "fail".to_string(),
             vec![cap],
             Arc::new(FailHandler) as Arc<dyn FrameHandler>,
@@ -1221,7 +1221,7 @@ mod tests {
         host_task.await.unwrap().unwrap();
     }
 
-    // TEST660: InProcessPluginHost closest-specificity routing prefers specific over identity
+    // TEST660: InProcessCartridgeHost closest-specificity routing prefers specific over identity
     #[test]
     fn test660_closest_specificity_routing() {
         let specific_urn =
@@ -1268,11 +1268,11 @@ mod tests {
             ),
         ];
 
-        let host = InProcessPluginHost::new(handlers);
-        let cap_table = InProcessPluginHost::build_cap_table(&host.handlers);
+        let host = InProcessCartridgeHost::new(handlers);
+        let cap_table = InProcessCartridgeHost::build_cap_table(&host.handlers);
 
         // Request for pdf thumbnail should match specific (pdf, specificity 3) over generic (image, specificity 2)
-        let result = InProcessPluginHost::find_handler_for_cap(
+        let result = InProcessCartridgeHost::find_handler_for_cap(
             &cap_table,
             "cap:in=\"media:pdf\";op=thumbnail;out=\"media:image;png\"",
         );

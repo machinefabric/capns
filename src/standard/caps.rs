@@ -44,7 +44,7 @@ pub const CAP_IDENTITY: &str = "cap:";
 
 /// Discard capability — the terminal morphism. Standard, NOT mandatory.
 /// Accepts any media type as input and produces void output.
-/// The capdag lib provides a default implementation; plugins may override.
+/// The capdag lib provides a default implementation; cartridges may override.
 pub const CAP_DISCARD: &str = "cap:in=media:;out=media:void";
 
 /// Parse and return the canonical identity `CapUrn` from `CAP_IDENTITY`.

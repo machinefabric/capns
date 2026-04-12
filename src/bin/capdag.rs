@@ -178,7 +178,7 @@ fn print_usage(program: &str) {
          Execute a machine notation pipeline on input files.\n\n\
          Options:\n\
            --mermaid                Output Mermaid diagram code and exit\n\
-           --dev-bins <binary> ...  Use local plugin binaries\n\
+           --dev-bins <binary> ...  Use local cartridge binaries\n\
            --help                   Show this help\n\n\
          Input paths can be:\n\
            - Single file:   /path/to/file.pdf\n\
@@ -316,12 +316,12 @@ async fn main() {
     eprintln!("  Nodes: {}", graph.nodes.len());
     eprintln!("  Edges: {}", graph.edges.len());
 
-    // Set up plugin directory
+    // Set up cartridge directory
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let plugin_dir = home.join(".capdag").join("plugins");
+    let cartridge_dir = home.join(".capdag").join("cartridges");
 
     // Registry URL
-    let registry_url = "https://machinefabric.com/api/plugins".to_string();
+    let registry_url = "https://machinefabric.com/api/cartridges".to_string();
 
     eprintln!("\n=== Executing DAG ===\n");
     if !dev_binaries.is_empty() {
@@ -346,7 +346,7 @@ async fn main() {
             eprintln!("  [{:5.1}%] {} {}", p * 100.0, cap_urn, msg);
         });
 
-        match execute_dag(&graph, plugin_dir.clone(), registry_url.clone(), initial_inputs, dev_binaries.clone(), registry.clone(), Some(&progress)).await {
+        match execute_dag(&graph, cartridge_dir.clone(), registry_url.clone(), initial_inputs, dev_binaries.clone(), registry.clone(), Some(&progress)).await {
             Ok(outputs) => {
                 eprintln!("Results:");
                 for (node, data) in outputs {

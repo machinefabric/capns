@@ -1,27 +1,27 @@
 //! DAG Execution Engine
 //!
 //! Executes a resolved DOT DAG by:
-//! 1. Discovering and downloading plugins that provide the required caps
-//! 2. Connecting all plugins to a single PluginHostRuntime
+//! 1. Discovering and downloading cartridges that provide the required caps
+//! 2. Connecting all cartridges to a single CartridgeHostRuntime
 //! 3. Routing cap requests through a RelaySwitch
 //! 4. Executing edge groups in topological order, streaming frames between caps
 //!
 //! Fan-in: multiple edges pointing to the same `(to, cap_urn)` are grouped and
-//! executed as ONE cap invocation with multiple input streams. The plugin handler
+//! executed as ONE cap invocation with multiple input streams. The cartridge handler
 //! receives all streams and decides how to handle partial availability — it may
 //! wait for all, use whatever arrives, or fail.
 //!
 //! Architecture:
 //! ```text
-//!   macino ←→ RelaySwitch ←→ RelaySlave ←→ PluginHostRuntime ←→ Plugin A
-//!                                                             ←→ Plugin B
-//!                                                             ←→ Plugin C
+//!   macino ←→ RelaySwitch ←→ RelaySlave ←→ CartridgeHostRuntime ←→ Cartridge A
+//!                                                             ←→ Cartridge B
+//!                                                             ←→ Cartridge C
 //! ```
 
 use super::types::{ResolvedEdge, ResolvedGraph};
 use crate::{
     Frame, FrameType, FrameReader, FrameWriter, Limits,
-    PluginHostRuntime, RelaySlave, RelaySwitch, PluginRepo,
+    CartridgeHostRuntime, RelaySlave, RelaySwitch, CartridgeRepo,
     CapManifest, CapUrn, CapRegistry, handshake, DEFAULT_MAX_CHUNK,
 };
 use std::collections::{HashMap, HashSet};
@@ -33,7 +33,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 /// Default cap-level activity timeout in seconds.
-/// If a plugin sends no frames (Chunk, Log, progress, peer requests) for this
+/// If a cartridge sends no frames (Chunk, Log, progress, peer requests) for this
 /// duration, the executor aborts with `ExecutionError::ActivityTimeout`.
 const DEFAULT_ACTIVITY_TIMEOUT_SECS: u64 = 120;
 
@@ -114,7 +114,7 @@ impl ProgressMapper {
     }
 }
 
-/// Cap URN for the identity capability (always available from any plugin runtime).
+/// Cap URN for the identity capability (always available from any cartridge runtime).
 const CAP_IDENTITY: &str = "cap:";
 
 // =============================================================================
@@ -123,14 +123,14 @@ const CAP_IDENTITY: &str = "cap:";
 
 #[derive(Debug, Error)]
 pub enum ExecutionError {
-    #[error("Plugin not found for cap: {cap_urn}")]
-    PluginNotFound { cap_urn: String },
+    #[error("Cartridge not found for cap: {cap_urn}")]
+    CartridgeNotFound { cap_urn: String },
 
-    #[error("Plugin download failed: {0}")]
-    PluginDownloadFailed(String),
+    #[error("Cartridge download failed: {0}")]
+    CartridgeDownloadFailed(String),
 
-    #[error("Plugin execution failed for cap {cap_urn}: {details}")]
-    PluginExecutionFailed { cap_urn: String, details: String },
+    #[error("Cartridge execution failed for cap {cap_urn}: {details}")]
+    CartridgeExecutionFailed { cap_urn: String, details: String },
 
     #[error("Node {node} has no incoming data")]
     NoIncomingData { node: String },
@@ -276,7 +276,7 @@ fn topological_sort_groups(groups: &[EdgeGroup]) -> Result<Vec<usize>, Execution
     }
 
     if sorted.len() != n {
-        return Err(ExecutionError::PluginExecutionFailed {
+        return Err(ExecutionError::CartridgeExecutionFailed {
             cap_urn: String::new(),
             details: "Cycle detected in graph".to_string(),
         });
@@ -286,24 +286,24 @@ fn topological_sort_groups(groups: &[EdgeGroup]) -> Result<Vec<usize>, Execution
 }
 
 // =============================================================================
-// Plugin Manager
+// Cartridge Manager
 // =============================================================================
 
-/// Manages plugin discovery, download, and caching.
-pub struct PluginManager {
-    plugin_repo: PluginRepo,
-    plugin_dir: PathBuf,
+/// Manages cartridge discovery, download, and caching.
+pub struct CartridgeManager {
+    cartridge_repo: CartridgeRepo,
+    cartridge_dir: PathBuf,
     registry_url: String,
-    dev_plugins: HashMap<PathBuf, CapManifest>,
+    dev_cartridges: HashMap<PathBuf, CapManifest>,
 }
 
-impl PluginManager {
-    pub fn new(plugin_dir: PathBuf, registry_url: String, dev_binaries: Vec<PathBuf>) -> Self {
+impl CartridgeManager {
+    pub fn new(cartridge_dir: PathBuf, registry_url: String, dev_binaries: Vec<PathBuf>) -> Self {
         Self {
-            plugin_repo: PluginRepo::new(3600),
-            plugin_dir,
+            cartridge_repo: CartridgeRepo::new(3600),
+            cartridge_dir,
             registry_url,
-            dev_plugins: dev_binaries
+            dev_cartridges: dev_binaries
                 .into_iter()
                 .map(|p| {
                     (p, CapManifest::new(
@@ -315,17 +315,17 @@ impl PluginManager {
     }
 
     pub async fn init(&mut self) -> Result<(), ExecutionError> {
-        fs::create_dir_all(&self.plugin_dir)?;
+        fs::create_dir_all(&self.cartridge_dir)?;
 
-        for (bin_path, _) in &self.dev_plugins.clone() {
+        for (bin_path, _) in &self.dev_cartridges.clone() {
             tracing::info!("[DevMode] Discovering manifest from {:?}...", bin_path);
             match self.discover_manifest(bin_path).await {
                 Ok(manifest) => {
-                    tracing::info!("[DevMode] Plugin: {}", manifest.name);
+                    tracing::info!("[DevMode] Cartridge: {}", manifest.name);
                     for cap in &manifest.caps {
                         tracing::info!("[DevMode]   - {}", cap.urn);
                     }
-                    self.dev_plugins.insert(bin_path.clone(), manifest);
+                    self.dev_cartridges.insert(bin_path.clone(), manifest);
                 }
                 Err(e) => {
                     tracing::error!("[DevMode] Failed: {:?}: {}", bin_path, e);
@@ -334,7 +334,7 @@ impl PluginManager {
             }
         }
 
-        self.plugin_repo
+        self.cartridge_repo
             .sync_repos(&[self.registry_url.clone()])
             .await;
 
@@ -350,9 +350,9 @@ impl PluginManager {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| ExecutionError::PluginExecutionFailed {
+            .map_err(|e| ExecutionError::CartridgeExecutionFailed {
                 cap_urn: "manifest-discovery".to_string(),
-                details: format!("Failed to spawn plugin: {}", e),
+                details: format!("Failed to spawn cartridge: {}", e),
             })?;
 
         let stdin = child.stdin.take().unwrap();
@@ -375,38 +375,38 @@ impl PluginManager {
 
     /// Resolve all cap URNs from the graph to unique (binary_path, known_caps) pairs.
     ///
-    /// For dev plugins (with discovered manifests), registers ALL manifest caps —
-    /// not just the DAG edge caps. This is critical because plugins send peer requests
+    /// For dev cartridges (with discovered manifests), registers ALL manifest caps —
+    /// not just the DAG edge caps. This is critical because cartridges send peer requests
     /// for caps that aren't in the DAG (e.g., candlecartridge peer-invokes modelcartridge's
     /// download-model cap during ML inference). Without full cap registration, the
-    /// PluginHostRuntime can't route these peer requests.
-    pub async fn resolve_plugins(
+    /// CartridgeHostRuntime can't route these peer requests.
+    pub async fn resolve_cartridges(
         &self,
         cap_urns: &[&str],
     ) -> Result<Vec<(PathBuf, Vec<String>)>, ExecutionError> {
-        // Collect unique plugin binaries needed for the DAG
-        let mut plugin_paths: HashSet<PathBuf> = HashSet::new();
+        // Collect unique cartridge binaries needed for the DAG
+        let mut cartridge_paths: HashSet<PathBuf> = HashSet::new();
 
         for &cap_urn in cap_urns {
-            let (bin_path, _plugin_id) = self.find_plugin_binary(cap_urn).await?;
-            plugin_paths.insert(bin_path);
+            let (bin_path, _cartridge_id) = self.find_cartridge_binary(cap_urn).await?;
+            cartridge_paths.insert(bin_path);
         }
 
-        // Also include ALL dev plugin binaries — they may be needed for peer request
+        // Also include ALL dev cartridge binaries — they may be needed for peer request
         // routing even if they don't directly appear in the DAG. For example, ML
         // cartridges send peer requests to modelcartridge for model downloading.
-        for dev_path in self.dev_plugins.keys() {
-            plugin_paths.insert(dev_path.clone());
+        for dev_path in self.dev_cartridges.keys() {
+            cartridge_paths.insert(dev_path.clone());
         }
 
-        // For each plugin, register ALL manifest caps (not just DAG caps)
-        let result: Vec<(PathBuf, Vec<String>)> = plugin_paths
+        // For each cartridge, register ALL manifest caps (not just DAG caps)
+        let result: Vec<(PathBuf, Vec<String>)> = cartridge_paths
             .into_iter()
             .map(|path| {
                 let mut caps: HashSet<String> = HashSet::new();
 
-                // Use full manifest caps for dev plugins
-                if let Some(manifest) = self.dev_plugins.get(&path) {
+                // Use full manifest caps for dev cartridges
+                if let Some(manifest) = self.dev_cartridges.get(&path) {
                     for cap in &manifest.caps {
                         caps.insert(cap.urn.to_string());
                     }
@@ -423,19 +423,19 @@ impl PluginManager {
     }
 
     /// Find the binary path for a cap URN.
-    async fn find_plugin_binary(
+    async fn find_cartridge_binary(
         &self,
         cap_urn: &str,
     ) -> Result<(PathBuf, String), ExecutionError> {
         let requested_urn = CapUrn::from_string(cap_urn).map_err(|e| {
-            ExecutionError::PluginNotFound {
+            ExecutionError::CartridgeNotFound {
                 cap_urn: format!("Invalid URN: {}: {}", cap_urn, e),
             }
         })?;
 
-        // Check dev plugins first - use is_dispatchable to find any plugin
+        // Check dev cartridges first - use is_dispatchable to find any cartridge
         // that can legally handle the requested cap.
-        for (bin_path, manifest) in &self.dev_plugins {
+        for (bin_path, manifest) in &self.dev_cartridges {
             for cap in &manifest.caps {
                 // cap.urn is the provider, requested_urn is the request
                 if cap.urn.is_dispatchable(&requested_urn) {
@@ -445,84 +445,84 @@ impl PluginManager {
         }
 
         // Fall back to registry
-        let suggestions = self.plugin_repo.get_suggestions_for_cap(cap_urn).await;
+        let suggestions = self.cartridge_repo.get_suggestions_for_cap(cap_urn).await;
         if suggestions.is_empty() {
-            return Err(ExecutionError::PluginNotFound {
+            return Err(ExecutionError::CartridgeNotFound {
                 cap_urn: cap_urn.to_string(),
             });
         }
 
-        let plugin_id = &suggestions[0].plugin_id;
-        let bin_path = self.get_plugin_path(plugin_id).await?;
-        Ok((bin_path, plugin_id.clone()))
+        let cartridge_id = &suggestions[0].cartridge_id;
+        let bin_path = self.get_cartridge_path(cartridge_id).await?;
+        Ok((bin_path, cartridge_id.clone()))
     }
 
-    pub async fn get_plugin_path(&self, plugin_id: &str) -> Result<PathBuf, ExecutionError> {
-        if let Some(dev_path) = plugin_id.strip_prefix("dev:") {
+    pub async fn get_cartridge_path(&self, cartridge_id: &str) -> Result<PathBuf, ExecutionError> {
+        if let Some(dev_path) = cartridge_id.strip_prefix("dev:") {
             let path = PathBuf::from(dev_path);
             if !path.exists() {
-                return Err(ExecutionError::PluginExecutionFailed {
-                    cap_urn: plugin_id.to_string(),
+                return Err(ExecutionError::CartridgeExecutionFailed {
+                    cap_urn: cartridge_id.to_string(),
                     details: format!("Dev binary not found: {:?}", path),
                 });
             }
             return Ok(path);
         }
 
-        let plugin_path = self.plugin_dir.join(plugin_id);
+        let cartridge_path = self.cartridge_dir.join(cartridge_id);
 
-        if plugin_path.exists() {
-            self.verify_plugin_integrity(plugin_id, &plugin_path).await?;
-            return Ok(plugin_path);
+        if cartridge_path.exists() {
+            self.verify_cartridge_integrity(cartridge_id, &cartridge_path).await?;
+            return Ok(cartridge_path);
         }
 
-        self.download_plugin(plugin_id).await?;
-        Ok(plugin_path)
+        self.download_cartridge(cartridge_id).await?;
+        Ok(cartridge_path)
     }
 
-    async fn verify_plugin_integrity(
+    async fn verify_cartridge_integrity(
         &self,
-        plugin_id: &str,
-        plugin_path: &Path,
+        cartridge_id: &str,
+        cartridge_path: &Path,
     ) -> Result<(), ExecutionError> {
-        let plugin_info = self.plugin_repo.get_plugin(plugin_id).await.ok_or_else(|| {
-            ExecutionError::PluginNotFound {
-                cap_urn: format!("Plugin {} not found in registry", plugin_id),
+        let cartridge_info = self.cartridge_repo.get_cartridge(cartridge_id).await.ok_or_else(|| {
+            ExecutionError::CartridgeNotFound {
+                cap_urn: format!("Cartridge {} not found in registry", cartridge_id),
             }
         })?;
 
-        if plugin_info.team_id.is_empty() || plugin_info.signed_at.is_empty() {
-            return Err(ExecutionError::PluginExecutionFailed {
-                cap_urn: plugin_id.to_string(),
+        if cartridge_info.team_id.is_empty() || cartridge_info.signed_at.is_empty() {
+            return Err(ExecutionError::CartridgeExecutionFailed {
+                cap_urn: cartridge_id.to_string(),
                 details: format!(
-                    "SECURITY: Plugin {} is not signed. Refusing to execute.",
-                    plugin_id
+                    "SECURITY: Cartridge {} is not signed. Refusing to execute.",
+                    cartridge_id
                 ),
             });
         }
 
-        if plugin_info.binary_sha256.is_empty() {
-            return Err(ExecutionError::PluginExecutionFailed {
-                cap_urn: plugin_id.to_string(),
+        if cartridge_info.binary_sha256.is_empty() {
+            return Err(ExecutionError::CartridgeExecutionFailed {
+                cap_urn: cartridge_id.to_string(),
                 details: format!(
-                    "SECURITY: Plugin {} has no SHA256 hash. Cannot verify.",
-                    plugin_id
+                    "SECURITY: Cartridge {} has no SHA256 hash. Cannot verify.",
+                    cartridge_id
                 ),
             });
         }
 
-        let bytes = fs::read(plugin_path)?;
+        let bytes = fs::read(cartridge_path)?;
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let computed = format!("{:x}", hasher.finalize());
 
-        if computed != plugin_info.binary_sha256 {
-            return Err(ExecutionError::PluginExecutionFailed {
-                cap_urn: plugin_id.to_string(),
+        if computed != cartridge_info.binary_sha256 {
+            return Err(ExecutionError::CartridgeExecutionFailed {
+                cap_urn: cartridge_id.to_string(),
                 details: format!(
                     "SECURITY: SHA256 mismatch for {}!\n  Expected: {}\n  Computed: {}",
-                    plugin_id, plugin_info.binary_sha256, computed
+                    cartridge_id, cartridge_info.binary_sha256, computed
                 ),
             });
         }
@@ -530,51 +530,51 @@ impl PluginManager {
         Ok(())
     }
 
-    async fn download_plugin(&self, plugin_id: &str) -> Result<(), ExecutionError> {
-        let plugin_info = self.plugin_repo.get_plugin(plugin_id).await.ok_or_else(|| {
-            ExecutionError::PluginNotFound {
-                cap_urn: format!("Plugin {} not found in registry", plugin_id),
+    async fn download_cartridge(&self, cartridge_id: &str) -> Result<(), ExecutionError> {
+        let cartridge_info = self.cartridge_repo.get_cartridge(cartridge_id).await.ok_or_else(|| {
+            ExecutionError::CartridgeNotFound {
+                cap_urn: format!("Cartridge {} not found in registry", cartridge_id),
             }
         })?;
 
-        if plugin_info.team_id.is_empty() || plugin_info.signed_at.is_empty() {
-            return Err(ExecutionError::PluginDownloadFailed(format!(
-                "SECURITY: Plugin {} is not signed.",
-                plugin_id
+        if cartridge_info.team_id.is_empty() || cartridge_info.signed_at.is_empty() {
+            return Err(ExecutionError::CartridgeDownloadFailed(format!(
+                "SECURITY: Cartridge {} is not signed.",
+                cartridge_id
             )));
         }
 
-        if plugin_info.binary_name.is_empty() {
-            return Err(ExecutionError::PluginDownloadFailed(format!(
-                "Plugin {} has no binary available",
-                plugin_id
+        if cartridge_info.binary_name.is_empty() {
+            return Err(ExecutionError::CartridgeDownloadFailed(format!(
+                "Cartridge {} has no binary available",
+                cartridge_id
             )));
         }
 
-        if plugin_info.binary_sha256.is_empty() {
-            return Err(ExecutionError::PluginDownloadFailed(format!(
-                "SECURITY: Plugin {} has no SHA256 hash.",
-                plugin_id
+        if cartridge_info.binary_sha256.is_empty() {
+            return Err(ExecutionError::CartridgeDownloadFailed(format!(
+                "SECURITY: Cartridge {} has no SHA256 hash.",
+                cartridge_id
             )));
         }
 
         let base_url = self
             .registry_url
-            .trim_end_matches("/api/plugins")
+            .trim_end_matches("/api/cartridges")
             .trim_end_matches('/');
-        let download_url = format!("{}/plugins/binaries/{}", base_url, plugin_info.binary_name);
+        let download_url = format!("{}/cartridges/binaries/{}", base_url, cartridge_info.binary_name);
 
         tracing::info!(
-            "Downloading plugin {} v{} from {}",
-            plugin_id, plugin_info.version, download_url
+            "Downloading cartridge {} v{} from {}",
+            cartridge_id, cartridge_info.version, download_url
         );
 
         let response = reqwest::get(&download_url)
             .await
-            .map_err(|e| ExecutionError::PluginDownloadFailed(format!("Download failed: {}", e)))?;
+            .map_err(|e| ExecutionError::CartridgeDownloadFailed(format!("Download failed: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(ExecutionError::PluginDownloadFailed(format!(
+            return Err(ExecutionError::CartridgeDownloadFailed(format!(
                 "HTTP {} from {}",
                 response.status(),
                 download_url
@@ -584,7 +584,7 @@ impl PluginManager {
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| ExecutionError::PluginDownloadFailed(format!("Read failed: {}", e)))?
+            .map_err(|e| ExecutionError::CartridgeDownloadFailed(format!("Read failed: {}", e)))?
             .to_vec();
 
         use sha2::{Digest, Sha256};
@@ -592,23 +592,23 @@ impl PluginManager {
         hasher.update(&bytes);
         let computed = format!("{:x}", hasher.finalize());
 
-        if computed != plugin_info.binary_sha256 {
-            return Err(ExecutionError::PluginDownloadFailed(format!(
+        if computed != cartridge_info.binary_sha256 {
+            return Err(ExecutionError::CartridgeDownloadFailed(format!(
                 "SECURITY: SHA256 mismatch for {}!\n  Expected: {}\n  Computed: {}",
-                plugin_id, plugin_info.binary_sha256, computed
+                cartridge_id, cartridge_info.binary_sha256, computed
             )));
         }
 
-        let plugin_path = self.plugin_dir.join(plugin_id);
-        fs::write(&plugin_path, bytes)?;
+        let cartridge_path = self.cartridge_dir.join(cartridge_id);
+        fs::write(&cartridge_path, bytes)?;
 
-        let mut perms = fs::metadata(&plugin_path)?.permissions();
+        let mut perms = fs::metadata(&cartridge_path)?.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&plugin_path, perms)?;
+        fs::set_permissions(&cartridge_path, perms)?;
 
         tracing::info!(
-            "Installed plugin {} v{} to {:?}",
-            plugin_id, plugin_info.version, plugin_path
+            "Installed cartridge {} v{} to {:?}",
+            cartridge_id, cartridge_info.version, cartridge_path
         );
 
         Ok(())
@@ -651,7 +651,7 @@ pub struct ExecutionContext {
     node_is_sequence: HashMap<String, bool>,
     /// Cached max chunk size from the relay.
     max_chunk: usize,
-    /// Cleanup handles for masters added via add_plugin_host.
+    /// Cleanup handles for masters added via add_cartridge_host.
     cleanup_handles: Vec<MasterCleanupHandle>,
 }
 
@@ -659,7 +659,7 @@ impl ExecutionContext {
     /// Create a new ExecutionContext with an empty RelaySwitch.
     ///
     /// The RelaySwitch starts with no masters. Use `add_master()` or
-    /// `add_plugin_host()` to add masters before executing caps.
+    /// `add_cartridge_host()` to add masters before executing caps.
     ///
     /// Requires a CapRegistry for the RelaySwitch to use when building
     /// the LiveCapGraph for path finding queries.
@@ -707,7 +707,7 @@ impl ExecutionContext {
     /// Add a master connection from an externally managed socket.
     ///
     /// The caller is responsible for the lifecycle of the connected endpoint
-    /// (e.g., an InProcessPluginHost or external plugin connection).
+    /// (e.g., an InProcessCartridgeHost or external cartridge connection).
     ///
     /// Returns the master index on success.
     pub async fn add_master(
@@ -722,20 +722,20 @@ impl ExecutionContext {
         Ok(idx)
     }
 
-    /// Add a PluginHostRuntime as a master, spawning all required infrastructure.
+    /// Add a CartridgeHostRuntime as a master, spawning all required infrastructure.
     ///
     /// This creates:
-    /// - PluginHostRuntime (async, in tokio task)
+    /// - CartridgeHostRuntime (async, in tokio task)
     /// - RelaySlave (async, in tokio task)
     /// - Socket pairs connecting them to the switch
     ///
     /// The ExecutionContext manages cleanup of these resources.
     ///
     /// # Arguments
-    /// * `plugins` - Vec of (binary_path, cap_urns) to register with the host
-    pub async fn add_plugin_host(
+    /// * `cartridges` - Vec of (binary_path, cap_urns) to register with the host
+    pub async fn add_cartridge_host(
         &mut self,
-        plugins: Vec<(PathBuf, Vec<String>)>,
+        cartridges: Vec<(PathBuf, Vec<String>)>,
     ) -> Result<usize, ExecutionError> {
         // Create socket pairs:
         //   switch_sock <-> slave_ext_sock (switch to slave)
@@ -745,17 +745,17 @@ impl ExecutionContext {
         let (slave_int_sock, host_sock) =
             UnixStream::pair().map_err(ExecutionError::IoError)?;
 
-        // --- PluginHostRuntime (async, in tokio task) ---
-        let mut host = PluginHostRuntime::new();
-        for (path, caps) in &plugins {
-            host.register_plugin(path, caps);
+        // --- CartridgeHostRuntime (async, in tokio task) ---
+        let mut host = CartridgeHostRuntime::new();
+        for (path, caps) in &cartridges {
+            host.register_cartridge(path, caps);
         }
 
         let (host_read, host_write) = host_sock.into_split();
 
         let host_handle = tokio::spawn(async move {
             if let Err(e) = host.run(host_read, host_write, || Vec::new()).await {
-                tracing::error!("[PluginHostRuntime] Fatal: {}", e);
+                tracing::error!("[CartridgeHostRuntime] Fatal: {}", e);
             }
         });
 
@@ -767,7 +767,7 @@ impl ExecutionContext {
         );
 
         // Initial caps: just CAP_IDENTITY for handshake verification.
-        // PluginHostRuntime sends full caps via RelayNotify.
+        // CartridgeHostRuntime sends full caps via RelayNotify.
         let initial_caps_json = serde_json::to_vec(&[CAP_IDENTITY])
             .map_err(|e| ExecutionError::HostError(format!("serialize caps: {}", e)))?;
 
@@ -1062,7 +1062,7 @@ impl ExecutionContext {
         //
         // This is the KEY FIX for the deadlock: we no longer block on
         // read_from_masters_timeout in a sync loop. Instead, we use async
-        // select! so peer requests (internal provider → external plugin) can
+        // select! so peer requests (internal provider → external cartridge) can
         // be processed while we wait for the response.
         let mut response_chunks: Vec<u8> = Vec::new();
         let mut got_end = false;
@@ -1131,9 +1131,9 @@ impl ExecutionContext {
                             if exit_code != Some(0) {
                                 let detail = match exit_code {
                                     Some(code) => format!("exit_code={}", code),
-                                    None => "exit_code absent (plugin likely crashed)".to_string(),
+                                    None => "exit_code absent (cartridge likely crashed)".to_string(),
                                 };
-                                return Err(ExecutionError::PluginExecutionFailed {
+                                return Err(ExecutionError::CartridgeExecutionFailed {
                                     cap_urn: cap_urn.clone(),
                                     details: format!("END without success: {}", detail),
                                 });
@@ -1146,23 +1146,23 @@ impl ExecutionContext {
                         FrameType::Err => {
                             let msg = frame
                                 .error_message()
-                                .unwrap_or("Unknown plugin error")
+                                .unwrap_or("Unknown cartridge error")
                                 .to_string();
-                            return Err(ExecutionError::PluginExecutionFailed {
+                            return Err(ExecutionError::CartridgeExecutionFailed {
                                 cap_urn: cap_urn.clone(),
                                 details: msg,
                             });
                         }
                         FrameType::Log => {
                             if let Some(p) = frame.log_progress() {
-                                let plugin_msg = frame.log_message().unwrap_or("");
+                                let cartridge_msg = frame.log_message().unwrap_or("");
                                 if let Some(pfn) = &progress_fn {
-                                    pfn(p, cap_urn, plugin_msg);
+                                    pfn(p, cap_urn, cartridge_msg);
                                 }
-                                tracing::debug!("  [plugin progress:{:.2}] {}", p, plugin_msg);
+                                tracing::debug!("  [cartridge progress:{:.2}] {}", p, cartridge_msg);
                             } else if let Some(msg) = frame.log_message() {
                                 let level = frame.log_level().unwrap_or("info");
-                                tracing::info!("[plugin log:{}] cap='{}' {}", level, cap_urn, msg);
+                                tracing::info!("[cartridge log:{}] cap='{}' {}", level, cap_urn, msg);
                             }
                         }
                         FrameType::StreamStart => {
@@ -1225,10 +1225,10 @@ impl ExecutionContext {
 // DAG Executor
 // =============================================================================
 
-/// Execute a resolved DAG: discover plugins, set up infrastructure, run edge groups.
+/// Execute a resolved DAG: discover cartridges, set up infrastructure, run edge groups.
 pub async fn execute_dag(
     graph: &ResolvedGraph,
-    plugin_dir: PathBuf,
+    cartridge_dir: PathBuf,
     registry_url: String,
     initial_inputs: HashMap<String, NodeData>,
     dev_binaries: Vec<PathBuf>,
@@ -1237,26 +1237,26 @@ pub async fn execute_dag(
 ) -> Result<HashMap<String, NodeData>, ExecutionError> {
     tracing::debug!(target: "execute_dag", "Starting...");
 
-    // 1. Initialize plugin manager and discover/download all needed plugins
-    let mut plugin_manager = PluginManager::new(plugin_dir, registry_url, dev_binaries);
-    plugin_manager.init().await?;
-    tracing::debug!(target: "execute_dag", "Plugin manager initialized");
+    // 1. Initialize cartridge manager and discover/download all needed cartridges
+    let mut cartridge_manager = CartridgeManager::new(cartridge_dir, registry_url, dev_binaries);
+    cartridge_manager.init().await?;
+    tracing::debug!(target: "execute_dag", "Cartridge manager initialized");
 
     let cap_urns: Vec<&str> = graph.edges.iter().map(|e| e.cap_urn.as_str()).collect();
-    let plugins = plugin_manager.resolve_plugins(&cap_urns).await?;
-    tracing::debug!(target: "execute_dag", "Resolved {} plugins", plugins.len());
+    let cartridges = cartridge_manager.resolve_cartridges(&cap_urns).await?;
+    tracing::debug!(target: "execute_dag", "Resolved {} cartridges", cartridges.len());
 
-    tracing::info!("Resolved {} unique plugin binaries:", plugins.len());
-    for (path, caps) in &plugins {
+    tracing::info!("Resolved {} unique cartridge binaries:", cartridges.len());
+    for (path, caps) in &cartridges {
         tracing::info!("  {:?} -> {} caps", path, caps.len());
     }
 
-    // 2. Create execution context and add plugin host as master
+    // 2. Create execution context and add cartridge host as master
     tracing::debug!(target: "execute_dag", "Creating execution context...");
     let mut ctx = ExecutionContext::new(cap_registry).await?;
-    tracing::debug!(target: "execute_dag", "Adding plugin host...");
-    ctx.add_plugin_host(plugins).await?;
-    tracing::debug!(target: "execute_dag", "Plugin host added");
+    tracing::debug!(target: "execute_dag", "Adding cartridge host...");
+    ctx.add_cartridge_host(cartridges).await?;
+    tracing::debug!(target: "execute_dag", "Cartridge host added");
 
     // 3. Resolve initial inputs to raw bytes and set on nodes
     for (node, data) in initial_inputs {

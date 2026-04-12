@@ -1,12 +1,12 @@
-//! Response wrapper for unified plugin output handling with validation
+//! Response wrapper for unified cartridge output handling with validation
 
 use anyhow::{anyhow, Result};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use crate::{Cap, ValidationError};
 
-/// Unified response wrapper for all plugin operations
-/// Provides type-safe deserialization of plugin output
+/// Unified response wrapper for all cartridge operations
+/// Provides type-safe deserialization of cartridge output
 #[derive(Debug, Clone)]
 pub struct ResponseWrapper {
     raw_bytes: Vec<u8>,

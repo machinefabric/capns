@@ -89,7 +89,7 @@ pub type PlannerResult<T> = Result<T, PlannerError>;
 /// Abstracts cap invocation so different backends can be plugged in.
 ///
 /// - **machfab** implements via `CapService.execute_cap()` through the relay
-/// - **macino** implements by spawning plugin binaries
+/// - **macino** implements by spawning cartridge binaries
 #[async_trait::async_trait]
 pub trait CapExecutor: Send + Sync {
     /// Execute a cap and return the raw output bytes.

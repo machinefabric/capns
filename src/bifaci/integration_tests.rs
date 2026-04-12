@@ -1,25 +1,25 @@
-//! Integration tests for CBOR plugin communication protocol.
+//! Integration tests for CBOR cartridge communication protocol.
 //!
-//! These tests verify the full path: engine → relay → runtime → plugin → response back.
-//! The PluginHostRuntime manages multiple plugins and routes frames between a relay
-//! connection and individual plugin processes.
+//! These tests verify the full path: engine → relay → runtime → cartridge → response back.
+//! The CartridgeHostRuntime manages multiple cartridges and routes frames between a relay
+//! connection and individual cartridge processes.
 
 #[cfg(test)]
 mod tests {
     use crate::bifaci::frame::{FlowKey, Frame, FrameType, MessageId, SeqAssigner};
     use crate::bifaci::io::{FrameReader, FrameWriter, handshake, handshake_accept};
-    use crate::bifaci::plugin_runtime::PluginRuntime;
+    use crate::bifaci::cartridge_runtime::CartridgeRuntime;
     use crate::standard::caps::CAP_IDENTITY;
     use tokio::io::{BufReader, BufWriter};
 
-    /// Test manifest JSON - plugins MUST include manifest in HELLO response.
+    /// Test manifest JSON - cartridges MUST include manifest in HELLO response.
     /// CAP_IDENTITY is mandatory in every manifest.
-    const TEST_MANIFEST: &str = r#"{"name":"TestPlugin","version":"1.0.0","description":"Test plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    const TEST_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-    // TEST293: Test PluginRuntime Op registration and lookup by exact and non-existent cap URN
+    // TEST293: Test CartridgeRuntime Op registration and lookup by exact and non-existent cap URN
     #[test]
-    fn test293_plugin_runtime_handler_registration() {
-        use crate::bifaci::plugin_runtime::{Request, WET_KEY_REQUEST, IdentityOp};
+    fn test293_cartridge_runtime_handler_registration() {
+        use crate::bifaci::cartridge_runtime::{Request, WET_KEY_REQUEST, IdentityOp};
         use ops::{Op, OpMetadata, DryContext, WetContext, OpResult, OpError};
         use async_trait::async_trait;
         use std::sync::Arc;
@@ -60,7 +60,7 @@ mod tests {
             fn metadata(&self) -> OpMetadata { OpMetadata::builder("TransformOp").build() }
         }
 
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
         runtime.register_op_type::<JsonEchoOp>(CAP_IDENTITY);
         runtime.register_op_type::<TransformOp>("cap:in=\"media:void\";op=transform;out=\"media:void\"");
 
@@ -92,20 +92,20 @@ mod tests {
         (rt_read, rt_write, eng_write, eng_read)
     }
 
-    /// Helper: create async socket pairs for plugin↔runtime.
-    fn create_plugin_pair() -> (
+    /// Helper: create async socket pairs for cartridge↔runtime.
+    fn create_cartridge_pair() -> (
         tokio::net::UnixStream,
         tokio::net::UnixStream,
         tokio::net::UnixStream,
         tokio::net::UnixStream,
     ) {
-        let (p_to_rt, rt_from_p) = tokio::net::UnixStream::pair().unwrap();
-        let (rt_to_p, p_from_rt) = tokio::net::UnixStream::pair().unwrap();
-        (rt_from_p, rt_to_p, p_from_rt, p_to_rt)
+        let (c_to_rt, rt_from_c) = tokio::net::UnixStream::pair().unwrap();
+        let (rt_to_c, c_from_rt) = tokio::net::UnixStream::pair().unwrap();
+        (rt_from_c, rt_to_c, c_from_rt, c_to_rt)
     }
 
-    /// Helper: do handshake only on plugin side (for raw frame tests using `handshake()`).
-    async fn plugin_handshake(
+    /// Helper: do handshake only on cartridge side (for raw frame tests using `handshake()`).
+    async fn cartridge_handshake(
         from_runtime: tokio::net::UnixStream,
         to_runtime: tokio::net::UnixStream,
         manifest: &[u8],
@@ -118,13 +118,13 @@ mod tests {
         (reader, writer)
     }
 
-    /// Helper: do handshake + handle identity verification (for tests using `attach_plugin()`).
-    async fn plugin_handshake_with_identity(
+    /// Helper: do handshake + handle identity verification (for tests using `attach_cartridge()`).
+    async fn cartridge_handshake_with_identity(
         from_runtime: tokio::net::UnixStream,
         to_runtime: tokio::net::UnixStream,
         manifest: &[u8],
     ) -> (FrameReader<BufReader<tokio::net::UnixStream>>, FrameWriter<BufWriter<tokio::net::UnixStream>>) {
-        let (mut reader, mut writer) = plugin_handshake(from_runtime, to_runtime, manifest).await;
+        let (mut reader, mut writer) = cartridge_handshake(from_runtime, to_runtime, manifest).await;
 
         // Handle identity verification REQ
         let req = reader.read().await.unwrap().expect("expected identity REQ after handshake");
@@ -154,19 +154,19 @@ mod tests {
         (reader, writer)
     }
 
-    // TEST896: Full path: engine REQ → runtime → plugin → response back through relay
+    // TEST896: Full path: engine REQ → runtime → cartridge → response back through relay
     #[tokio::test]
-    async fn test896_full_path_engine_req_to_plugin_response() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+    async fn test896_full_path_engine_req_to_cartridge_response() {
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
-        let manifest = r#"{"name":"EchoPlugin","version":"1.0","description":"Echo test plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Test","command":"test","args":[]}]}"#;
+        let manifest = r#"{"name":"EchoCartridge","version":"1.0","description":"Echo test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Test","command":"test","args":[]}]}"#;
 
-        let (p_read, p_write, p_from_rt, p_to_rt) = create_plugin_pair();
+        let (c_read, c_write, c_from_rt, c_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(c_from_rt, c_to_rt, &m).await;
 
             let req = reader.read().await.unwrap().expect("Expected REQ");
             assert_eq!(req.frame_type, FrameType::Req);
@@ -201,8 +201,8 @@ mod tests {
             drop(writer);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(c_read, c_write).await.unwrap();
 
         // Engine task: send request, wait for response, THEN close relay
         let req_id = MessageId::new_uuid();
@@ -258,24 +258,24 @@ mod tests {
         assert!(result.is_ok(), "Runtime should exit cleanly: {:?}", result);
 
         let response = engine_task.await.unwrap();
-        assert_eq!(response, b"hello world", "Plugin should echo back the argument data");
+        assert_eq!(response, b"hello world", "Cartridge should echo back the argument data");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST897: Plugin ERR frame flows back to engine through relay
+    // TEST897: Cartridge ERR frame flows back to engine through relay
     #[tokio::test]
-    async fn test897_plugin_error_flows_to_engine() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+    async fn test897_cartridge_error_flows_to_engine() {
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
-        let manifest = r#"{"name":"ErrPlugin","version":"1.0","description":"Error test plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=fail;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest = r#"{"name":"ErrCartridge","version":"1.0","description":"Error test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=fail;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        let (p_read, p_write, p_from_rt, p_to_rt) = create_plugin_pair();
+        let (c_read, c_write, c_from_rt, c_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(c_from_rt, c_to_rt, &m).await;
 
             let req = reader.read().await.unwrap().expect("Expected REQ");
             let mut seq = SeqAssigner::new();
@@ -286,8 +286,8 @@ mod tests {
             drop(writer);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(c_read, c_write).await.unwrap();
 
         let req_id = MessageId::new_uuid();
         let engine_task = tokio::spawn(async move {
@@ -332,25 +332,25 @@ mod tests {
         assert_eq!(code, "FAIL_CODE");
         assert_eq!(msg, "Something went wrong");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST898: Binary data integrity through full relay path (256 byte values)
     #[tokio::test]
     async fn test898_binary_integrity_through_relay() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
-        let manifest = r#"{"name":"BinPlugin","version":"1.0","description":"Binary test plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=binary;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest = r#"{"name":"BinCartridge","version":"1.0","description":"Binary test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=binary;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        let (p_read, p_write, p_from_rt, p_to_rt) = create_plugin_pair();
+        let (c_read, c_write, c_from_rt, c_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let binary_data: Vec<u8> = (0u16..=255).map(|i| i as u8).collect();
         let binary_clone = binary_data.clone();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(c_from_rt, c_to_rt, &m).await;
 
             let req = reader.read().await.unwrap().expect("Expected REQ");
 
@@ -388,8 +388,8 @@ mod tests {
             drop(writer);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(c_read, c_write).await.unwrap();
 
         let req_id = MessageId::new_uuid();
         let engine_task = tokio::spawn(async move {
@@ -446,22 +446,22 @@ mod tests {
             assert_eq!(b, i as u8, "Response byte mismatch at position {}", i);
         }
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST899: Streaming chunks flow through relay without accumulation
     #[tokio::test]
     async fn test899_streaming_chunks_through_relay() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
-        let manifest = r#"{"name":"StreamPlugin","version":"1.0","description":"Streaming test plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=stream;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest = r#"{"name":"StreamCartridge","version":"1.0","description":"Streaming test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=stream;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        let (p_read, p_write, p_from_rt, p_to_rt) = create_plugin_pair();
+        let (c_read, c_write, c_from_rt, c_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(c_from_rt, c_to_rt, &m).await;
 
             let req = reader.read().await.unwrap().expect("Expected REQ");
 
@@ -491,8 +491,8 @@ mod tests {
             drop(writer);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(c_read, c_write).await.unwrap();
 
         let req_id = MessageId::new_uuid();
         let engine_task = tokio::spawn(async move {
@@ -538,30 +538,30 @@ mod tests {
             assert_eq!(data, &format!("chunk{}", i).into_bytes(), "Chunk data must match");
         }
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST430: REMOVED - outdated test that doesn't represent real architecture
     // Real system requires RelaySwitch to assign XIDs to peer requests.
     // Peer invoke functionality is tested in bidirectional_interop tests with full relay stack.
 
-    // TEST900: Two plugins routed independently by cap_urn
+    // TEST900: Two cartridges routed independently by cap_urn
     #[tokio::test]
-    async fn test900_two_plugins_routed_independently() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+    async fn test900_two_cartridges_routed_independently() {
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
-        let manifest_a = r#"{"name":"PluginA","version":"1.0","description":"Plugin A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
-        let manifest_b = r#"{"name":"PluginB","version":"1.0","description":"Plugin B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest_a = r#"{"name":"CartridgeA","version":"1.0","description":"Cartridge A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest_b = r#"{"name":"CartridgeB","version":"1.0","description":"Cartridge B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        let (pa_read, pa_write, pa_from_rt, pa_to_rt) = create_plugin_pair();
-        let (pb_read, pb_write, pb_from_rt, pb_to_rt) = create_plugin_pair();
+        let (ca_read, ca_write, ca_from_rt, ca_to_rt) = create_cartridge_pair();
+        let (cb_read, cb_write, cb_from_rt, cb_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let ma = manifest_a.as_bytes().to_vec();
-        let plugin_a = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(pa_from_rt, pa_to_rt, &ma).await;
+        let cartridge_a = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(ca_from_rt, ca_to_rt, &ma).await;
             let req = reader.read().await.unwrap().expect("Expected REQ");
-            assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=alpha;out=\"media:void\""), "Plugin A must receive alpha REQ");
+            assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=alpha;out=\"media:void\""), "Cartridge A must receive alpha REQ");
             loop { let f = reader.read().await.unwrap().expect("f"); if f.frame_type == FrameType::End { break; } }
             let mut seq = SeqAssigner::new();
             let sid = "a".to_string();
@@ -584,10 +584,10 @@ mod tests {
         });
 
         let mb = manifest_b.as_bytes().to_vec();
-        let plugin_b = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(pb_from_rt, pb_to_rt, &mb).await;
+        let cartridge_b = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(cb_from_rt, cb_to_rt, &mb).await;
             let req = reader.read().await.unwrap().expect("Expected REQ");
-            assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=beta;out=\"media:void\""), "Plugin B must receive beta REQ");
+            assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=beta;out=\"media:void\""), "Cartridge B must receive beta REQ");
             loop { let f = reader.read().await.unwrap().expect("f"); if f.frame_type == FrameType::End { break; } }
             let mut seq = SeqAssigner::new();
             let sid = "b".to_string();
@@ -609,9 +609,9 @@ mod tests {
             drop(writer);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(pa_read, pa_write).await.unwrap();
-        runtime.attach_plugin(pb_read, pb_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(ca_read, ca_write).await.unwrap();
+        runtime.attach_cartridge(cb_read, cb_write).await.unwrap();
 
         let alpha_id = MessageId::new_uuid();
         let beta_id = MessageId::new_uuid();
@@ -671,46 +671,46 @@ mod tests {
         let _ = runtime.run(rt_relay_read, rt_relay_write, || vec![]).await;
 
         let (alpha_data, beta_data) = engine_task.await.unwrap();
-        assert_eq!(alpha_data, b"from-alpha", "Alpha response must come from Plugin A");
-        assert_eq!(beta_data, b"from-beta", "Beta response must come from Plugin B");
+        assert_eq!(alpha_data, b"from-alpha", "Alpha response must come from Cartridge A");
+        assert_eq!(beta_data, b"from-beta", "Beta response must come from Cartridge B");
 
-        plugin_a.await.unwrap();
-        plugin_b.await.unwrap();
+        cartridge_a.await.unwrap();
+        cartridge_b.await.unwrap();
     }
 
     // TEST901: REQ for unknown cap returns ERR frame (not fatal)
     #[tokio::test]
     async fn test901_req_for_unknown_cap_returns_err_frame() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
-        let manifest = r#"{"name":"OnePlugin","version":"1.0","description":"Known cap plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=known;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest = r#"{"name":"OneCartridge","version":"1.0","description":"Known cap cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=known;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        let (p_read, p_write, p_from_rt, p_to_rt) = create_plugin_pair();
+        let (c_read, c_write, c_from_rt, c_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            tracing::info!("[TEST/plugin] Starting plugin thread");
-            let (mut reader, _writer) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
-            tracing::info!("[TEST/plugin] Handshake complete, waiting for EOF...");
-            // Plugin waits for EOF — no REQ should arrive since cap is unknown
+        let cartridge_handle = tokio::spawn(async move {
+            tracing::info!("[TEST/cartridge] Starting cartridge thread");
+            let (mut reader, _writer) = cartridge_handshake_with_identity(c_from_rt, c_to_rt, &m).await;
+            tracing::info!("[TEST/cartridge] Handshake complete, waiting for EOF...");
+            // Cartridge waits for EOF — no REQ should arrive since cap is unknown
             match reader.read().await {
                 Ok(None) => {
-                    tracing::info!("[TEST/plugin] Got EOF, plugin exiting normally");
+                    tracing::info!("[TEST/cartridge] Got EOF, cartridge exiting normally");
                 }
                 Ok(Some(f)) => {
-                    tracing::error!("[TEST/plugin] ERROR: Got frame {:?}, expected EOF!", f.frame_type);
-                    panic!("Plugin should not receive frames for unknown cap, got {:?}", f.frame_type)
+                    tracing::error!("[TEST/cartridge] ERROR: Got frame {:?}, expected EOF!", f.frame_type);
+                    panic!("Cartridge should not receive frames for unknown cap, got {:?}", f.frame_type)
                 }
                 Err(e) => {
-                    tracing::error!("[TEST/plugin] Got error: {:?}, treating as EOF", e);
+                    tracing::error!("[TEST/cartridge] Got error: {:?}, treating as EOF", e);
                 }
             }
-            tracing::info!("[TEST/plugin] Plugin thread completing");
+            tracing::info!("[TEST/cartridge] Cartridge thread completing");
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(c_read, c_write).await.unwrap();
 
         let req_id = MessageId::new_uuid();
         let req_id_clone = req_id.clone();
@@ -761,9 +761,9 @@ mod tests {
         engine_recv.await.unwrap();
         tracing::info!("[TEST] engine_recv completed, test done!");
 
-        // Host and plugin are still running. Just drop them - they'll clean up when test ends.
+        // Host and cartridge are still running. Just drop them - they'll clean up when test ends.
         drop(run_handle);
-        drop(plugin_handle);
+        drop(cartridge_handle);
     }
 
     // =============================================================================
@@ -773,20 +773,20 @@ mod tests {
 
     // TEST284: Handshake exchanges HELLO frames, negotiates limits
     #[tokio::test]
-    async fn test284_handshake_host_plugin() {
+    async fn test284_handshake_host_cartridge() {
         use crate::bifaci::io::{handshake, handshake_accept};
 
         // Single bidirectional socket pair - each end can read and write
-        let (host_sock, plugin_sock) = tokio::net::UnixStream::pair().unwrap();
+        let (host_sock, cartridge_sock) = tokio::net::UnixStream::pair().unwrap();
 
         // Split each socket into read/write halves
         let (host_read, host_write) = host_sock.into_split();
-        let (plugin_read, plugin_write) = plugin_sock.into_split();
+        let (cartridge_read, cartridge_write) = cartridge_sock.into_split();
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let mut reader = FrameReader::new(BufReader::new(plugin_read));
-            let mut writer = FrameWriter::new(BufWriter::new(plugin_write));
+        let cartridge_handle = tokio::spawn(async move {
+            let mut reader = FrameReader::new(BufReader::new(cartridge_read));
+            let mut writer = FrameWriter::new(BufWriter::new(cartridge_write));
             let limits = handshake_accept(&mut reader, &mut writer, &manifest).await.unwrap();
             assert!(limits.max_frame > 0);
             assert!(limits.max_chunk > 0);
@@ -801,20 +801,20 @@ mod tests {
 
         assert_eq!(received_manifest, TEST_MANIFEST.as_bytes());
 
-        let plugin_limits = plugin_handle.await.unwrap();
-        assert_eq!(host_limits.max_frame, plugin_limits.max_frame);
-        assert_eq!(host_limits.max_chunk, plugin_limits.max_chunk);
+        let cartridge_limits = cartridge_handle.await.unwrap();
+        assert_eq!(host_limits.max_frame, cartridge_limits.max_frame);
+        assert_eq!(host_limits.max_chunk, cartridge_limits.max_chunk);
     }
 
     // TEST285: Simple request-response flow (REQ → END with payload)
     #[tokio::test]
     async fn test285_request_response_simple() {
-        let (plugin_from_host, host_to_plugin) = tokio::net::UnixStream::pair().unwrap();
-        let (host_from_plugin, plugin_to_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_from_host, host_to_cartridge) = tokio::net::UnixStream::pair().unwrap();
+        let (host_from_cartridge, cartridge_to_host) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake(plugin_from_host, plugin_to_host, &manifest).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake(cartridge_from_host, cartridge_to_host, &manifest).await;
 
             let frame = reader.read().await.unwrap().unwrap();
             assert_eq!(frame.frame_type, FrameType::Req);
@@ -828,8 +828,8 @@ mod tests {
             seq.remove(&FlowKey::from_frame(&end));
         });
 
-        let mut reader = FrameReader::new(BufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(BufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(BufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(BufWriter::new(host_to_cartridge));
         let handshake_result = handshake(&mut reader, &mut writer).await.unwrap();
         let limits = handshake_result.limits;
         reader.set_limits(limits);
@@ -845,18 +845,18 @@ mod tests {
         assert_eq!(response.frame_type, FrameType::End);
         assert_eq!(response.payload.as_deref(), Some(b"hello back".as_ref()));
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST286: Streaming response with multiple CHUNK frames
     #[tokio::test]
     async fn test286_streaming_chunks() {
-        let (plugin_from_host, host_to_plugin) = tokio::net::UnixStream::pair().unwrap();
-        let (host_from_plugin, plugin_to_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_from_host, host_to_cartridge) = tokio::net::UnixStream::pair().unwrap();
+        let (host_from_cartridge, cartridge_to_host) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake(plugin_from_host, plugin_to_host, &manifest).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake(cartridge_from_host, cartridge_to_host, &manifest).await;
 
             let frame = reader.read().await.unwrap().unwrap();
             let request_id = frame.id.clone();
@@ -881,8 +881,8 @@ mod tests {
             writer.write(&end).await.unwrap();
         });
 
-        let mut reader = FrameReader::new(BufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(BufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(BufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(BufWriter::new(host_to_cartridge));
         let handshake_result = handshake(&mut reader, &mut writer).await.unwrap();
         let limits = handshake_result.limits;
         reader.set_limits(limits);
@@ -911,18 +911,18 @@ mod tests {
         assert_eq!(chunks[1], b"chunk2");
         assert_eq!(chunks[2], b"chunk3");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST287: Host-initiated heartbeat
     #[tokio::test]
     async fn test287_heartbeat_from_host() {
-        let (plugin_from_host, host_to_plugin) = tokio::net::UnixStream::pair().unwrap();
-        let (host_from_plugin, plugin_to_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_from_host, host_to_cartridge) = tokio::net::UnixStream::pair().unwrap();
+        let (host_from_cartridge, cartridge_to_host) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake(plugin_from_host, plugin_to_host, &manifest).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake(cartridge_from_host, cartridge_to_host, &manifest).await;
 
             let frame = reader.read().await.unwrap().unwrap();
             assert_eq!(frame.frame_type, FrameType::Heartbeat);
@@ -933,8 +933,8 @@ mod tests {
             writer.write(&hb).await.unwrap();
         });
 
-        let mut reader = FrameReader::new(BufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(BufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(BufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(BufWriter::new(host_to_cartridge));
         let handshake_result = handshake(&mut reader, &mut writer).await.unwrap();
         let limits = handshake_result.limits;
         reader.set_limits(limits);
@@ -950,7 +950,7 @@ mod tests {
         assert_eq!(response.frame_type, FrameType::Heartbeat);
         assert_eq!(response.id, heartbeat_id);
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST290: Limit negotiation picks minimum
@@ -958,25 +958,25 @@ mod tests {
     async fn test290_limits_negotiation() {
         use crate::bifaci::io::{handshake, handshake_accept};
 
-        let (plugin_from_host, host_to_plugin) = tokio::net::UnixStream::pair().unwrap();
-        let (host_from_plugin, plugin_to_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_from_host, host_to_cartridge) = tokio::net::UnixStream::pair().unwrap();
+        let (host_from_cartridge, cartridge_to_host) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let mut reader = FrameReader::new(BufReader::new(plugin_from_host));
-            let mut writer = FrameWriter::new(BufWriter::new(plugin_to_host));
+        let cartridge_handle = tokio::spawn(async move {
+            let mut reader = FrameReader::new(BufReader::new(cartridge_from_host));
+            let mut writer = FrameWriter::new(BufWriter::new(cartridge_to_host));
             handshake_accept(&mut reader, &mut writer, &manifest).await.unwrap()
         });
 
-        let mut reader = FrameReader::new(BufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(BufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(BufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(BufWriter::new(host_to_cartridge));
         let handshake_result = handshake(&mut reader, &mut writer).await.unwrap();
         let host_limits = handshake_result.limits;
 
-        let plugin_limits = plugin_handle.await.unwrap();
+        let cartridge_limits = cartridge_handle.await.unwrap();
 
-        assert_eq!(host_limits.max_frame, plugin_limits.max_frame);
-        assert_eq!(host_limits.max_chunk, plugin_limits.max_chunk);
+        assert_eq!(host_limits.max_frame, cartridge_limits.max_frame);
+        assert_eq!(host_limits.max_chunk, cartridge_limits.max_chunk);
         assert!(host_limits.max_frame > 0);
         assert!(host_limits.max_chunk > 0);
     }
@@ -984,15 +984,15 @@ mod tests {
     // TEST291: Binary payload roundtrip (all 256 byte values)
     #[tokio::test]
     async fn test291_binary_payload_roundtrip() {
-        let (plugin_from_host, host_to_plugin) = tokio::net::UnixStream::pair().unwrap();
-        let (host_from_plugin, plugin_to_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_from_host, host_to_cartridge) = tokio::net::UnixStream::pair().unwrap();
+        let (host_from_cartridge, cartridge_to_host) = tokio::net::UnixStream::pair().unwrap();
 
         let binary_data: Vec<u8> = (0u16..=255).map(|i| i as u8).collect();
         let binary_clone = binary_data.clone();
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake(plugin_from_host, plugin_to_host, &manifest).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake(cartridge_from_host, cartridge_to_host, &manifest).await;
 
             let frame = reader.read().await.unwrap().unwrap();
             let payload = frame.payload.unwrap();
@@ -1009,8 +1009,8 @@ mod tests {
             seq.remove(&FlowKey::from_frame(&end));
         });
 
-        let mut reader = FrameReader::new(BufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(BufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(BufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(BufWriter::new(host_to_cartridge));
         let handshake_result = handshake(&mut reader, &mut writer).await.unwrap();
         let limits = handshake_result.limits;
         reader.set_limits(limits);
@@ -1030,7 +1030,7 @@ mod tests {
             assert_eq!(byte, i as u8, "Response byte mismatch at position {}", i);
         }
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST292: Sequential requests get distinct MessageIds
@@ -1038,15 +1038,15 @@ mod tests {
     async fn test292_message_id_uniqueness() {
         use std::sync::{Arc, Mutex};
 
-        let (plugin_from_host, host_to_plugin) = tokio::net::UnixStream::pair().unwrap();
-        let (host_from_plugin, plugin_to_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_from_host, host_to_cartridge) = tokio::net::UnixStream::pair().unwrap();
+        let (host_from_cartridge, cartridge_to_host) = tokio::net::UnixStream::pair().unwrap();
 
         let received_ids = Arc::new(Mutex::new(Vec::new()));
         let received_ids_clone = Arc::clone(&received_ids);
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake(plugin_from_host, plugin_to_host, &manifest).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake(cartridge_from_host, cartridge_to_host, &manifest).await;
 
             let mut seq = SeqAssigner::new();
             for _ in 0..3 {
@@ -1059,8 +1059,8 @@ mod tests {
             }
         });
 
-        let mut reader = FrameReader::new(BufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(BufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(BufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(BufWriter::new(host_to_cartridge));
         let handshake_result = handshake(&mut reader, &mut writer).await.unwrap();
         let limits = handshake_result.limits;
         reader.set_limits(limits);
@@ -1075,7 +1075,7 @@ mod tests {
             reader.read().await.unwrap().unwrap();
         }
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
 
         let ids = received_ids.lock().unwrap();
         assert_eq!(ids.len(), 3);
@@ -1089,12 +1089,12 @@ mod tests {
     // TEST299: Empty payload request/response roundtrip
     #[tokio::test]
     async fn test299_empty_payload_roundtrip() {
-        let (plugin_from_host, host_to_plugin) = tokio::net::UnixStream::pair().unwrap();
-        let (host_from_plugin, plugin_to_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_from_host, host_to_cartridge) = tokio::net::UnixStream::pair().unwrap();
+        let (host_from_cartridge, cartridge_to_host) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = TEST_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake(plugin_from_host, plugin_to_host, &manifest).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake(cartridge_from_host, cartridge_to_host, &manifest).await;
 
             let frame = reader.read().await.unwrap().unwrap();
             assert!(frame.payload.is_none() || frame.payload.as_ref().unwrap().is_empty(),
@@ -1107,8 +1107,8 @@ mod tests {
             seq.remove(&FlowKey::from_frame(&end));
         });
 
-        let mut reader = FrameReader::new(BufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(BufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(BufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(BufWriter::new(host_to_cartridge));
         let handshake_result = handshake(&mut reader, &mut writer).await.unwrap();
         let limits = handshake_result.limits;
         reader.set_limits(limits);
@@ -1123,29 +1123,29 @@ mod tests {
         let response = reader.read().await.unwrap().unwrap();
         assert!(response.payload.is_none() || response.payload.as_ref().unwrap().is_empty());
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // =========================================================================
     // Identity verification end-to-end tests
     // =========================================================================
 
-    // TEST489: Full path identity verification: engine → host (attach_plugin) → plugin
+    // TEST489: Full path identity verification: engine → host (attach_cartridge) → cartridge
     //
-    // This verifies that attach_plugin completes identity verification end-to-end
-    // and the plugin is ready to handle subsequent requests.
+    // This verifies that attach_cartridge completes identity verification end-to-end
+    // and the cartridge is ready to handle subsequent requests.
     #[tokio::test]
     async fn test906_full_path_identity_verification() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
         let manifest = r#"{"name":"IdentityE2E","version":"1.0","description":"Identity test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        let (p_read, p_write, p_from_rt, p_to_rt) = create_plugin_pair();
+        let (c_read, c_write, c_from_rt, c_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(c_from_rt, c_to_rt, &m).await;
 
             // After identity verification, handle a real request
             let req = reader.read().await.unwrap().expect("Expected REQ after identity verification");
@@ -1176,11 +1176,11 @@ mod tests {
             writer.write(&end).await.unwrap();
         });
 
-        let (p_read_half, _) = p_read.into_split();
-        let (_, p_write_half) = p_write.into_split();
+        let (c_read_half, _) = c_read.into_split();
+        let (_, c_write_half) = c_write.into_split();
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read_half, p_write_half).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(c_read_half, c_write_half).await.unwrap();
 
         let (rt_read_half, _) = rt_relay_read.into_split();
         let (_, rt_write_half) = rt_relay_write.into_split();
@@ -1243,29 +1243,29 @@ mod tests {
         assert!(result.is_ok(), "Runtime should exit cleanly: {:?}", result);
 
         let response = engine_task.await.unwrap();
-        assert_eq!(response, b"verified-and-working", "Plugin must respond after identity verification");
+        assert_eq!(response, b"verified-and-working", "Cartridge must respond after identity verification");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST490: Identity verification with multiple plugins through single relay
+    // TEST490: Identity verification with multiple cartridges through single relay
     //
-    // Both plugins must pass identity verification independently before any
+    // Both cartridges must pass identity verification independently before any
     // real requests are routed.
     #[tokio::test]
-    async fn test490_identity_verification_multiple_plugins() {
-        use crate::bifaci::host_runtime::PluginHostRuntime;
+    async fn test490_identity_verification_multiple_cartridges() {
+        use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
-        let manifest_a = r#"{"name":"PluginA","version":"1.0","description":"Plugin A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Alpha","command":"alpha","args":[]}]}"#;
-        let manifest_b = r#"{"name":"PluginB","version":"1.0","description":"Plugin B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Beta","command":"beta","args":[]}]}"#;
+        let manifest_a = r#"{"name":"CartridgeA","version":"1.0","description":"Cartridge A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Alpha","command":"alpha","args":[]}]}"#;
+        let manifest_b = r#"{"name":"CartridgeB","version":"1.0","description":"Cartridge B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Beta","command":"beta","args":[]}]}"#;
 
-        let (pa_read, pa_write, pa_from_rt, pa_to_rt) = create_plugin_pair();
-        let (pb_read, pb_write, pb_from_rt, pb_to_rt) = create_plugin_pair();
+        let (ca_read, ca_write, ca_from_rt, ca_to_rt) = create_cartridge_pair();
+        let (cb_read, cb_write, cb_from_rt, cb_to_rt) = create_cartridge_pair();
         let (rt_relay_read, rt_relay_write, eng_write, eng_read) = create_relay_pair();
 
         let ma = manifest_a.as_bytes().to_vec();
         let pa_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(pa_from_rt, pa_to_rt, &ma).await;
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(ca_from_rt, ca_to_rt, &ma).await;
             let req = reader.read().await.unwrap().expect("Expected REQ for alpha");
             assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=alpha;out=\"media:void\""));
             loop { let f = reader.read().await.unwrap().expect("f"); if f.frame_type == FrameType::End { break; } }
@@ -1285,7 +1285,7 @@ mod tests {
 
         let mb = manifest_b.as_bytes().to_vec();
         let pb_handle = tokio::spawn(async move {
-            let (mut reader, mut writer) = plugin_handshake_with_identity(pb_from_rt, pb_to_rt, &mb).await;
+            let (mut reader, mut writer) = cartridge_handshake_with_identity(cb_from_rt, cb_to_rt, &mb).await;
             let req = reader.read().await.unwrap().expect("Expected REQ for beta");
             assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=beta;out=\"media:void\""));
             loop { let f = reader.read().await.unwrap().expect("f"); if f.frame_type == FrameType::End { break; } }
@@ -1303,14 +1303,14 @@ mod tests {
             seq.assign(&mut end); writer.write(&end).await.unwrap();
         });
 
-        let (pa_read_half, _) = pa_read.into_split();
-        let (_, pa_write_half) = pa_write.into_split();
-        let (pb_read_half, _) = pb_read.into_split();
-        let (_, pb_write_half) = pb_write.into_split();
+        let (ca_read_half, _) = ca_read.into_split();
+        let (_, ca_write_half) = ca_write.into_split();
+        let (cb_read_half, _) = cb_read.into_split();
+        let (_, cb_write_half) = cb_write.into_split();
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(pa_read_half, pa_write_half).await.unwrap();
-        runtime.attach_plugin(pb_read_half, pb_write_half).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(ca_read_half, ca_write_half).await.unwrap();
+        runtime.attach_cartridge(cb_read_half, cb_write_half).await.unwrap();
 
         let (rt_read_half, _) = rt_relay_read.into_split();
         let (_, rt_write_half) = rt_relay_write.into_split();
@@ -1388,8 +1388,8 @@ mod tests {
         assert!(result.is_ok(), "Runtime should exit cleanly: {:?}", result);
 
         let (resp_alpha, resp_beta) = engine_task.await.unwrap();
-        assert_eq!(resp_alpha, b"from-alpha", "Alpha plugin must respond correctly after identity verification");
-        assert_eq!(resp_beta, b"from-beta", "Beta plugin must respond correctly after identity verification");
+        assert_eq!(resp_alpha, b"from-alpha", "Alpha cartridge must respond correctly after identity verification");
+        assert_eq!(resp_beta, b"from-beta", "Beta cartridge must respond correctly after identity verification");
 
         pa_handle.await.unwrap();
         pb_handle.await.unwrap();

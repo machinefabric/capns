@@ -42,7 +42,7 @@ pub use executor::{
     ExecutionError,
     NodeData,
     EdgeGroup,
-    PluginManager,
+    CartridgeManager,
     ExecutionContext,
     CapProgressFn,
     ProgressMapper,

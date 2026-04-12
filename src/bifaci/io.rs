@@ -479,13 +479,13 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
     Ok(Some(frame))
 }
 
-/// Handshake result including manifest (host side - receives plugin's HELLO with manifest)
+/// Handshake result including manifest (host side - receives cartridge's HELLO with manifest)
 #[derive(Debug, Clone)]
 pub struct HandshakeResult {
     /// Negotiated protocol limits
     pub limits: Limits,
-    /// Plugin manifest JSON data (from plugin's HELLO response).
-    /// This is REQUIRED - plugins MUST include their manifest in HELLO.
+    /// Cartridge manifest JSON data (from cartridge's HELLO response).
+    /// This is REQUIRED - cartridges MUST include their manifest in HELLO.
     pub manifest: Vec<u8>,
 }
 
@@ -643,9 +643,9 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     }
 }
 
-/// Perform HELLO handshake and extract plugin manifest (host side - sends first).
-/// Returns HandshakeResult containing negotiated limits and plugin manifest.
-/// Fails if plugin HELLO is missing the required manifest.
+/// Perform HELLO handshake and extract cartridge manifest (host side - sends first).
+/// Returns HandshakeResult containing negotiated limits and cartridge manifest.
+/// Fails if cartridge HELLO is missing the required manifest.
 pub async fn handshake<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut FrameReader<R>,
     writer: &mut FrameWriter<W>,
@@ -666,10 +666,10 @@ pub async fn handshake<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         )));
     }
 
-    // Extract manifest - REQUIRED for plugins
+    // Extract manifest - REQUIRED for cartridges
     let manifest = their_frame
         .hello_manifest()
-        .ok_or_else(|| CborError::Handshake("Plugin HELLO missing required manifest".to_string()))?
+        .ok_or_else(|| CborError::Handshake("Cartridge HELLO missing required manifest".to_string()))?
         .to_vec();
 
     // Negotiate minimum of both
@@ -690,10 +690,10 @@ pub async fn handshake<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     Ok(HandshakeResult { limits, manifest })
 }
 
-/// Accept HELLO handshake with manifest (plugin side - receives first, sends manifest in response).
+/// Accept HELLO handshake with manifest (cartridge side - receives first, sends manifest in response).
 ///
 /// Reads host's HELLO, sends our HELLO with manifest, returns negotiated limits.
-/// The manifest is REQUIRED - plugins MUST provide their manifest.
+/// The manifest is REQUIRED - cartridges MUST provide their manifest.
 pub async fn handshake_accept<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut FrameReader<R>,
     writer: &mut FrameWriter<W>,
@@ -1413,43 +1413,43 @@ mod tests {
     // TEST230: Test async handshake exchanges HELLO frames and negotiates minimum limits
     #[tokio::test]
     async fn test230_async_handshake() {
-        let (host_to_plugin, plugin_from_host) = tokio::net::UnixStream::pair().unwrap();
-        let (plugin_to_host, host_from_plugin) = tokio::net::UnixStream::pair().unwrap();
+        let (host_to_cartridge, cartridge_from_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_to_host, host_from_cartridge) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = b"{\"name\":\"Test\",\"version\":\"1.0\",\"caps\":[]}";
         let manifest_clone = manifest.to_vec();
 
-        // Plugin side in spawned task
-        let plugin_handle = tokio::spawn(async move {
-            let mut reader = FrameReader::new(TokioBufReader::new(plugin_from_host));
-            let mut writer = FrameWriter::new(TokioBufWriter::new(plugin_to_host));
+        // Cartridge side in spawned task
+        let cartridge_handle = tokio::spawn(async move {
+            let mut reader = FrameReader::new(TokioBufReader::new(cartridge_from_host));
+            let mut writer = FrameWriter::new(TokioBufWriter::new(cartridge_to_host));
             handshake_accept(&mut reader, &mut writer, &manifest_clone).await.unwrap()
         });
 
         // Host side
-        let mut reader = FrameReader::new(TokioBufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(TokioBufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_cartridge));
         let result = handshake(&mut reader, &mut writer).await.unwrap();
 
-        let plugin_limits = plugin_handle.await.unwrap();
+        let cartridge_limits = cartridge_handle.await.unwrap();
 
         // Both sides must agree on limits
-        assert_eq!(result.limits.max_frame, plugin_limits.max_frame);
-        assert_eq!(result.limits.max_chunk, plugin_limits.max_chunk);
-        assert_eq!(result.limits.max_reorder_buffer, plugin_limits.max_reorder_buffer);
+        assert_eq!(result.limits.max_frame, cartridge_limits.max_frame);
+        assert_eq!(result.limits.max_chunk, cartridge_limits.max_chunk);
+        assert_eq!(result.limits.max_reorder_buffer, cartridge_limits.max_reorder_buffer);
         assert_eq!(result.manifest, manifest.to_vec());
     }
 
     // TEST231: Test handshake fails when peer sends non-HELLO frame
     #[tokio::test]
     async fn test231_handshake_rejects_non_hello() {
-        let (host_to_plugin, plugin_from_host) = tokio::net::UnixStream::pair().unwrap();
-        let (plugin_to_host, host_from_plugin) = tokio::net::UnixStream::pair().unwrap();
+        let (host_to_cartridge, cartridge_from_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_to_host, host_from_cartridge) = tokio::net::UnixStream::pair().unwrap();
 
-        // Plugin side: send a REQ frame instead of HELLO
-        let plugin_handle = tokio::spawn(async move {
-            let mut reader = FrameReader::new(TokioBufReader::new(plugin_from_host));
-            let mut writer = FrameWriter::new(TokioBufWriter::new(plugin_to_host));
+        // Cartridge side: send a REQ frame instead of HELLO
+        let cartridge_handle = tokio::spawn(async move {
+            let mut reader = FrameReader::new(TokioBufReader::new(cartridge_from_host));
+            let mut writer = FrameWriter::new(TokioBufWriter::new(cartridge_to_host));
             // Read host's HELLO (consume it)
             let _ = reader.read().await.unwrap();
             // Send a REQ instead of HELLO
@@ -1457,37 +1457,37 @@ mod tests {
             writer.write(&bad_frame).await.unwrap();
         });
 
-        let mut reader = FrameReader::new(TokioBufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(TokioBufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_cartridge));
         let result = handshake(&mut reader, &mut writer).await;
         assert!(result.is_err(), "handshake must fail when peer sends non-HELLO");
         let err = result.unwrap_err();
         assert!(matches!(err, CborError::Handshake(_)));
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST232: Test handshake fails when plugin HELLO is missing required manifest
+    // TEST232: Test handshake fails when cartridge HELLO is missing required manifest
     #[tokio::test]
     async fn test232_handshake_rejects_missing_manifest() {
-        let (host_to_plugin, plugin_from_host) = tokio::net::UnixStream::pair().unwrap();
-        let (plugin_to_host, host_from_plugin) = tokio::net::UnixStream::pair().unwrap();
+        let (host_to_cartridge, cartridge_from_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_to_host, host_from_cartridge) = tokio::net::UnixStream::pair().unwrap();
 
-        // Plugin side: send HELLO without manifest
-        let plugin_handle = tokio::spawn(async move {
-            let mut reader = FrameReader::new(TokioBufReader::new(plugin_from_host));
-            let mut writer = FrameWriter::new(TokioBufWriter::new(plugin_to_host));
+        // Cartridge side: send HELLO without manifest
+        let cartridge_handle = tokio::spawn(async move {
+            let mut reader = FrameReader::new(TokioBufReader::new(cartridge_from_host));
+            let mut writer = FrameWriter::new(TokioBufWriter::new(cartridge_to_host));
             let _ = reader.read().await.unwrap(); // consume host HELLO
             let no_manifest_hello = Frame::hello(&Limits { max_frame: 1_000_000, max_chunk: 200_000, max_reorder_buffer: DEFAULT_MAX_REORDER_BUFFER });
             writer.write(&no_manifest_hello).await.unwrap();
         });
 
-        let mut reader = FrameReader::new(TokioBufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(TokioBufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_cartridge));
         let result = handshake(&mut reader, &mut writer).await;
         assert!(result.is_err(), "handshake must fail when manifest is missing");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST233: Test binary payload with all 256 byte values roundtrips through encode/decode
@@ -1692,22 +1692,22 @@ mod tests {
     // TEST472: Handshake negotiates max_reorder_buffer (minimum of both sides)
     #[tokio::test]
     async fn test472_handshake_negotiates_reorder_buffer() {
-        // Simulate plugin sending HELLO with max_reorder_buffer=32
-        let plugin_limits = Limits {
+        // Simulate cartridge sending HELLO with max_reorder_buffer=32
+        let cartridge_limits = Limits {
             max_frame: DEFAULT_MAX_FRAME,
             max_chunk: DEFAULT_MAX_CHUNK,
             max_reorder_buffer: 32,
         };
         let manifest = br#"{"name":"test","version":"1.0","caps":[]}"#;
 
-        // Write plugin's HELLO with manifest to a duplex stream
-        let (mut plugin_write, mut plugin_read) = tokio::io::duplex(64 * 1024);
+        // Write cartridge's HELLO with manifest to a duplex stream
+        let (mut cartridge_write, mut cartridge_read) = tokio::io::duplex(64 * 1024);
         {
-            let mut w = FrameWriter::new(&mut plugin_write);
-            let hello = Frame::hello_with_manifest(&plugin_limits, manifest);
+            let mut w = FrameWriter::new(&mut cartridge_write);
+            let hello = Frame::hello_with_manifest(&cartridge_limits, manifest);
             w.write(&hello).await.unwrap();
         }
-        drop(plugin_write);
+        drop(cartridge_write);
 
         // Write host's HELLO to a duplex stream (our default: max_reorder_buffer=64)
         let (mut host_write, mut host_read) = tokio::io::duplex(64 * 1024);
@@ -1718,9 +1718,9 @@ mod tests {
         }
         drop(host_write);
 
-        // Host reads plugin's HELLO
+        // Host reads cartridge's HELLO
         let their_frame = {
-            let mut r = FrameReader::new(&mut plugin_read);
+            let mut r = FrameReader::new(&mut cartridge_read);
             r.read().await.unwrap().unwrap()
         };
         let their_reorder = their_frame.hello_max_reorder_buffer().unwrap();
@@ -1728,7 +1728,7 @@ mod tests {
         let negotiated = DEFAULT_MAX_REORDER_BUFFER.min(their_reorder);
         assert_eq!(negotiated, 32, "must pick minimum (32 < 64)");
 
-        // Plugin reads host's HELLO
+        // Cartridge reads host's HELLO
         let host_frame = {
             let mut r = FrameReader::new(&mut host_read);
             r.read().await.unwrap().unwrap()
@@ -1744,9 +1744,9 @@ mod tests {
     /// Manifest with only CAP_IDENTITY (minimum valid manifest)
     const IDENTITY_MANIFEST: &str = r#"{"name":"Test","version":"1.0","description":"Test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]}]}"#;
 
-    /// Simulate plugin side: handshake_accept, then handle one identity REQ
+    /// Simulate cartridge side: handshake_accept, then handle one identity REQ
     /// by echoing back the payload (like the standard identity handler).
-    async fn run_plugin_identity_echo(
+    async fn run_cartridge_identity_echo(
         from_host: tokio::net::UnixStream,
         to_host: tokio::net::UnixStream,
         manifest: &[u8],
@@ -1788,36 +1788,36 @@ mod tests {
     // TEST481: verify_identity succeeds with standard identity echo handler
     #[tokio::test]
     async fn test481_verify_identity_succeeds() {
-        let (host_to_plugin, plugin_from_host) = tokio::net::UnixStream::pair().unwrap();
-        let (plugin_to_host, host_from_plugin) = tokio::net::UnixStream::pair().unwrap();
+        let (host_to_cartridge, cartridge_from_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_to_host, host_from_cartridge) = tokio::net::UnixStream::pair().unwrap();
 
-        // Plugin side runs async in a spawned task
+        // Cartridge side runs async in a spawned task
         let manifest = IDENTITY_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            run_plugin_identity_echo(plugin_from_host, plugin_to_host, &manifest).await;
+        let cartridge_handle = tokio::spawn(async move {
+            run_cartridge_identity_echo(cartridge_from_host, cartridge_to_host, &manifest).await;
         });
 
         // Host side
-        let mut reader = FrameReader::new(TokioBufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(TokioBufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_cartridge));
         let _hs = handshake(&mut reader, &mut writer).await.unwrap();
 
         let result = verify_identity(&mut reader, &mut writer).await;
         assert!(result.is_ok(), "verify_identity must succeed: {:?}", result.unwrap_err());
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST482: verify_identity fails when plugin returns ERR on identity call
+    // TEST482: verify_identity fails when cartridge returns ERR on identity call
     #[tokio::test]
     async fn test482_verify_identity_fails_on_err() {
-        let (host_to_plugin, plugin_from_host) = tokio::net::UnixStream::pair().unwrap();
-        let (plugin_to_host, host_from_plugin) = tokio::net::UnixStream::pair().unwrap();
+        let (host_to_cartridge, cartridge_from_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_to_host, host_from_cartridge) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = IDENTITY_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let mut reader = FrameReader::new(TokioBufReader::new(plugin_from_host));
-            let mut writer = FrameWriter::new(TokioBufWriter::new(plugin_to_host));
+        let cartridge_handle = tokio::spawn(async move {
+            let mut reader = FrameReader::new(TokioBufReader::new(cartridge_from_host));
+            let mut writer = FrameWriter::new(TokioBufWriter::new(cartridge_to_host));
             handshake_accept(&mut reader, &mut writer, &manifest).await.unwrap();
 
             // Read REQ, respond with ERR
@@ -1830,8 +1830,8 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         });
 
-        let mut reader = FrameReader::new(TokioBufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(TokioBufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_cartridge));
         handshake(&mut reader, &mut writer).await.unwrap();
 
         let result = verify_identity(&mut reader, &mut writer).await;
@@ -1839,19 +1839,19 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.to_string().contains("BROKEN"), "error must contain error code: {}", err);
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST483: verify_identity fails when connection closes before response
     #[tokio::test]
     async fn test483_verify_identity_fails_on_close() {
-        let (host_to_plugin, plugin_from_host) = tokio::net::UnixStream::pair().unwrap();
-        let (plugin_to_host, host_from_plugin) = tokio::net::UnixStream::pair().unwrap();
+        let (host_to_cartridge, cartridge_from_host) = tokio::net::UnixStream::pair().unwrap();
+        let (cartridge_to_host, host_from_cartridge) = tokio::net::UnixStream::pair().unwrap();
 
         let manifest = IDENTITY_MANIFEST.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let mut reader = FrameReader::new(TokioBufReader::new(plugin_from_host));
-            let mut writer = FrameWriter::new(TokioBufWriter::new(plugin_to_host));
+        let cartridge_handle = tokio::spawn(async move {
+            let mut reader = FrameReader::new(TokioBufReader::new(cartridge_from_host));
+            let mut writer = FrameWriter::new(TokioBufWriter::new(cartridge_to_host));
             handshake_accept(&mut reader, &mut writer, &manifest).await.unwrap();
 
             // Read REQ but close connection without responding
@@ -1860,14 +1860,14 @@ mod tests {
             drop(reader);
         });
 
-        let mut reader = FrameReader::new(TokioBufReader::new(host_from_plugin));
-        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_plugin));
+        let mut reader = FrameReader::new(TokioBufReader::new(host_from_cartridge));
+        let mut writer = FrameWriter::new(TokioBufWriter::new(host_to_cartridge));
         handshake(&mut reader, &mut writer).await.unwrap();
 
         let result = verify_identity(&mut reader, &mut writer).await;
         assert!(result.is_err(), "verify_identity must fail on connection close");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
 }

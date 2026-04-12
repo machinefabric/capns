@@ -42,20 +42,20 @@ This specification defines the semantic foundations, runtime protocol, execution
 | 12.3 | [Handshake](./12.3-HANDSHAKE.md) | Connection setup, HELLO exchange, identity verification | — |
 | 12.4 | [Streaming](./12.4-STREAMING.md) | Multiplexed streams, chunking, sequence numbering | — |
 
-### Plugin Runtime (13)
+### Cartridge Runtime (13)
 
 | # | Document | Purpose | Dependencies |
 |---|----------|---------|--------------|
-| 13.1 | [Plugin Runtime](./13.1-PLUGIN-RUNTIME.md) | Entry point, handler registration, CLI/plugin mode | 7, 12.3 |
+| 13.1 | [Cartridge Runtime](./13.1-CARTRIDGE-RUNTIME.md) | Entry point, handler registration, CLI/cartridge mode | 7, 12.3 |
 | 13.2 | [Input and Output](./13.2-INPUT-OUTPUT.md) | InputStream, OutputStream, stream lookup | 13.4, 15.4 |
-| 13.3 | [Peer Invocation](./13.3-PEER-INVOCATION.md) | Cross-plugin capability calls | — |
+| 13.3 | [Peer Invocation](./13.3-PEER-INVOCATION.md) | Cross-cartridge capability calls | — |
 | 13.4 | [Progress and Logging](./13.4-PROGRESS-AND-LOGGING.md) | LOG frames, progress mapping, keepalive | 15.3 |
 
 ### Host and Relay (14)
 
 | # | Document | Purpose | Dependencies |
 |---|----------|---------|--------------|
-| 14.1 | [Host Runtime](./14.1-HOST-RUNTIME.md) | Plugin lifecycle, frame routing, health monitoring | 12.3 |
+| 14.1 | [Host Runtime](./14.1-HOST-RUNTIME.md) | Cartridge lifecycle, frame routing, health monitoring | 12.3 |
 | 14.2 | [Relay Switch](./14.2-RELAY-SWITCH.md) | Cap-aware routing multiplexer | 7, 8, 15.4 |
 | 14.3 | [Relay Topology](./14.3-RELAY-TOPOLOGY.md) | RelaySlave/RelayMaster pairs, Unix socket relay chains | — |
 
@@ -84,7 +84,7 @@ This specification defines the semantic foundations, runtime protocol, execution
 |---|----------|---------|--------------|
 | 17.1 | [Task Integration](./17.1-TASK-INTEGRATION.md) | Cartridge execution in MachineFabric tasks | 15.4 |
 | 17.2 | [Error Handling](./17.2-ERROR-HANDLING.md) | Error type hierarchy, propagation patterns | 13.4 |
-| 17.3 | [Memory Pressure Detection](./17.3-MEMORY-PRESSURE-DETECTION.md) | macOS memory pressure, plugin lifecycle | — |
+| 17.3 | [Memory Pressure Detection](./17.3-MEMORY-PRESSURE-DETECTION.md) | macOS memory pressure, cartridge lifecycle | — |
 
 ---
 
@@ -101,8 +101,8 @@ This specification defines the semantic foundations, runtime protocol, execution
 9. **10 Validation Rules** — structural constraints
 10. **11 Media URNs** — media type details
 11. **12 Protocol** — wire format and connection setup
-12. **13 Plugin Runtime** — writing handlers
-13. **14 Host and Relay** — plugin hosting infrastructure
+12. **13 Cartridge Runtime** — writing handlers
+13. **14 Host and Relay** — cartridge hosting infrastructure
 14. **15 Execution** — DAG orchestration and planning
 15. **16 Cartridge Development** — building cartridges
 16. **17 Integration** — tasks, errors, resource management
@@ -126,7 +126,7 @@ This specification defines the semantic foundations, runtime protocol, execution
 | **Machine** | An ordered collection of MachineStrands wired into data-flow graphs |
 | **MachineStrand** | A maximal connected component of resolved cap edges with anchors |
 | **Machine notation** | The textual encoding of a Machine (see [09-MACHINE-NOTATION](./09-MACHINE-NOTATION.md)) |
-| **Cartridge** | A plugin binary that provides one or more capabilities |
+| **Cartridge** | A standalone binary that provides one or more capabilities |
 
 ---
 

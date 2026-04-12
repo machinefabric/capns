@@ -1,33 +1,33 @@
-//! Async Plugin Host Runtime — Multi-plugin management with frame routing
+//! Async Cartridge Host Runtime — Multi-cartridge management with frame routing
 //!
-//! The PluginHostRuntime manages multiple plugin binaries, routing CBOR protocol
-//! frames between a relay connection (to the engine) and individual plugin processes.
+//! The CartridgeHostRuntime manages multiple cartridge binaries, routing CBOR protocol
+//! frames between a relay connection (to the engine) and individual cartridge processes.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! Relay (engine) ←→ PluginHostRuntime ←→ Plugin A (stdin/stdout)
-//!                                   ←→ Plugin B (stdin/stdout)
-//!                                   ←→ Plugin C (stdin/stdout)
+//! Relay (engine) ←→ CartridgeHostRuntime ←→ Cartridge A (stdin/stdout)
+//!                                   ←→ Cartridge B (stdin/stdout)
+//!                                   ←→ Cartridge C (stdin/stdout)
 //! ```
 //!
 //! ## Frame Routing
 //!
-//! Engine → Plugin:
-//! - REQ: route by cap_urn to the plugin that handles it, spawn on demand
-//! - STREAM_START/CHUNK/STREAM_END/END/ERR: route by req_id to the mapped plugin
+//! Engine → Cartridge:
+//! - REQ: route by cap_urn to the cartridge that handles it, spawn on demand
+//! - STREAM_START/CHUNK/STREAM_END/END/ERR: route by req_id to the mapped cartridge
 //! - All other frame types: hard protocol error (must never arrive from engine)
 //!
-//! Plugin → Engine:
+//! Cartridge → Engine:
 //! - HELLO: fatal error (consumed during handshake, never during run)
 //! - HEARTBEAT: responded to locally, never forwarded
 //! - REQ (peer invoke): registered in routing table, forwarded to relay
-//! - RelayNotify/RelayState: fatal error (plugins must never send these)
+//! - RelayNotify/RelayState: fatal error (cartridges must never send these)
 //! - Everything else: forwarded to relay (pass-through)
 
 use crate::bifaci::frame::{FlowKey, Frame, FrameType, Limits, MessageId, SeqAssigner};
 use crate::bifaci::io::{handshake, verify_identity, FrameReader, FrameWriter, CborError};
-use crate::bifaci::relay_switch::InstalledPluginIdentity;
+use crate::bifaci::relay_switch::InstalledCartridgeIdentity;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -40,47 +40,47 @@ use tokio::time::{Duration, Instant};
 #[derive(Debug, Clone, serde::Serialize)]
 struct RelayNotifyCapabilitiesPayload {
     caps: Vec<String>,
-    installed_plugins: Vec<InstalledPluginIdentity>,
+    installed_cartridges: Vec<InstalledCartridgeIdentity>,
 }
 
-/// Interval between heartbeat probes sent to each running plugin.
+/// Interval between heartbeat probes sent to each running cartridge.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Maximum time to wait for a heartbeat response before considering a plugin unhealthy.
+/// Maximum time to wait for a heartbeat response before considering a cartridge unhealthy.
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // =============================================================================
-// PLUGIN PROCESS INFO — External visibility into managed plugin processes
+// CARTRIDGE PROCESS INFO — External visibility into managed cartridge processes
 // =============================================================================
 
-/// Snapshot of a managed plugin process.
+/// Snapshot of a managed cartridge process.
 #[derive(Debug, Clone)]
-pub struct PluginProcessInfo {
-    /// Index of the plugin in the host's plugin list.
-    pub plugin_index: usize,
+pub struct CartridgeProcessInfo {
+    /// Index of the cartridge in the host's cartridge list.
+    pub cartridge_index: usize,
     /// OS process ID (from `Child::id()` on Rust side, `pid_t` on Swift side).
     pub pid: u32,
     /// Binary name (e.g. "ggufcartridge", "modelcartridge").
     pub name: String,
-    /// Whether the plugin is currently running and responsive.
+    /// Whether the cartridge is currently running and responsive.
     pub running: bool,
-    /// Cap URN strings this plugin handles.
+    /// Cap URN strings this cartridge handles.
     pub caps: Vec<String>,
-    /// Physical memory footprint in MB (self-reported by plugin via heartbeat).
+    /// Physical memory footprint in MB (self-reported by cartridge via heartbeat).
     /// This is `ri_phys_footprint` — the metric macOS jetsam uses for kill decisions.
-    /// Updated every 30s when the plugin responds to a heartbeat probe.
+    /// Updated every 30s when the cartridge responds to a heartbeat probe.
     pub memory_footprint_mb: u64,
-    /// Resident set size in MB (self-reported by plugin via heartbeat).
+    /// Resident set size in MB (self-reported by cartridge via heartbeat).
     pub memory_rss_mb: u64,
 }
 
-/// Why a plugin was killed. Determines whether pending requests get ERR frames.
+/// Why a cartridge was killed. Determines whether pending requests get ERR frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownReason {
     /// App is exiting. No ERR frames — the relay connection is closing anyway
     /// and there are no callers left to notify.
     AppExit,
-    /// OOM watchdog killed the plugin while it was actively processing requests.
+    /// OOM watchdog killed the cartridge while it was actively processing requests.
     /// Pending requests MUST get ERR frames with code "OOM_KILLED" so callers
     /// can fail fast instead of hanging forever.
     OomKill,
@@ -90,31 +90,31 @@ pub enum ShutdownReason {
 
 /// Commands that can be sent to the host runtime from external code.
 pub enum HostCommand {
-    /// Kill a plugin process by PID for memory pressure. The host sets
+    /// Kill a cartridge process by PID for memory pressure. The host sets
     /// `shutdown_reason = Some(OomKill)` before killing, so death handling
     /// sends ERR frames with "OOM_KILLED" for all pending requests.
-    KillPlugin { pid: u32 },
+    KillCartridge { pid: u32 },
 }
 
-/// Thread-safe handle for querying plugin process info and sending commands
-/// to a running `PluginHostRuntime`. Obtained via `process_handle()` before
+/// Thread-safe handle for querying cartridge process info and sending commands
+/// to a running `CartridgeHostRuntime`. Obtained via `process_handle()` before
 /// calling `run()`. The handle remains valid for the lifetime of `run()`.
 #[derive(Clone)]
-pub struct PluginProcessHandle {
-    snapshot: Arc<RwLock<Vec<PluginProcessInfo>>>,
+pub struct CartridgeProcessHandle {
+    snapshot: Arc<RwLock<Vec<CartridgeProcessInfo>>>,
     command_tx: mpsc::UnboundedSender<HostCommand>,
 }
 
-impl PluginProcessHandle {
-    /// Get a snapshot of all managed plugin processes (running or not).
-    pub fn running_plugins(&self) -> Vec<PluginProcessInfo> {
+impl CartridgeProcessHandle {
+    /// Get a snapshot of all managed cartridge processes (running or not).
+    pub fn running_cartridges(&self) -> Vec<CartridgeProcessInfo> {
         self.snapshot.read().unwrap().clone()
     }
 
-    /// Request that the host kill a specific plugin process by PID.
+    /// Request that the host kill a specific cartridge process by PID.
     /// Returns `Err(())` if the host's run loop has exited.
-    pub fn kill_plugin(&self, pid: u32) -> Result<(), ()> {
-        self.command_tx.send(HostCommand::KillPlugin { pid }).map_err(|_| ())
+    pub fn kill_cartridge(&self, pid: u32) -> Result<(), ()> {
+        self.command_tx.send(HostCommand::KillCartridge { pid }).map_err(|_| ())
     }
 }
 
@@ -122,7 +122,7 @@ impl PluginProcessHandle {
 // ERROR TYPES
 // =============================================================================
 
-/// Errors that can occur in the async plugin host runtime.
+/// Errors that can occur in the async cartridge host runtime.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AsyncHostError {
     #[error("CBOR error: {0}")]
@@ -131,13 +131,13 @@ pub enum AsyncHostError {
     #[error("I/O error: {0}")]
     Io(String),
 
-    #[error("Plugin returned error: [{code}] {message}")]
-    PluginError { code: String, message: String },
+    #[error("Cartridge returned error: [{code}] {message}")]
+    CartridgeError { code: String, message: String },
 
     #[error("Unexpected frame type: {0:?}")]
     UnexpectedFrameType(FrameType),
 
-    #[error("Plugin process exited unexpectedly")]
+    #[error("Cartridge process exited unexpectedly")]
     ProcessExited,
 
     #[error("Handshake failed: {0}")]
@@ -199,7 +199,7 @@ impl From<std::io::Error> for AsyncHostError {
 // RESPONSE TYPES (used by engine-side code reading from relay)
 // =============================================================================
 
-/// A response chunk from a plugin.
+/// A response chunk from a cartridge.
 #[derive(Debug, Clone)]
 pub struct ResponseChunk {
     pub payload: Vec<u8>,
@@ -209,25 +209,25 @@ pub struct ResponseChunk {
     pub is_eof: bool,
 }
 
-/// A complete response from a plugin, which may be single or streaming.
+/// A complete response from a cartridge, which may be single or streaming.
 #[derive(Debug)]
-pub enum PluginResponse {
+pub enum CartridgeResponse {
     Single(Vec<u8>),
     Streaming(Vec<ResponseChunk>),
 }
 
-impl PluginResponse {
+impl CartridgeResponse {
     pub fn final_payload(&self) -> Option<&[u8]> {
         match self {
-            PluginResponse::Single(data) => Some(data),
-            PluginResponse::Streaming(chunks) => chunks.last().map(|c| c.payload.as_slice()),
+            CartridgeResponse::Single(data) => Some(data),
+            CartridgeResponse::Streaming(chunks) => chunks.last().map(|c| c.payload.as_slice()),
         }
     }
 
     pub fn concatenated(&self) -> Vec<u8> {
         match self {
-            PluginResponse::Single(data) => data.clone(),
-            PluginResponse::Streaming(chunks) => {
+            CartridgeResponse::Single(data) => data.clone(),
+            CartridgeResponse::Streaming(chunks) => {
                 let total_len: usize = chunks.iter().map(|c| c.payload.len()).sum();
                 let mut result = Vec::with_capacity(total_len);
                 for chunk in chunks {
@@ -254,33 +254,33 @@ impl StreamingResponse {
 // INTERNAL TYPES
 // =============================================================================
 
-/// Events from plugin reader loops, delivered to the main run() loop.
-enum PluginEvent {
-    /// A frame was received from a plugin's stdout.
-    Frame { plugin_idx: usize, frame: Frame },
-    /// A plugin's reader loop exited (process died or stdout closed).
-    Death { plugin_idx: usize },
+/// Events from cartridge reader loops, delivered to the main run() loop.
+enum CartridgeEvent {
+    /// A frame was received from a cartridge's stdout.
+    Frame { cartridge_idx: usize, frame: Frame },
+    /// A cartridge's reader loop exited (process died or stdout closed).
+    Death { cartridge_idx: usize },
 }
 
-/// A managed plugin binary.
-struct ManagedPlugin {
-    /// Path to plugin binary (empty for attached/pre-connected plugins).
+/// A managed cartridge binary.
+struct ManagedCartridge {
+    /// Path to cartridge binary (empty for attached/pre-connected cartridges).
     path: PathBuf,
-    /// Child process handle (None for attached plugins).
+    /// Child process handle (None for attached cartridges).
     process: Option<tokio::process::Child>,
-    /// Channel to write frames to this plugin's stdin.
+    /// Channel to write frames to this cartridge's stdin.
     writer_tx: Option<mpsc::UnboundedSender<Frame>>,
-    /// Plugin manifest from HELLO handshake.
+    /// Cartridge manifest from HELLO handshake.
     manifest: Vec<u8>,
-    /// Negotiated limits for this plugin.
+    /// Negotiated limits for this cartridge.
     limits: Limits,
-    /// Caps this plugin handles (from manifest after HELLO).
+    /// Caps this cartridge handles (from manifest after HELLO).
     caps: Vec<crate::Cap>,
     /// Known caps from registration (before HELLO, used for routing).
     known_caps: Vec<String>,
-    /// Installed plugin identity derived from the registered binary path.
-    installed_identity: Option<InstalledPluginIdentity>,
-    /// Whether the plugin is currently running and healthy.
+    /// Installed cartridge identity derived from the registered binary path.
+    installed_identity: Option<InstalledCartridgeIdentity>,
+    /// Whether the cartridge is currently running and healthy.
     running: bool,
     /// Reader task handle.
     reader_handle: Option<JoinHandle<()>>,
@@ -288,30 +288,30 @@ struct ManagedPlugin {
     writer_handle: Option<JoinHandle<()>>,
     /// Whether HELLO handshake permanently failed (binary is broken, no relaunch).
     hello_failed: bool,
-    /// Pending heartbeats sent to this plugin (ID → sent time).
+    /// Pending heartbeats sent to this cartridge (ID → sent time).
     pending_heartbeats: HashMap<MessageId, Instant>,
     /// Stderr handle for capturing crash output.
     stderr_handle: Option<tokio::process::ChildStderr>,
     /// Last death error message (includes stderr if available). Used for ERR frames
-    /// sent when attempting to write to a dead plugin.
+    /// sent when attempting to write to a dead cartridge.
     last_death_message: Option<String>,
     /// Set before killing the process to signal why the death occurred.
-    /// `handle_plugin_death` checks this to determine ERR frame behavior:
-    /// - `None` → unexpected crash → ERR "PLUGIN_DIED"
+    /// `handle_cartridge_death` checks this to determine ERR frame behavior:
+    /// - `None` → unexpected crash → ERR "CARTRIDGE_DIED"
     /// - `Some(OomKill)` → OOM watchdog kill → ERR "OOM_KILLED"
     /// - `Some(AppExit)` → clean shutdown → no ERR frames
     shutdown_reason: Option<ShutdownReason>,
     /// Physical memory footprint in MB (self-reported via heartbeat response meta).
-    /// Updated every 30s when the plugin echoes a heartbeat probe with its
+    /// Updated every 30s when the cartridge echoes a heartbeat probe with its
     /// `ri_phys_footprint` from `proc_pid_rusage(getpid())`.
     memory_footprint_mb: u64,
     /// Resident set size in MB (self-reported via heartbeat response meta).
     memory_rss_mb: u64,
 }
 
-impl ManagedPlugin {
+impl ManagedCartridge {
     fn new_registered(path: PathBuf, known_caps: Vec<String>) -> Self {
-        let installed_identity = installed_plugin_identity_from_path(&path);
+        let installed_identity = installed_cartridge_identity_from_path(&path);
         Self {
             path,
             process: None,
@@ -360,12 +360,12 @@ impl ManagedPlugin {
         }
     }
 
-    fn installed_plugin_identity(&self) -> Option<InstalledPluginIdentity> {
+    fn installed_cartridge_identity(&self) -> Option<InstalledCartridgeIdentity> {
         self.installed_identity.clone()
     }
 }
 
-fn parse_installed_plugin_name(name: &str) -> Option<(String, String)> {
+fn parse_installed_cartridge_name(name: &str) -> Option<(String, String)> {
     let lowercase = name.to_lowercase();
     if let Some((candidate, suffix)) = lowercase.rsplit_once('-') {
         if !candidate.is_empty()
@@ -379,66 +379,66 @@ fn parse_installed_plugin_name(name: &str) -> Option<(String, String)> {
     None
 }
 
-fn installed_plugin_identity_from_path(path: &Path) -> Option<InstalledPluginIdentity> {
+fn installed_cartridge_identity_from_path(path: &Path) -> Option<InstalledCartridgeIdentity> {
     let name = path.file_stem()?.to_str()?;
-    let (id, version) = parse_installed_plugin_name(name)?;
+    let (id, version) = parse_installed_cartridge_name(name)?;
     let bytes = std::fs::read(path).ok()?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let sha256 = format!("{:x}", hasher.finalize());
-    Some(InstalledPluginIdentity { id, version, sha256 })
+    Some(InstalledCartridgeIdentity { id, version, sha256 })
 }
 
 // =============================================================================
-// ASYNC PLUGIN HOST RUNTIME
+// ASYNC CARTRIDGE HOST RUNTIME
 // =============================================================================
 
-/// Async host-side runtime managing multiple plugin processes.
+/// Async host-side runtime managing multiple cartridge processes.
 ///
 /// Routes CBOR protocol frames between a relay connection (engine) and
-/// individual plugin processes. Handles HELLO handshake, heartbeat health
+/// individual cartridge processes. Handles HELLO handshake, heartbeat health
 /// monitoring, spawn-on-demand, crash recovery, and capability advertisement.
-pub struct PluginHostRuntime {
-    /// Managed plugin binaries.
-    plugins: Vec<ManagedPlugin>,
-    /// Routing: cap_urn → plugin index (for finding which plugin handles a cap).
+pub struct CartridgeHostRuntime {
+    /// Managed cartridge binaries.
+    cartridges: Vec<ManagedCartridge>,
+    /// Routing: cap_urn → cartridge index (for finding which cartridge handles a cap).
     cap_table: Vec<(String, usize)>,
-    /// List 1: OUTGOING_RIDS - tracks peer requests sent by plugins (RID → plugin_idx).
-    /// Used only to detect same-plugin peer calls (not for routing).
+    /// List 1: OUTGOING_RIDS - tracks peer requests sent by cartridges (RID → cartridge_idx).
+    /// Used only to detect same-cartridge peer calls (not for routing).
     outgoing_rids: HashMap<MessageId, usize>,
-    /// List 2: INCOMING_RXIDS - tracks incoming requests from relay ((XID, RID) → plugin_idx).
+    /// List 2: INCOMING_RXIDS - tracks incoming requests from relay ((XID, RID) → cartridge_idx).
     /// Continuations for these requests are routed by this table.
     incoming_rxids: HashMap<(MessageId, MessageId), usize>,
     /// Tracks which incoming request spawned which outgoing peer RIDs.
     /// Maps parent (xid, rid) → list of child peer RIDs. Used for cancel cascade.
     incoming_to_peer_rids: HashMap<(MessageId, MessageId), Vec<MessageId>>,
-    /// Max-seen seq per flow for plugin-originated frames.
+    /// Max-seen seq per flow for cartridge-originated frames.
     /// Used to set seq on host-generated ERR frames (max_seen + 1).
     outgoing_max_seq: HashMap<FlowKey, u64>,
-    /// Aggregate capabilities (serialized JSON manifest of all plugin caps).
+    /// Aggregate capabilities (serialized JSON manifest of all cartridge caps).
     capabilities: Vec<u8>,
-    /// Channel sender for plugin events (shared with reader tasks).
-    event_tx: mpsc::UnboundedSender<PluginEvent>,
-    /// Channel receiver for plugin events (consumed by run()).
-    event_rx: Option<mpsc::UnboundedReceiver<PluginEvent>>,
-    /// Shared process snapshot, readable from outside the run loop via `PluginProcessHandle`.
-    process_snapshot: Arc<RwLock<Vec<PluginProcessInfo>>>,
+    /// Channel sender for cartridge events (shared with reader tasks).
+    event_tx: mpsc::UnboundedSender<CartridgeEvent>,
+    /// Channel receiver for cartridge events (consumed by run()).
+    event_rx: Option<mpsc::UnboundedReceiver<CartridgeEvent>>,
+    /// Shared process snapshot, readable from outside the run loop via `CartridgeProcessHandle`.
+    process_snapshot: Arc<RwLock<Vec<CartridgeProcessInfo>>>,
     /// Channel for receiving external commands (e.g., kill requests).
     command_tx: mpsc::UnboundedSender<HostCommand>,
     /// Receiver end — consumed by `run()`.
     command_rx: Option<mpsc::UnboundedReceiver<HostCommand>>,
 }
 
-impl PluginHostRuntime {
-    /// Create a new plugin host runtime.
+impl CartridgeHostRuntime {
+    /// Create a new cartridge host runtime.
     ///
-    /// After creation, register plugins with `register_plugin()` or
-    /// attach pre-connected plugins with `attach_plugin()`, then call `run()`.
+    /// After creation, register cartridges with `register_cartridge()` or
+    /// attach pre-connected cartridges with `attach_cartridge()`, then call `run()`.
     pub fn new() -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         Self {
-            plugins: Vec::new(),
+            cartridges: Vec::new(),
             cap_table: Vec::new(),
             outgoing_rids: HashMap::new(),
             incoming_rxids: HashMap::new(),
@@ -453,47 +453,47 @@ impl PluginHostRuntime {
         }
     }
 
-    /// Get a handle for querying plugin process info and sending commands.
+    /// Get a handle for querying cartridge process info and sending commands.
     /// Must be called before `run()`. The returned handle is `Send + Sync + Clone`
     /// and remains valid for the lifetime of the `run()` loop.
-    pub fn process_handle(&self) -> PluginProcessHandle {
-        PluginProcessHandle {
+    pub fn process_handle(&self) -> CartridgeProcessHandle {
+        CartridgeProcessHandle {
             snapshot: self.process_snapshot.clone(),
             command_tx: self.command_tx.clone(),
         }
     }
 
-    /// Register a plugin binary for on-demand spawning.
+    /// Register a cartridge binary for on-demand spawning.
     ///
-    /// The plugin is not spawned until a REQ arrives for one of its known caps.
+    /// The cartridge is not spawned until a REQ arrives for one of its known caps.
     /// The `known_caps` are provisional — they allow routing before HELLO.
     /// After spawn + HELLO, the real caps from the manifest replace them.
-    pub fn register_plugin(&mut self, path: &Path, known_caps: &[String]) {
-        let plugin_idx = self.plugins.len();
-        self.plugins.push(ManagedPlugin::new_registered(
+    pub fn register_cartridge(&mut self, path: &Path, known_caps: &[String]) {
+        let cartridge_idx = self.cartridges.len();
+        self.cartridges.push(ManagedCartridge::new_registered(
             path.to_path_buf(),
             known_caps.to_vec(),
         ));
         for cap in known_caps {
-            self.cap_table.push((cap.clone(), plugin_idx));
+            self.cap_table.push((cap.clone(), cartridge_idx));
         }
     }
 
-    /// Attach a pre-connected plugin (already running, e.g., pre-spawned or in tests).
+    /// Attach a pre-connected cartridge (already running, e.g., pre-spawned or in tests).
     ///
-    /// Performs HELLO handshake immediately. On success, the plugin is ready for requests.
+    /// Performs HELLO handshake immediately. On success, the cartridge is ready for requests.
     /// On HELLO failure, returns error (permanent — the binary is broken).
-    pub async fn attach_plugin<R, W>(
+    pub async fn attach_cartridge<R, W>(
         &mut self,
-        plugin_read: R,
-        plugin_write: W,
+        cartridge_read: R,
+        cartridge_write: W,
     ) -> Result<usize, AsyncHostError>
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let mut reader = FrameReader::new(plugin_read);
-        let mut writer = FrameWriter::new(plugin_write);
+        let mut reader = FrameReader::new(cartridge_read);
+        let mut writer = FrameWriter::new(cartridge_write);
 
         let result = handshake(&mut reader, &mut writer)
             .await
@@ -506,37 +506,37 @@ impl PluginHostRuntime {
             .await
             .map_err(|e| AsyncHostError::Protocol(format!("Identity verification failed: {}", e)))?;
 
-        let plugin_idx = self.plugins.len();
+        let cartridge_idx = self.cartridges.len();
 
         // Start writer task
         let (writer_tx, writer_rx) = mpsc::unbounded_channel::<Frame>();
         let wh = Self::start_writer_task(writer, writer_rx);
 
         // Start reader task
-        let rh = Self::start_reader_task(plugin_idx, reader, self.event_tx.clone());
+        let rh = Self::start_reader_task(cartridge_idx, reader, self.event_tx.clone());
 
-        let mut plugin = ManagedPlugin::new_attached(result.manifest, result.limits, caps);
-        plugin.writer_tx = Some(writer_tx);
-        plugin.reader_handle = Some(rh);
-        plugin.writer_handle = Some(wh);
+        let mut cartridge = ManagedCartridge::new_attached(result.manifest, result.limits, caps);
+        cartridge.writer_tx = Some(writer_tx);
+        cartridge.reader_handle = Some(rh);
+        cartridge.writer_handle = Some(wh);
 
-        self.plugins.push(plugin);
+        self.cartridges.push(cartridge);
         self.update_cap_table();
         self.rebuild_capabilities(None); // No relay during initialization
 
-        Ok(plugin_idx)
+        Ok(cartridge_idx)
     }
 
-    /// Get the aggregate capabilities of all running, healthy plugins.
+    /// Get the aggregate capabilities of all running, healthy cartridges.
     pub fn capabilities(&self) -> &[u8] {
         &self.capabilities
     }
 
-    /// Main run loop — reads from relay, routes to plugins; reads from plugins,
-    /// forwards to relay. Handles HELLO/heartbeats per plugin locally.
+    /// Main run loop — reads from relay, routes to cartridges; reads from cartridges,
+    /// forwards to relay. Handles HELLO/heartbeats per cartridge locally.
     ///
     /// Blocks until the relay closes or a fatal error occurs.
-    /// On exit, all managed plugin processes are killed.
+    /// On exit, all managed cartridge processes are killed.
     pub async fn run<R, W>(
         &mut self,
         relay_read: R,
@@ -585,13 +585,13 @@ impl PluginHostRuntime {
         let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
         heartbeat_interval.tick().await; // skip initial tick
 
-        // Send discovery RelayNotify if plugins were pre-attached.
+        // Send discovery RelayNotify if cartridges were pre-attached.
         // At this point all async tasks are spawned and running, so the frame will be delivered.
         if !self.capabilities.is_empty() {
             let notify_payload = RelayNotifyCapabilitiesPayload {
                 caps: serde_json::from_slice(&self.capabilities)
                     .expect("BUG: host runtime capabilities must be valid JSON cap array"),
-                installed_plugins: self.plugins.iter().filter_map(|plugin| plugin.installed_plugin_identity()).collect(),
+                installed_cartridges: self.cartridges.iter().filter_map(|cartridge| cartridge.installed_cartridge_identity()).collect(),
             };
             let notify_bytes = serde_json::to_vec(&notify_payload)
                 .expect("Failed to serialize RelayNotify capabilities payload");
@@ -603,22 +603,22 @@ impl PluginHostRuntime {
             tokio::select! {
                 biased;
 
-                // Plugin events (frames from plugins, death notifications)
+                // Cartridge events (frames from cartridges, death notifications)
                 Some(event) = event_rx.recv() => {
                     match event {
-                        PluginEvent::Frame { plugin_idx, frame } => {
-                            if let Err(e) = self.handle_plugin_frame(plugin_idx, frame, &outbound_tx) {
+                        CartridgeEvent::Frame { cartridge_idx, frame } => {
+                            if let Err(e) = self.handle_cartridge_frame(cartridge_idx, frame, &outbound_tx) {
                                 break Err(e);
                             }
                         }
-                        PluginEvent::Death { plugin_idx } => {
-                            if let Err(e) = self.handle_plugin_death(plugin_idx, &outbound_tx).await {
+                        CartridgeEvent::Death { cartridge_idx } => {
+                            if let Err(e) = self.handle_cartridge_death(cartridge_idx, &outbound_tx).await {
                                 break Err(e);
                             }
 
-                            // If relay disconnected AND all plugins dead, exit cleanly
-                            let all_plugins_dead = self.plugins.iter().all(|p| !p.running);
-                            if !relay_connected && all_plugins_dead {
+                            // If relay disconnected AND all cartridges dead, exit cleanly
+                            let all_cartridges_dead = self.cartridges.iter().all(|p| !p.running);
+                            if !relay_connected && all_cartridges_dead {
                                 break Ok(());
                             }
                         }
@@ -634,20 +634,20 @@ impl PluginHostRuntime {
                             }
                         }
                         Some(Err(_)) => {
-                            relay_connected = false; // Disable relay branch, continue processing plugins
+                            relay_connected = false; // Disable relay branch, continue processing cartridges
 
-                            // If all plugins are also dead, exit cleanly
-                            let all_plugins_dead = self.plugins.iter().all(|p| !p.running);
-                            if all_plugins_dead {
+                            // If all cartridges are also dead, exit cleanly
+                            let all_cartridges_dead = self.cartridges.iter().all(|p| !p.running);
+                            if all_cartridges_dead {
                                 break Ok(());
                             }
                         }
                         None => {
-                            relay_connected = false; // Disable relay branch, continue processing plugins
+                            relay_connected = false; // Disable relay branch, continue processing cartridges
 
-                            // If all plugins are also dead, exit cleanly
-                            let all_plugins_dead = self.plugins.iter().all(|p| !p.running);
-                            if all_plugins_dead {
+                            // If all cartridges are also dead, exit cleanly
+                            let all_cartridges_dead = self.cartridges.iter().all(|p| !p.running);
+                            if all_cartridges_dead {
                                 break Ok(());
                             }
                         }
@@ -659,7 +659,7 @@ impl PluginHostRuntime {
                     self.send_heartbeats_and_check_timeouts(&outbound_tx);
                 }
 
-                // External commands via PluginProcessHandle
+                // External commands via CartridgeProcessHandle
                 Some(cmd) = command_rx.recv() => {
                     if let Err(e) = self.handle_command(cmd, &outbound_tx).await {
                         break Err(e);
@@ -668,8 +668,8 @@ impl PluginHostRuntime {
             }
         };
 
-        // Cleanup: kill all managed plugin processes
-        self.kill_all_plugins().await;
+        // Cleanup: kill all managed cartridge processes
+        self.kill_all_cartridges().await;
         relay_reader_task.abort();
         outbound_writer.abort();
 
@@ -680,7 +680,7 @@ impl PluginHostRuntime {
     // FRAME HANDLING
     // =========================================================================
 
-    /// Handle a frame arriving from the relay (engine → plugin direction).
+    /// Handle a frame arriving from the relay (engine → cartridge direction).
     async fn handle_relay_frame(
         &mut self,
         frame: Frame,
@@ -688,7 +688,7 @@ impl PluginHostRuntime {
         resource_fn: &(impl Fn() -> Vec<u8> + Send),
     ) -> Result<(), AsyncHostError> {
         tracing::debug!(target: "host_runtime", "handle_relay_frame: {:?} xid={:?} rid={:?}", frame.frame_type, frame.routing_id, frame.id);
-        tracing::debug!("[PluginHostRuntime] handle_relay_frame: {:?} id={:?} cap={:?} xid={:?}", frame.frame_type, frame.id, frame.cap, frame.routing_id);
+        tracing::debug!("[CartridgeHostRuntime] handle_relay_frame: {:?} id={:?} cap={:?} xid={:?}", frame.frame_type, frame.id, frame.cap, frame.routing_id);
         match frame.frame_type {
             FrameType::Req => {
                 // PATH C: REQ coming FROM relay
@@ -711,15 +711,15 @@ impl PluginHostRuntime {
                     }
                 };
 
-                // Route by cap URN to find handler plugin
-                let plugin_idx = match self.find_plugin_for_cap(&cap_urn) {
+                // Route by cap URN to find handler cartridge
+                let cartridge_idx = match self.find_cartridge_for_cap(&cap_urn) {
                     Some(idx) => idx,
                     None => {
-                        // No plugin handles this cap — send ERR back and continue.
+                        // No cartridge handles this cap — send ERR back and continue.
                         let mut err = Frame::err(
                             frame.id.clone(),
                             "NO_HANDLER",
-                            &format!("no plugin handles cap: {}", cap_urn),
+                            &format!("no cartridge handles cap: {}", cap_urn),
                         );
                         err.routing_id = frame.routing_id.clone(); // Copy XID from incoming request
                         outbound_tx.send(err).map_err(|_| AsyncHostError::SendError)?;
@@ -728,16 +728,16 @@ impl PluginHostRuntime {
                 };
 
                 // Spawn on demand if not running
-                if !self.plugins[plugin_idx].running {
-                    self.spawn_plugin(plugin_idx, resource_fn).await?;
+                if !self.cartridges[cartridge_idx].running {
+                    self.spawn_cartridge(cartridge_idx, resource_fn).await?;
                     self.rebuild_capabilities(Some(outbound_tx)); // Send RelayNotify to relay
                 }
 
-                // Record in List 2: INCOMING_RXIDS (XID, RID) → plugin_idx
-                self.incoming_rxids.insert((xid.clone(), frame.id.clone()), plugin_idx);
+                // Record in List 2: INCOMING_RXIDS (XID, RID) → cartridge_idx
+                self.incoming_rxids.insert((xid.clone(), frame.id.clone()), cartridge_idx);
 
-                // Forward to plugin WITH XID
-                self.send_to_plugin(plugin_idx, frame)
+                // Forward to cartridge WITH XID
+                self.send_to_cartridge(cartridge_idx, frame)
             }
 
             FrameType::StreamStart | FrameType::Chunk | FrameType::StreamEnd
@@ -757,8 +757,8 @@ impl PluginHostRuntime {
                 // Route by checking BOTH maps. For self-loop peer requests (where
                 // source and destination are behind the same relay connection), the
                 // same (XID, RID) appears in BOTH incoming_rxids and outgoing_rids:
-                //   incoming_rxids[(XID, RID)] = handler plugin (receives request body)
-                //   outgoing_rids[RID] = requester plugin (receives peer response)
+                //   incoming_rxids[(XID, RID)] = handler cartridge (receives request body)
+                //   outgoing_rids[RID] = requester cartridge (receives peer response)
                 //
                 // Phase tracking: incoming_rxids entry is removed when the request
                 // body END is delivered to the handler. After that, frames from
@@ -767,11 +767,11 @@ impl PluginHostRuntime {
                 //   1. Frames on a single socket are ordered — END is always last
                 //   2. For non-peer requests, no further relay frames arrive after END
                 let key = (xid.clone(), frame.id.clone());
-                let (plugin_idx, routed_via_incoming) = if let Some(&idx) = self.incoming_rxids.get(&key) {
-                    tracing::debug!(target: "host_runtime", "Routing {:?} to plugin {} via incoming_rxids[({:?}, {:?})]", frame.frame_type, idx, xid, frame.id);
+                let (cartridge_idx, routed_via_incoming) = if let Some(&idx) = self.incoming_rxids.get(&key) {
+                    tracing::debug!(target: "host_runtime", "Routing {:?} to cartridge {} via incoming_rxids[({:?}, {:?})]", frame.frame_type, idx, xid, frame.id);
                     (idx, true)
                 } else if let Some(&idx) = self.outgoing_rids.get(&frame.id) {
-                    tracing::debug!(target: "host_runtime", "Routing {:?} to plugin {} via outgoing_rids[{:?}]", frame.frame_type, idx, frame.id);
+                    tracing::debug!(target: "host_runtime", "Routing {:?} to cartridge {} via outgoing_rids[{:?}]", frame.frame_type, idx, frame.id);
                     (idx, false)
                 } else {
                     tracing::debug!(target: "host_runtime", "No routing for {:?} xid={:?} rid={:?}, dropping", frame.frame_type, xid, frame.id);
@@ -781,17 +781,17 @@ impl PluginHostRuntime {
                 let is_terminal = frame.frame_type == FrameType::End
                     || frame.frame_type == FrameType::Err;
 
-                // If the plugin is dead, send ERR to engine and clean up routing.
-                if self.send_to_plugin(plugin_idx, frame.clone()).is_err() {
+                // If the cartridge is dead, send ERR to engine and clean up routing.
+                if self.send_to_cartridge(cartridge_idx, frame.clone()).is_err() {
                     let flow_key = FlowKey { rid: frame.id.clone(), xid: Some(xid.clone()) };
                     let next_seq = self.outgoing_max_seq.remove(&flow_key).map(|s| s + 1).unwrap_or(0);
-                    let death_msg = self.plugins[plugin_idx]
+                    let death_msg = self.cartridges[cartridge_idx]
                         .last_death_message
                         .as_deref()
-                        .unwrap_or("Plugin exited while processing request");
+                        .unwrap_or("Cartridge exited while processing request");
                     let mut err = Frame::err(
                         frame.id.clone(),
-                        "PLUGIN_DIED",
+                        "CARTRIDGE_DIED",
                         death_msg,
                     );
                     err.routing_id = frame.routing_id.clone();
@@ -826,11 +826,11 @@ impl PluginHostRuntime {
                 "HEARTBEAT from relay — engine must not send heartbeats to runtime".to_string(),
             )),
             FrameType::Log => {
-                // LOG frames from peer responses — route back to the plugin
+                // LOG frames from peer responses — route back to the cartridge
                 // that made the peer request, identified by outgoing_rids[RID].
-                if let Some(&plugin_idx) = self.outgoing_rids.get(&frame.id) {
-                    tracing::debug!(target: "host_runtime", "Routing LOG to plugin {} via outgoing_rids[{:?}]", plugin_idx, frame.id);
-                    let _ = self.send_to_plugin(plugin_idx, frame);
+                if let Some(&cartridge_idx) = self.outgoing_rids.get(&frame.id) {
+                    tracing::debug!(target: "host_runtime", "Routing LOG to cartridge {} via outgoing_rids[{:?}]", cartridge_idx, frame.id);
+                    let _ = self.send_to_cartridge(cartridge_idx, frame);
                 } else {
                     tracing::debug!(target: "host_runtime", "LOG frame not in outgoing_rids, dropping: rid={:?}", frame.id);
                 }
@@ -838,7 +838,7 @@ impl PluginHostRuntime {
                 Ok(())
             }
             FrameType::Cancel => {
-                // Cancel from relay — route to the plugin handling this request.
+                // Cancel from relay — route to the cartridge handling this request.
                 let xid = frame.routing_id.clone().ok_or_else(|| {
                     AsyncHostError::Protocol("Cancel frame missing XID".to_string())
                 })?;
@@ -846,30 +846,30 @@ impl PluginHostRuntime {
                 let key = (xid.clone(), rid.clone());
                 let force_kill = frame.force_kill.unwrap_or(false);
 
-                if let Some(&plugin_idx) = self.incoming_rxids.get(&key) {
+                if let Some(&cartridge_idx) = self.incoming_rxids.get(&key) {
                     if force_kill {
                         // Force kill: set shutdown reason and kill the process
-                        tracing::info!("[PluginHostRuntime] Cancel force_kill=true for plugin {} rid={:?}", plugin_idx, rid);
-                        self.plugins[plugin_idx].shutdown_reason = Some(ShutdownReason::Cancelled);
-                        if let Some(ref mut child) = self.plugins[plugin_idx].process {
+                        tracing::info!("[CartridgeHostRuntime] Cancel force_kill=true for cartridge {} rid={:?}", cartridge_idx, rid);
+                        self.cartridges[cartridge_idx].shutdown_reason = Some(ShutdownReason::Cancelled);
+                        if let Some(ref mut child) = self.cartridges[cartridge_idx].process {
                             let _ = child.kill().await;
                         }
                     } else {
-                        // Cooperative cancel: forward Cancel frame to the plugin
-                        tracing::info!("[PluginHostRuntime] Cancel cooperative for plugin {} rid={:?}", plugin_idx, rid);
-                        let _ = self.send_to_plugin(plugin_idx, frame);
+                        // Cooperative cancel: forward Cancel frame to the cartridge
+                        tracing::info!("[CartridgeHostRuntime] Cancel cooperative for cartridge {} rid={:?}", cartridge_idx, rid);
+                        let _ = self.send_to_cartridge(cartridge_idx, frame);
 
                         // Also cascade: send Cancel to relay for each peer call spawned by this request
                         if let Some(peer_rids) = self.incoming_to_peer_rids.get(&key) {
                             for peer_rid in peer_rids.clone() {
-                                tracing::info!("[PluginHostRuntime] Cascading Cancel to peer call rid={:?}", peer_rid);
+                                tracing::info!("[CartridgeHostRuntime] Cascading Cancel to peer call rid={:?}", peer_rid);
                                 let cancel = Frame::cancel(peer_rid, false);
                                 let _ = outbound_tx.send(cancel);
                             }
                         }
                     }
                 } else {
-                    tracing::debug!("[PluginHostRuntime] Cancel for unknown request ({:?}, {:?}) — ignoring", xid, rid);
+                    tracing::debug!("[CartridgeHostRuntime] Cancel for unknown request ({:?}, {:?}) — ignoring", xid, rid);
                 }
                 Ok(())
             }
@@ -882,73 +882,73 @@ impl PluginHostRuntime {
         }
     }
 
-    /// Handle a frame arriving from a plugin (plugin → engine direction).
-    fn handle_plugin_frame(
+    /// Handle a frame arriving from a cartridge (cartridge → engine direction).
+    fn handle_cartridge_frame(
         &mut self,
-        plugin_idx: usize,
+        cartridge_idx: usize,
         frame: Frame,
         outbound_tx: &mpsc::UnboundedSender<Frame>,
     ) -> Result<(), AsyncHostError> {
-        tracing::debug!("[PluginHostRuntime] handle_plugin_frame: plugin={} {:?} id={:?} cap={:?} xid={:?}", plugin_idx, frame.frame_type, frame.id, frame.cap, frame.routing_id);
+        tracing::debug!("[CartridgeHostRuntime] handle_cartridge_frame: cartridge={} {:?} id={:?} cap={:?} xid={:?}", cartridge_idx, frame.frame_type, frame.id, frame.cap, frame.routing_id);
         match frame.frame_type {
             // HELLO after handshake is a fatal protocol error.
             FrameType::Hello => Err(AsyncHostError::Protocol(format!(
-                "Plugin {} sent HELLO after handshake — fatal protocol violation",
-                plugin_idx
+                "Cartridge {} sent HELLO after handshake — fatal protocol violation",
+                cartridge_idx
             ))),
 
             // Heartbeat: handle locally, never forward.
             FrameType::Heartbeat => {
-                let is_our_probe = self.plugins[plugin_idx]
+                let is_our_probe = self.cartridges[cartridge_idx]
                     .pending_heartbeats
                     .remove(&frame.id)
                     .is_some();
 
                 if is_our_probe {
-                    // Response to our health probe — plugin is alive.
+                    // Response to our health probe — cartridge is alive.
                     // Extract self-reported memory from heartbeat response meta.
-                    // Plugins include their own ri_phys_footprint and ri_resident_size
+                    // Cartridges include their own ri_phys_footprint and ri_resident_size
                     // (via proc_pid_rusage(getpid())) in the meta map.
                     if let Some(ref meta) = frame.meta {
                         if let Some(ciborium::Value::Integer(v)) = meta.get("footprint_mb") {
-                            self.plugins[plugin_idx].memory_footprint_mb =
+                            self.cartridges[cartridge_idx].memory_footprint_mb =
                                 u64::try_from(*v).unwrap_or(0);
                         }
                         if let Some(ciborium::Value::Integer(v)) = meta.get("rss_mb") {
-                            self.plugins[plugin_idx].memory_rss_mb =
+                            self.cartridges[cartridge_idx].memory_rss_mb =
                                 u64::try_from(*v).unwrap_or(0);
                         }
                     }
                     self.update_process_snapshot();
                 } else {
-                    // Plugin-initiated heartbeat — respond immediately
+                    // Cartridge-initiated heartbeat — respond immediately
                     let response = Frame::heartbeat(frame.id.clone());
-                    self.send_to_plugin(plugin_idx, response)?;
+                    self.send_to_cartridge(cartridge_idx, response)?;
                 }
                 Ok(())
             }
 
-            // Relay frames from a plugin: fatal protocol error.
+            // Relay frames from a cartridge: fatal protocol error.
             FrameType::RelayNotify | FrameType::RelayState => Err(AsyncHostError::Protocol(
                 format!(
-                    "Plugin {} sent {:?} — plugins must never send relay frames",
-                    plugin_idx, frame.frame_type
+                    "Cartridge {} sent {:?} — cartridges must never send relay frames",
+                    cartridge_idx, frame.frame_type
                 ),
             )),
 
-            // PATH A: REQ from plugin (peer invoke)
-            // MUST have RID, MUST NOT have XID (plugins never send XID)
+            // PATH A: REQ from cartridge (peer invoke)
+            // MUST have RID, MUST NOT have XID (cartridges never send XID)
             FrameType::Req => {
                 if frame.routing_id.is_some() {
                     return Err(AsyncHostError::Protocol(format!(
-                        "Plugin {} sent REQ with XID - plugins must never send XID",
-                        plugin_idx
+                        "Cartridge {} sent REQ with XID - cartridges must never send XID",
+                        cartridge_idx
                     )));
                 }
 
                 // Record in List 1: OUTGOING_RIDS
-                tracing::debug!(target: "host_runtime", "PEER REQ from plugin {}: cap={:?} rid={:?} -> storing in outgoing_rids", plugin_idx, frame.cap, frame.id);
-                self.outgoing_rids.insert(frame.id.clone(), plugin_idx);
+                tracing::debug!(target: "host_runtime", "PEER REQ from cartridge {}: cap={:?} rid={:?} -> storing in outgoing_rids", cartridge_idx, frame.cap, frame.id);
+                self.outgoing_rids.insert(frame.id.clone(), cartridge_idx);
 
                 // Track parent→child peer call mapping for cancel cascade
                 if let Some(parent_rid) = frame.meta.as_ref().and_then(|m| m.get("parent_rid")).and_then(|v| {
@@ -984,13 +984,13 @@ impl PluginHostRuntime {
                     .map_err(|_| AsyncHostError::SendError)
             }
 
-            // PATH A: Continuation frames from plugin (request body or response)
+            // PATH A: Continuation frames from cartridge (request body or response)
             // When responding to relay requests, frames WILL have XID (routing_id)
             // When responding to direct requests, frames will NOT have XID
             // NO routing decisions - only one destination (relay)
             _ => {
                 if frame.frame_type == FrameType::End || frame.frame_type == FrameType::Err {
-                    tracing::debug!(target: "host_runtime", "Forwarding {:?} from plugin {} to relay: xid={:?} rid={:?}", frame.frame_type, plugin_idx, frame.routing_id, frame.id);
+                    tracing::debug!(target: "host_runtime", "Forwarding {:?} from cartridge {} to relay: xid={:?} rid={:?}", frame.frame_type, cartridge_idx, frame.routing_id, frame.id);
                 }
                 // Track max-seen seq for flow, clean up on terminal
                 if frame.is_flow_frame() {
@@ -1005,7 +1005,7 @@ impl PluginHostRuntime {
                 }
 
                 // NOTE: Do NOT remove incoming_rxids here!
-                // Response END from plugin doesn't mean the REQUEST is complete.
+                // Response END from cartridge doesn't mean the REQUEST is complete.
                 // Request body frames might still be arriving from relay (async race).
                 // incoming_rxids cleanup happens in handle_relay_frame when request body END arrives.
 
@@ -1017,37 +1017,37 @@ impl PluginHostRuntime {
         }
     }
 
-    /// Handle a plugin death (reader loop exited).
+    /// Handle a cartridge death (reader loop exited).
     ///
     /// Three cases based on `shutdown_reason`:
-    /// 1. **`None`** (unexpected death): Genuine crash. Send ERR "PLUGIN_DIED"
+    /// 1. **`None`** (unexpected death): Genuine crash. Send ERR "CARTRIDGE_DIED"
     ///    for all pending requests, store death message.
-    /// 2. **`Some(OomKill)`**: OOM watchdog killed the plugin while it was
+    /// 2. **`Some(OomKill)`**: OOM watchdog killed the cartridge while it was
     ///    actively processing. Send ERR "OOM_KILLED" for all pending requests
     ///    so callers fail fast instead of hanging.
     /// 3. **`Some(AppExit)`**: Clean shutdown. No ERR frames — the relay
     ///    connection is closing anyway.
-    async fn handle_plugin_death(
+    async fn handle_cartridge_death(
         &mut self,
-        plugin_idx: usize,
+        cartridge_idx: usize,
         outbound_tx: &mpsc::UnboundedSender<Frame>,
     ) -> Result<(), AsyncHostError> {
         use tokio::io::AsyncReadExt;
 
-        // Scope the mutable borrow of the plugin so we can access self later.
+        // Scope the mutable borrow of the cartridge so we can access self later.
         let reason;
         let stderr_content;
         let exit_info: String;
         {
-            let plugin = &mut self.plugins[plugin_idx];
-            plugin.running = false;
-            plugin.writer_tx = None;
-            reason = plugin.shutdown_reason;
-            plugin.shutdown_reason = None; // Reset for potential respawn
+            let cartridge = &mut self.cartridges[cartridge_idx];
+            cartridge.running = false;
+            cartridge.writer_tx = None;
+            reason = cartridge.shutdown_reason;
+            cartridge.shutdown_reason = None; // Reset for potential respawn
 
             // Capture stderr content BEFORE killing the process
             let mut captured = String::new();
-            if let Some(ref mut stderr) = plugin.stderr_handle {
+            if let Some(ref mut stderr) = cartridge.stderr_handle {
                 let mut buf = vec![0u8; 4096];
                 loop {
                     match tokio::time::timeout(
@@ -1069,10 +1069,10 @@ impl PluginHostRuntime {
                     }
                 }
             }
-            plugin.stderr_handle = None;
+            cartridge.stderr_handle = None;
 
             // Capture exit status and kill the process if it's still around
-            if let Some(ref mut child) = plugin.process {
+            if let Some(ref mut child) = cartridge.process {
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         #[cfg(unix)]
@@ -1101,16 +1101,16 @@ impl PluginHostRuntime {
             } else {
                 exit_info = String::new();
             }
-            plugin.process = None;
+            cartridge.process = None;
             stderr_content = captured;
         }
 
         // Clean up routing tables regardless of death cause.
-        // outgoing_rids: peer requests the plugin initiated
+        // outgoing_rids: peer requests the cartridge initiated
         let failed_outgoing: Vec<(MessageId, u64)> = self
             .outgoing_rids
             .iter()
-            .filter(|(_, &idx)| idx == plugin_idx)
+            .filter(|(_, &idx)| idx == cartridge_idx)
             .map(|(rid, _)| {
                 let flow_key = FlowKey { rid: rid.clone(), xid: None };
                 let next_seq = self.outgoing_max_seq.remove(&flow_key).map(|s| s + 1).unwrap_or(0);
@@ -1122,20 +1122,20 @@ impl PluginHostRuntime {
             self.outgoing_rids.remove(rid);
         }
 
-        // incoming_rxids: requests from the relay that this plugin was handling
+        // incoming_rxids: requests from the relay that this cartridge was handling
         let failed_incoming: Vec<(MessageId, MessageId, u64)> = self
             .incoming_rxids
             .iter()
-            .filter(|(_, &idx)| idx == plugin_idx)
+            .filter(|(_, &idx)| idx == cartridge_idx)
             .map(|((xid, rid), _)| {
                 let flow_key = FlowKey { rid: rid.clone(), xid: Some(xid.clone()) };
                 let next_seq = self.outgoing_max_seq.remove(&flow_key).map(|s| s + 1).unwrap_or(0);
                 (xid.clone(), rid.clone(), next_seq)
             })
             .collect();
-        self.incoming_rxids.retain(|(_, _), &mut idx| idx != plugin_idx);
+        self.incoming_rxids.retain(|(_, _), &mut idx| idx != cartridge_idx);
 
-        // Clean up incoming_to_peer_rids for all requests from this plugin
+        // Clean up incoming_to_peer_rids for all requests from this cartridge
         for (xid, rid, _) in &failed_incoming {
             self.incoming_to_peer_rids.remove(&(xid.clone(), rid.clone()));
         }
@@ -1148,25 +1148,25 @@ impl PluginHostRuntime {
                 // Unexpected death — genuine crash mid-flight
                 let exit_suffix = if exit_info.is_empty() { String::new() } else { format!(" ({})", exit_info) };
                 let error_message = if stderr_content.is_empty() {
-                    format!("Plugin {} exited unexpectedly{}.", self.plugins[plugin_idx].path.display(), exit_suffix)
+                    format!("Cartridge {} exited unexpectedly{}.", self.cartridges[cartridge_idx].path.display(), exit_suffix)
                 } else {
-                    format!("Plugin {} exited unexpectedly{}. stderr:\n{}", self.plugins[plugin_idx].path.display(), exit_suffix, stderr_content)
+                    format!("Cartridge {} exited unexpectedly{}. stderr:\n{}", self.cartridges[cartridge_idx].path.display(), exit_suffix, stderr_content)
                 };
-                Some(("PLUGIN_DIED", error_message))
+                Some(("CARTRIDGE_DIED", error_message))
             }
             Some(ShutdownReason::OomKill) => {
-                // OOM watchdog killed the plugin — callers must be notified
+                // OOM watchdog killed the cartridge — callers must be notified
                 let exit_suffix = if exit_info.is_empty() { String::new() } else { format!(" ({})", exit_info) };
                 let error_message = if stderr_content.is_empty() {
-                    format!("Plugin {} killed by OOM watchdog{}.", self.plugins[plugin_idx].path.display(), exit_suffix)
+                    format!("Cartridge {} killed by OOM watchdog{}.", self.cartridges[cartridge_idx].path.display(), exit_suffix)
                 } else {
-                    format!("Plugin {} killed by OOM watchdog{}. stderr:\n{}", self.plugins[plugin_idx].path.display(), exit_suffix, stderr_content)
+                    format!("Cartridge {} killed by OOM watchdog{}. stderr:\n{}", self.cartridges[cartridge_idx].path.display(), exit_suffix, stderr_content)
                 };
                 Some(("OOM_KILLED", error_message))
             }
             Some(ShutdownReason::Cancelled) => {
                 // Cancel-triggered kill — ERR "CANCELLED" for all pending work
-                Some(("CANCELLED", format!("Plugin {} killed by cancel request.", self.plugins[plugin_idx].path.display())))
+                Some(("CANCELLED", format!("Cartridge {} killed by cancel request.", self.cartridges[cartridge_idx].path.display())))
             }
             Some(ShutdownReason::AppExit) => {
                 // Clean shutdown — no ERR frames, relay is closing
@@ -1175,7 +1175,7 @@ impl PluginHostRuntime {
         };
 
         if let Some((error_code, error_message)) = err_info {
-            self.plugins[plugin_idx].last_death_message = Some(error_message.clone());
+            self.cartridges[cartridge_idx].last_death_message = Some(error_message.clone());
 
             for (rid, next_seq) in &failed_outgoing {
                 let mut err_frame = Frame::err(
@@ -1197,7 +1197,7 @@ impl PluginHostRuntime {
                 let _ = outbound_tx.send(err_frame);
             }
         } else {
-            self.plugins[plugin_idx].last_death_message = None;
+            self.cartridges[cartridge_idx].last_death_message = None;
         }
 
         // Rebuild cap table for on-demand respawn routing
@@ -1208,30 +1208,30 @@ impl PluginHostRuntime {
         Ok(())
     }
 
-    /// Handle an external command received via the `PluginProcessHandle`.
+    /// Handle an external command received via the `CartridgeProcessHandle`.
     async fn handle_command(
         &mut self,
         command: HostCommand,
         outbound_tx: &mpsc::UnboundedSender<Frame>,
     ) -> Result<(), AsyncHostError> {
         match command {
-            HostCommand::KillPlugin { pid } => {
-                // Find the plugin with the matching PID
-                let plugin_idx = self.plugins.iter().position(|p| {
+            HostCommand::KillCartridge { pid } => {
+                // Find the cartridge with the matching PID
+                let cartridge_idx = self.cartridges.iter().position(|p| {
                     p.running && p.process.as_ref().and_then(|c| c.id()) == Some(pid)
                 });
-                if let Some(idx) = plugin_idx {
+                if let Some(idx) = cartridge_idx {
                     tracing::info!(
                         target: "host_runtime",
                         pid = pid,
-                        plugin = %self.plugins[idx].path.display(),
-                        "Killing plugin by external command (memory pressure)"
+                        cartridge = %self.cartridges[idx].path.display(),
+                        "Killing cartridge by external command (memory pressure)"
                     );
-                    self.plugins[idx].shutdown_reason = Some(ShutdownReason::OomKill);
-                    if let Some(ref mut child) = self.plugins[idx].process {
+                    self.cartridges[idx].shutdown_reason = Some(ShutdownReason::OomKill);
+                    if let Some(ref mut child) = self.cartridges[idx].process {
                         let _ = child.kill().await;
                     }
-                    // Death event will arrive via the reader task; handle_plugin_death
+                    // Death event will arrive via the reader task; handle_cartridge_death
                     // will do the full cleanup.
                 } else {
                     tracing::warn!(
@@ -1246,32 +1246,32 @@ impl PluginHostRuntime {
     }
 
     // =========================================================================
-    // PLUGIN LIFECYCLE
+    // CARTRIDGE LIFECYCLE
     // =========================================================================
 
-    /// Spawn a registered plugin binary on demand.
-    async fn spawn_plugin(
+    /// Spawn a registered cartridge binary on demand.
+    async fn spawn_cartridge(
         &mut self,
-        plugin_idx: usize,
+        cartridge_idx: usize,
         _resource_fn: &(impl Fn() -> Vec<u8> + Send),
     ) -> Result<(), AsyncHostError> {
-        let plugin = &self.plugins[plugin_idx];
+        let cartridge = &self.cartridges[cartridge_idx];
 
-        if plugin.hello_failed {
+        if cartridge.hello_failed {
             return Err(AsyncHostError::Protocol(format!(
-                "Plugin '{}' permanently failed — HELLO failure, binary is broken",
-                plugin.path.display()
+                "Cartridge '{}' permanently failed — HELLO failure, binary is broken",
+                cartridge.path.display()
             )));
         }
 
-        if plugin.path.as_os_str().is_empty() {
+        if cartridge.path.as_os_str().is_empty() {
             return Err(AsyncHostError::Protocol(format!(
-                "Plugin {} has no binary path — cannot spawn",
-                plugin_idx
+                "Cartridge {} has no binary path — cannot spawn",
+                cartridge_idx
             )));
         }
 
-        let mut child = tokio::process::Command::new(&plugin.path)
+        let mut child = tokio::process::Command::new(&cartridge.path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped()) // Capture stderr for crash diagnostics
@@ -1279,8 +1279,8 @@ impl PluginHostRuntime {
             .spawn()
             .map_err(|e| {
                 AsyncHostError::Io(format!(
-                    "Failed to spawn plugin '{}': {}",
-                    plugin.path.display(),
+                    "Failed to spawn cartridge '{}': {}",
+                    cartridge.path.display(),
                     e
                 ))
             })?;
@@ -1289,15 +1289,15 @@ impl PluginHostRuntime {
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take();
 
-        // DEBUG: Forward plugin stderr to host stderr in real-time
-        if let Some(plugin_stderr) = stderr {
-            let plugin_path = plugin.path.clone();
+        // DEBUG: Forward cartridge stderr to host stderr in real-time
+        if let Some(cartridge_stderr) = stderr {
+            let cartridge_path = cartridge.path.clone();
             tokio::spawn(async move {
                 use tokio::io::AsyncBufReadExt;
-                let mut reader = tokio::io::BufReader::new(plugin_stderr);
+                let mut reader = tokio::io::BufReader::new(cartridge_stderr);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
-                    tracing::debug!("[plugin:{}] {}", plugin_path.file_name().unwrap_or_default().to_string_lossy(), line.trim());
+                    tracing::debug!("[cartridge:{}] {}", cartridge_path.file_name().unwrap_or_default().to_string_lossy(), line.trim());
                     line.clear();
                 }
             });
@@ -1312,11 +1312,11 @@ impl PluginHostRuntime {
             Ok(result) => result,
             Err(e) => {
                 // HELLO failure = permanent removal. Binary is broken.
-                self.plugins[plugin_idx].hello_failed = true;
+                self.cartridges[cartridge_idx].hello_failed = true;
                 let _ = child.kill().await;
                 return Err(AsyncHostError::Handshake(format!(
-                    "Plugin '{}' HELLO failed: {} — permanently removed",
-                    self.plugins[plugin_idx].path.display(),
+                    "Cartridge '{}' HELLO failed: {} — permanently removed",
+                    self.cartridges[cartridge_idx].path.display(),
                     e
                 )));
             }
@@ -1326,11 +1326,11 @@ impl PluginHostRuntime {
 
         // Verify identity — proves the protocol stack works end-to-end
         if let Err(e) = verify_identity(&mut reader, &mut writer).await {
-            self.plugins[plugin_idx].hello_failed = true;
+            self.cartridges[cartridge_idx].hello_failed = true;
             let _ = child.kill().await;
             return Err(AsyncHostError::Protocol(format!(
-                "Plugin '{}' identity verification failed: {} — permanently removed",
-                self.plugins[plugin_idx].path.display(),
+                "Cartridge '{}' identity verification failed: {} — permanently removed",
+                self.cartridges[cartridge_idx].path.display(),
                 e
             )));
         }
@@ -1340,20 +1340,20 @@ impl PluginHostRuntime {
         let wh = Self::start_writer_task(writer, writer_rx);
 
         // Start reader task
-        let rh = Self::start_reader_task(plugin_idx, reader, self.event_tx.clone());
+        let rh = Self::start_reader_task(cartridge_idx, reader, self.event_tx.clone());
 
-        // Update plugin state
-        let plugin = &mut self.plugins[plugin_idx];
-        plugin.manifest = handshake_result.manifest;
-        plugin.limits = handshake_result.limits;
-        plugin.caps = caps;
-        plugin.running = true;
-        plugin.process = Some(child);
-        plugin.writer_tx = Some(writer_tx);
-        plugin.reader_handle = Some(rh);
-        plugin.writer_handle = Some(wh);
-        plugin.stderr_handle = stderr;
-        plugin.last_death_message = None; // Clear any previous death message
+        // Update cartridge state
+        let cartridge = &mut self.cartridges[cartridge_idx];
+        cartridge.manifest = handshake_result.manifest;
+        cartridge.limits = handshake_result.limits;
+        cartridge.caps = caps;
+        cartridge.running = true;
+        cartridge.process = Some(child);
+        cartridge.writer_tx = Some(writer_tx);
+        cartridge.reader_handle = Some(rh);
+        cartridge.writer_handle = Some(wh);
+        cartridge.stderr_handle = stderr;
+        cartridge.last_death_message = None; // Clear any previous death message
 
         self.update_cap_table();
         self.update_process_snapshot();
@@ -1361,56 +1361,56 @@ impl PluginHostRuntime {
         Ok(())
     }
 
-    /// Update the shared process snapshot with current plugin state.
+    /// Update the shared process snapshot with current cartridge state.
     /// Called after every spawn and death event.
     fn update_process_snapshot(&self) {
         let mut snap = self.process_snapshot.write().unwrap();
         snap.clear();
-        for (idx, plugin) in self.plugins.iter().enumerate() {
-            if let Some(ref child) = plugin.process {
+        for (idx, cartridge) in self.cartridges.iter().enumerate() {
+            if let Some(ref child) = cartridge.process {
                 if let Some(pid) = child.id() {
-                    snap.push(PluginProcessInfo {
-                        plugin_index: idx,
+                    snap.push(CartridgeProcessInfo {
+                        cartridge_index: idx,
                         pid,
-                        name: plugin.path.file_name()
+                        name: cartridge.path.file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
                             .into_owned(),
-                        running: plugin.running,
-                        caps: plugin.caps.iter().map(|c| c.urn.to_string()).collect(),
-                        memory_footprint_mb: plugin.memory_footprint_mb,
-                        memory_rss_mb: plugin.memory_rss_mb,
+                        running: cartridge.running,
+                        caps: cartridge.caps.iter().map(|c| c.urn.to_string()).collect(),
+                        memory_footprint_mb: cartridge.memory_footprint_mb,
+                        memory_rss_mb: cartridge.memory_rss_mb,
                     });
                 }
             }
         }
     }
 
-    /// Send a frame to a specific plugin's stdin.
-    fn send_to_plugin(&self, plugin_idx: usize, frame: Frame) -> Result<(), AsyncHostError> {
-        let plugin = &self.plugins[plugin_idx];
+    /// Send a frame to a specific cartridge's stdin.
+    fn send_to_cartridge(&self, cartridge_idx: usize, frame: Frame) -> Result<(), AsyncHostError> {
+        let cartridge = &self.cartridges[cartridge_idx];
         if frame.frame_type == FrameType::Req {
-            tracing::debug!(target: "host_runtime", "send_to_plugin[{}]: {:?} cap={:?} xid={:?}", plugin_idx, frame.frame_type, frame.cap, frame.routing_id);
+            tracing::debug!(target: "host_runtime", "send_to_cartridge[{}]: {:?} cap={:?} xid={:?}", cartridge_idx, frame.frame_type, frame.cap, frame.routing_id);
         }
-        let writer_tx = plugin.writer_tx.as_ref().ok_or_else(|| {
+        let writer_tx = cartridge.writer_tx.as_ref().ok_or_else(|| {
             AsyncHostError::Protocol(format!(
-                "Plugin {} not running — no writer channel",
-                plugin_idx
+                "Cartridge {} not running — no writer channel",
+                cartridge_idx
             ))
         })?;
         writer_tx.send(frame).map_err(|_| AsyncHostError::SendError)
     }
 
-    /// Find which plugin handles a given cap URN.
+    /// Find which cartridge handles a given cap URN.
     ///
-    /// Uses `is_dispatchable(provider, request)` to find plugins that can
+    /// Uses `is_dispatchable(provider, request)` to find cartridges that can
     /// legally handle the request, then ranks by specificity.
     ///
     /// Ranking prefers:
     /// 1. Equivalent matches (distance 0)
     /// 2. More specific providers (positive distance) - refinements
     /// 3. More generic providers (negative distance) - fallbacks
-    fn find_plugin_for_cap(&self, cap_urn: &str) -> Option<usize> {
+    fn find_cartridge_for_cap(&self, cap_urn: &str) -> Option<usize> {
         let request_urn = match crate::CapUrn::from_string(cap_urn) {
             Ok(u) => u,
             Err(_) => return None,
@@ -1418,16 +1418,16 @@ impl PluginHostRuntime {
 
         let request_specificity = request_urn.specificity();
 
-        // Collect ALL dispatchable plugins with their specificity scores
-        let mut matches: Vec<(usize, isize)> = Vec::new(); // (plugin_idx, signed_distance)
+        // Collect ALL dispatchable cartridges with their specificity scores
+        let mut matches: Vec<(usize, isize)> = Vec::new(); // (cartridge_idx, signed_distance)
 
-        for (registered_cap, plugin_idx) in &self.cap_table {
+        for (registered_cap, cartridge_idx) in &self.cap_table {
             if let Ok(registered_urn) = crate::CapUrn::from_string(registered_cap) {
                 // Use is_dispatchable: can this provider handle this request?
                 if registered_urn.is_dispatchable(&request_urn) {
                     let specificity = registered_urn.specificity();
                     let signed_distance = specificity as isize - request_specificity as isize;
-                    matches.push((*plugin_idx, signed_distance));
+                    matches.push((*cartridge_idx, signed_distance));
                 }
             }
         }
@@ -1459,21 +1459,21 @@ impl PluginHostRuntime {
     // HEARTBEAT HEALTH MONITORING
     // =========================================================================
 
-    /// Send heartbeat probes to all running plugins and check for timeouts.
+    /// Send heartbeat probes to all running cartridges and check for timeouts.
     fn send_heartbeats_and_check_timeouts(
         &mut self,
         outbound_tx: &mpsc::UnboundedSender<Frame>,
     ) {
         let now = Instant::now();
 
-        for plugin_idx in 0..self.plugins.len() {
-            let plugin = &mut self.plugins[plugin_idx];
-            if !plugin.running {
+        for cartridge_idx in 0..self.cartridges.len() {
+            let cartridge = &mut self.cartridges[cartridge_idx];
+            if !cartridge.running {
                 continue;
             }
 
             // Check for timed-out heartbeats
-            let timed_out: Vec<MessageId> = plugin
+            let timed_out: Vec<MessageId> = cartridge
                 .pending_heartbeats
                 .iter()
                 .filter(|(_, sent)| now.duration_since(**sent) > HEARTBEAT_TIMEOUT)
@@ -1481,24 +1481,24 @@ impl PluginHostRuntime {
                 .collect();
 
             if !timed_out.is_empty() {
-                // Plugin is unresponsive — remove its caps temporarily
+                // Cartridge is unresponsive — remove its caps temporarily
                 for id in timed_out {
-                    plugin.pending_heartbeats.remove(&id);
+                    cartridge.pending_heartbeats.remove(&id);
                 }
-                plugin.running = false;
+                cartridge.running = false;
 
                 // Send ERR for pending requests (both new lists)
                 let failed_incoming_keys: Vec<(MessageId, MessageId)> = self
                     .incoming_rxids
                     .iter()
-                    .filter(|(_, &idx)| idx == plugin_idx)
+                    .filter(|(_, &idx)| idx == cartridge_idx)
                     .map(|(key, _)| key.clone())
                     .collect();
 
                 let failed_outgoing_rids: Vec<MessageId> = self
                     .outgoing_rids
                     .iter()
-                    .filter(|(_, &idx)| idx == plugin_idx)
+                    .filter(|(_, &idx)| idx == cartridge_idx)
                     .map(|(rid, _)| rid.clone())
                     .collect();
 
@@ -1507,8 +1507,8 @@ impl PluginHostRuntime {
                     let next_seq = self.outgoing_max_seq.remove(&flow_key).map(|s| s + 1).unwrap_or(0);
                     let mut err_frame = Frame::err(
                         rid.clone(),
-                        "PLUGIN_UNHEALTHY",
-                        "Plugin stopped responding to heartbeats",
+                        "CARTRIDGE_UNHEALTHY",
+                        "Cartridge stopped responding to heartbeats",
                     );
                     err_frame.routing_id = Some(xid.clone());
                     err_frame.seq = next_seq;
@@ -1521,8 +1521,8 @@ impl PluginHostRuntime {
                     let next_seq = self.outgoing_max_seq.remove(&flow_key).map(|s| s + 1).unwrap_or(0);
                     let mut err_frame = Frame::err(
                         rid.clone(),
-                        "PLUGIN_UNHEALTHY",
-                        "Plugin stopped responding to heartbeats",
+                        "CARTRIDGE_UNHEALTHY",
+                        "Cartridge stopped responding to heartbeats",
                     );
                     err_frame.seq = next_seq;
                     let _ = outbound_tx.send(err_frame);
@@ -1533,11 +1533,11 @@ impl PluginHostRuntime {
             }
 
             // Send a new heartbeat probe
-            if let Some(ref writer_tx) = plugin.writer_tx {
+            if let Some(ref writer_tx) = cartridge.writer_tx {
                 let hb_id = MessageId::new_uuid();
                 let hb = Frame::heartbeat(hb_id.clone());
                 if writer_tx.send(hb).is_ok() {
-                    plugin.pending_heartbeats.insert(hb_id, now);
+                    cartridge.pending_heartbeats.insert(hb_id, now);
                 }
             }
         }
@@ -1551,61 +1551,61 @@ impl PluginHostRuntime {
     // INTERNAL HELPERS
     // =========================================================================
 
-    /// Rebuild the cap_table from all plugins (running or registered).
+    /// Rebuild the cap_table from all cartridges (running or registered).
     fn update_cap_table(&mut self) {
         self.cap_table.clear();
-        for (idx, plugin) in self.plugins.iter().enumerate() {
-            if plugin.hello_failed {
+        for (idx, cartridge) in self.cartridges.iter().enumerate() {
+            if cartridge.hello_failed {
                 continue; // Permanently removed
             }
             // Use real caps if available (from HELLO), otherwise known_caps
-            if plugin.running && !plugin.caps.is_empty() {
+            if cartridge.running && !cartridge.caps.is_empty() {
                 // Extract URN strings from Cap objects
-                for cap in &plugin.caps {
+                for cap in &cartridge.caps {
                     self.cap_table.push((cap.urn.to_string(), idx));
                 }
             } else {
                 // Use known_caps (URN strings)
-                for cap_urn in &plugin.known_caps {
+                for cap_urn in &cartridge.known_caps {
                     self.cap_table.push((cap_urn.clone(), idx));
                 }
             }
         }
     }
 
-    /// Rebuild the aggregate capabilities from all running, healthy plugins.
+    /// Rebuild the aggregate capabilities from all running, healthy cartridges.
     ///
     /// If outbound_tx is Some (i.e., running in relay mode), sends a RelayNotify
     /// frame with the updated capabilities. This allows RelaySwitch/RelayMaster
-    /// to track capability changes dynamically as plugins connect/disconnect/fail.
+    /// to track capability changes dynamically as cartridges connect/disconnect/fail.
     fn rebuild_capabilities(&mut self, outbound_tx: Option<&mpsc::UnboundedSender<Frame>>) {
         use crate::standard::caps::CAP_IDENTITY;
 
-        // CAP_IDENTITY is always present — structural, not plugin-dependent
+        // CAP_IDENTITY is always present — structural, not cartridge-dependent
         let mut cap_urns = vec![CAP_IDENTITY.to_string()];
 
-        // Add capability URN strings from all known/discovered plugins.
-        // Includes caps from ALL registered plugins that haven't permanently failed HELLO.
-        // Running plugins use their actual manifest caps; non-running plugins use knownCaps.
+        // Add capability URN strings from all known/discovered cartridges.
+        // Includes caps from ALL registered cartridges that haven't permanently failed HELLO.
+        // Running cartridges use their actual manifest caps; non-running cartridges use knownCaps.
         // This ensures the relay always advertises all caps that CAN be handled, regardless
-        // of whether the plugin process is currently alive (on-demand spawn handles restarts).
-        for plugin in &self.plugins {
-            if plugin.hello_failed {
+        // of whether the cartridge process is currently alive (on-demand spawn handles restarts).
+        for cartridge in &self.cartridges {
+            if cartridge.hello_failed {
                 continue; // Permanently broken, don't advertise
             }
 
-            if plugin.running && !plugin.caps.is_empty() {
+            if cartridge.running && !cartridge.caps.is_empty() {
                 // Running: use actual caps from manifest (verified via HELLO handshake)
-                for cap in &plugin.caps {
+                for cap in &cartridge.caps {
                     let urn_str = cap.urn.to_string();
-                    // Don't duplicate identity (plugins also declare it)
+                    // Don't duplicate identity (cartridges also declare it)
                     if urn_str != CAP_IDENTITY {
                         cap_urns.push(urn_str);
                     }
                 }
             } else {
                 // Not running: use knownCaps (from discovery, available for on-demand spawn)
-                for cap_urn in &plugin.known_caps {
+                for cap_urn in &cartridge.known_caps {
                     if cap_urn != CAP_IDENTITY {
                         cap_urns.push(cap_urn.clone());
                     }
@@ -1621,7 +1621,7 @@ impl PluginHostRuntime {
         if let Some(tx) = outbound_tx {
             let notify_payload = RelayNotifyCapabilitiesPayload {
                 caps: cap_urns.clone(),
-                installed_plugins: self.plugins.iter().filter_map(|plugin| plugin.installed_plugin_identity()).collect(),
+                installed_cartridges: self.cartridges.iter().filter_map(|cartridge| cartridge.installed_cartridge_identity()).collect(),
             };
             let notify_bytes = serde_json::to_vec(&notify_payload)
                 .expect("Failed to serialize RelayNotify capabilities payload");
@@ -1630,40 +1630,40 @@ impl PluginHostRuntime {
         }
     }
 
-    /// Kill all managed plugin processes.
+    /// Kill all managed cartridge processes.
     ///
     /// Order matters: drop writer_tx first (closes the channel), then AWAIT the
     /// writer handle (so it exits naturally and drops the write stream, which
-    /// causes the plugin to see EOF). Only then abort the reader handle.
+    /// causes the cartridge to see EOF). Only then abort the reader handle.
     /// Aborting the writer instead of awaiting it can leave the write stream
     /// open in a single-threaded runtime, deadlocking any sync thread that
-    /// blocks on the plugin's read().
-    async fn kill_all_plugins(&mut self) {
-        for plugin in &mut self.plugins {
-            plugin.shutdown_reason = Some(ShutdownReason::AppExit);
-            if let Some(ref mut child) = plugin.process {
+    /// blocks on the cartridge's read().
+    async fn kill_all_cartridges(&mut self) {
+        for cartridge in &mut self.cartridges {
+            cartridge.shutdown_reason = Some(ShutdownReason::AppExit);
+            if let Some(ref mut child) = cartridge.process {
                 let _ = child.kill().await;
             }
-            plugin.process = None;
-            plugin.running = false;
+            cartridge.process = None;
+            cartridge.running = false;
 
             // Close the channel → writer task's rx.recv() returns None → task exits
-            plugin.writer_tx = None;
+            cartridge.writer_tx = None;
 
             // AWAIT (not abort) the writer handle so it drops the write stream cleanly.
-            if let Some(handle) = plugin.writer_handle.take() {
+            if let Some(handle) = cartridge.writer_handle.take() {
                 let _ = handle.await;
             }
 
-            // Now the write stream is closed → plugin sees EOF.
+            // Now the write stream is closed → cartridge sees EOF.
             // Safe to abort the reader (it will exit on its own anyway).
-            if let Some(handle) = plugin.reader_handle.take() {
+            if let Some(handle) = cartridge.reader_handle.take() {
                 handle.abort();
             }
         }
     }
 
-    /// Spawn a writer task that reads frames from a channel and writes to a plugin's stdin.
+    /// Spawn a writer task that reads frames from a channel and writes to a cartridge's stdin.
     fn start_writer_task<W: AsyncWrite + Unpin + Send + 'static>(
         mut writer: FrameWriter<W>,
         mut rx: mpsc::UnboundedReceiver<Frame>,
@@ -1682,19 +1682,19 @@ impl PluginHostRuntime {
         })
     }
 
-    /// Spawn a reader task that reads frames from a plugin's stdout and sends events.
+    /// Spawn a reader task that reads frames from a cartridge's stdout and sends events.
     fn start_reader_task<R: AsyncRead + Unpin + Send + 'static>(
-        plugin_idx: usize,
+        cartridge_idx: usize,
         mut reader: FrameReader<R>,
-        event_tx: mpsc::UnboundedSender<PluginEvent>,
+        event_tx: mpsc::UnboundedSender<CartridgeEvent>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 match reader.read().await {
                     Ok(Some(frame)) => {
                         if event_tx
-                            .send(PluginEvent::Frame {
-                                plugin_idx,
+                            .send(CartridgeEvent::Frame {
+                                cartridge_idx,
                                 frame,
                             })
                             .is_err()
@@ -1703,13 +1703,13 @@ impl PluginHostRuntime {
                         }
                     }
                     Ok(None) => {
-                        // EOF — plugin closed stdout
-                        let _ = event_tx.send(PluginEvent::Death { plugin_idx });
+                        // EOF — cartridge closed stdout
+                        let _ = event_tx.send(CartridgeEvent::Death { cartridge_idx });
                         break;
                     }
                     Err(_) => {
                         // Read error — treat as death
-                        let _ = event_tx.send(PluginEvent::Death { plugin_idx });
+                        let _ = event_tx.send(CartridgeEvent::Death { cartridge_idx });
                         break;
                     }
                 }
@@ -1718,7 +1718,7 @@ impl PluginHostRuntime {
     }
 
     /// Outbound writer loop: reads frames from channel, writes to relay.
-    /// Frames arrive with seq already assigned by PluginRuntime — no modification needed.
+    /// Frames arrive with seq already assigned by CartridgeRuntime — no modification needed.
     async fn outbound_writer_loop<W: AsyncWrite + Unpin>(
         relay_write: W,
         mut rx: mpsc::UnboundedReceiver<Frame>,
@@ -1732,16 +1732,16 @@ impl PluginHostRuntime {
     }
 }
 
-impl Drop for PluginHostRuntime {
+impl Drop for CartridgeHostRuntime {
     fn drop(&mut self) {
         // Drop cannot be async, so we close channels (triggering writer exit)
         // and abort reader tasks. Writer tasks exit naturally when writer_tx
         // is dropped (channel closes → rx.recv() returns None → task exits
-        // → OwnedWriteHalf dropped → plugin sees EOF).
+        // → OwnedWriteHalf dropped → cartridge sees EOF).
         // Child processes with kill_on_drop will be killed when Child is dropped.
-        for plugin in &mut self.plugins {
-            plugin.writer_tx = None; // Close channel → writer task exits naturally
-            if let Some(handle) = plugin.reader_handle.take() {
+        for cartridge in &mut self.cartridges {
+            cartridge.writer_tx = None; // Close channel → writer task exits naturally
+            if let Some(handle) = cartridge.reader_handle.take() {
                 handle.abort();
             }
             // Don't abort writer — let it exit naturally so the stream closes cleanly.
@@ -1753,7 +1753,7 @@ impl Drop for PluginHostRuntime {
 // HELPERS
 // =============================================================================
 
-/// Parse cap URNs from a plugin manifest JSON.
+/// Parse cap URNs from a cartridge manifest JSON.
 ///
 /// Expected format:
 /// ```json
@@ -1766,16 +1766,16 @@ fn parse_caps_from_manifest(manifest: &[u8]) -> Result<Vec<crate::Cap>, AsyncHos
 
     // Deserialize directly into CapManifest - fail hard if invalid
     let manifest_obj: CapManifest = serde_json::from_slice(manifest).map_err(|e| {
-        AsyncHostError::Protocol(format!("Invalid CapManifest from plugin: {}", e))
+        AsyncHostError::Protocol(format!("Invalid CapManifest from cartridge: {}", e))
     })?;
 
-    // Verify CAP_IDENTITY is declared — mandatory for every plugin
+    // Verify CAP_IDENTITY is declared — mandatory for every cartridge
     let identity_urn = CapUrn::from_string(CAP_IDENTITY)
         .expect("BUG: CAP_IDENTITY constant is invalid");
     let has_identity = manifest_obj.caps.iter().any(|cap| identity_urn.conforms_to(&cap.urn));
     if !has_identity {
         return Err(AsyncHostError::Protocol(
-            format!("Plugin manifest missing required CAP_IDENTITY ({})", CAP_IDENTITY)
+            format!("Cartridge manifest missing required CAP_IDENTITY ({})", CAP_IDENTITY)
         ));
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
 
     /// Helper: perform handshake_accept and handle the identity verification REQ.
     /// Returns (FrameReader, FrameWriter) ready for further communication.
-    async fn plugin_handshake_with_identity<R, W>(
+    async fn cartridge_handshake_with_identity<R, W>(
         from_runtime: R,
         to_runtime: W,
         manifest: &[u8],
@@ -1895,62 +1895,62 @@ mod tests {
         assert!(chunk.is_eof);
     }
 
-    // TEST237: Test PluginResponse::Single final_payload returns the single payload slice
+    // TEST237: Test CartridgeResponse::Single final_payload returns the single payload slice
     #[test]
-    fn test237_plugin_response_single() {
-        let response = PluginResponse::Single(b"result".to_vec());
+    fn test237_cartridge_response_single() {
+        let response = CartridgeResponse::Single(b"result".to_vec());
         assert_eq!(response.final_payload(), Some(b"result".as_slice()));
         assert_eq!(response.concatenated(), b"result");
     }
 
-    // TEST238: Test PluginResponse::Single with empty payload returns empty slice and empty vec
+    // TEST238: Test CartridgeResponse::Single with empty payload returns empty slice and empty vec
     #[test]
-    fn test238_plugin_response_single_empty() {
-        let response = PluginResponse::Single(vec![]);
+    fn test238_cartridge_response_single_empty() {
+        let response = CartridgeResponse::Single(vec![]);
         assert_eq!(response.final_payload(), Some(b"".as_slice()));
         assert_eq!(response.concatenated(), b"");
     }
 
-    // TEST239: Test PluginResponse::Streaming concatenated joins all chunk payloads in order
+    // TEST239: Test CartridgeResponse::Streaming concatenated joins all chunk payloads in order
     #[test]
-    fn test239_plugin_response_streaming() {
+    fn test239_cartridge_response_streaming() {
         let chunks = vec![
             ResponseChunk { payload: b"hello".to_vec(), seq: 0, offset: Some(0), len: Some(11), is_eof: false },
             ResponseChunk { payload: b" world".to_vec(), seq: 1, offset: Some(5), len: None, is_eof: true },
         ];
-        let response = PluginResponse::Streaming(chunks);
+        let response = CartridgeResponse::Streaming(chunks);
         assert_eq!(response.concatenated(), b"hello world");
     }
 
-    // TEST240: Test PluginResponse::Streaming final_payload returns the last chunk's payload
+    // TEST240: Test CartridgeResponse::Streaming final_payload returns the last chunk's payload
     #[test]
-    fn test240_plugin_response_streaming_final_payload() {
+    fn test240_cartridge_response_streaming_final_payload() {
         let chunks = vec![
             ResponseChunk { payload: b"first".to_vec(), seq: 0, offset: None, len: None, is_eof: false },
             ResponseChunk { payload: b"last".to_vec(), seq: 1, offset: None, len: None, is_eof: true },
         ];
-        let response = PluginResponse::Streaming(chunks);
+        let response = CartridgeResponse::Streaming(chunks);
         assert_eq!(response.final_payload(), Some(b"last".as_slice()));
     }
 
-    // TEST241: Test PluginResponse::Streaming with empty chunks vec returns empty concatenation
+    // TEST241: Test CartridgeResponse::Streaming with empty chunks vec returns empty concatenation
     #[test]
-    fn test241_plugin_response_streaming_empty_chunks() {
-        let response = PluginResponse::Streaming(vec![]);
+    fn test241_cartridge_response_streaming_empty_chunks() {
+        let response = CartridgeResponse::Streaming(vec![]);
         assert_eq!(response.concatenated(), b"");
         assert!(response.final_payload().is_none());
     }
 
-    // TEST242: Test PluginResponse::Streaming concatenated capacity is pre-allocated correctly for large payloads
+    // TEST242: Test CartridgeResponse::Streaming concatenated capacity is pre-allocated correctly for large payloads
     #[test]
-    fn test242_plugin_response_streaming_large_payload() {
+    fn test242_cartridge_response_streaming_large_payload() {
         let chunk1_data = vec![0xAA; 1000];
         let chunk2_data = vec![0xBB; 2000];
         let chunks = vec![
             ResponseChunk { payload: chunk1_data.clone(), seq: 0, offset: None, len: None, is_eof: false },
             ResponseChunk { payload: chunk2_data.clone(), seq: 1, offset: None, len: None, is_eof: true },
         ];
-        let response = PluginResponse::Streaming(chunks);
+        let response = CartridgeResponse::Streaming(chunks);
         let result = response.concatenated();
         assert_eq!(result.len(), 3000);
         assert_eq!(&result[..1000], &chunk1_data);
@@ -1960,13 +1960,13 @@ mod tests {
     // TEST243: Test AsyncHostError variants display correct error messages
     #[test]
     fn test243_async_host_error_display() {
-        let err = AsyncHostError::PluginError { code: "NOT_FOUND".to_string(), message: "Cap not found".to_string() };
+        let err = AsyncHostError::CartridgeError { code: "NOT_FOUND".to_string(), message: "Cap not found".to_string() };
         let msg = format!("{}", err);
         assert!(msg.contains("NOT_FOUND"));
         assert!(msg.contains("Cap not found"));
 
         assert_eq!(format!("{}", AsyncHostError::Closed), "Host is closed");
-        assert_eq!(format!("{}", AsyncHostError::ProcessExited), "Plugin process exited unexpectedly");
+        assert_eq!(format!("{}", AsyncHostError::ProcessExited), "Cartridge process exited unexpectedly");
         assert_eq!(format!("{}", AsyncHostError::SendError), "Send error: channel closed");
         assert_eq!(format!("{}", AsyncHostError::RecvError), "Receive error: channel closed");
     }
@@ -1996,7 +1996,7 @@ mod tests {
     // TEST246: Test AsyncHostError Clone implementation produces equal values
     #[test]
     fn test246_async_host_error_clone() {
-        let err = AsyncHostError::PluginError { code: "ERR".to_string(), message: "msg".to_string() };
+        let err = AsyncHostError::CartridgeError { code: "ERR".to_string(), message: "msg".to_string() };
         let cloned = err.clone();
         assert_eq!(format!("{}", err), format!("{}", cloned));
     }
@@ -2013,11 +2013,11 @@ mod tests {
         assert_eq!(chunk.is_eof, cloned.is_eof);
     }
 
-    // TEST413: Register plugin adds entries to cap_table
+    // TEST413: Register cartridge adds entries to cap_table
     #[test]
-    fn test413_register_plugin_adds_to_cap_table() {
-        let mut runtime = PluginHostRuntime::new();
-        runtime.register_plugin(Path::new("/usr/bin/test-plugin"), &[
+    fn test413_register_cartridge_adds_to_cap_table() {
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.register_cartridge(Path::new("/usr/bin/test-cartridge"), &[
             "cap:in=\"media:void\";op=convert;out=\"media:void\"".to_string(),
             "cap:in=\"media:void\";op=analyze;out=\"media:void\"".to_string(),
         ]);
@@ -2027,29 +2027,29 @@ mod tests {
         assert_eq!(runtime.cap_table[0].1, 0);
         assert_eq!(runtime.cap_table[1].0, "cap:in=\"media:void\";op=analyze;out=\"media:void\"");
         assert_eq!(runtime.cap_table[1].1, 0);
-        assert_eq!(runtime.plugins.len(), 1);
-        assert!(!runtime.plugins[0].running);
+        assert_eq!(runtime.cartridges.len(), 1);
+        assert!(!runtime.cartridges[0].running);
     }
 
-    // TEST414: capabilities() returns empty JSON initially (no running plugins)
+    // TEST414: capabilities() returns empty JSON initially (no running cartridges)
     #[test]
     fn test414_capabilities_empty_initially() {
-        let runtime = PluginHostRuntime::new();
-        assert!(runtime.capabilities().is_empty(), "No plugins registered = empty capabilities");
+        let runtime = CartridgeHostRuntime::new();
+        assert!(runtime.capabilities().is_empty(), "No cartridges registered = empty capabilities");
 
-        let mut runtime2 = PluginHostRuntime::new();
-        runtime2.register_plugin(Path::new("/usr/bin/test"), &["cap:in=\"media:void\";op=test;out=\"media:void\"".to_string()]);
-        // Plugin registered but not running — capabilities still empty
+        let mut runtime2 = CartridgeHostRuntime::new();
+        runtime2.register_cartridge(Path::new("/usr/bin/test"), &["cap:in=\"media:void\";op=test;out=\"media:void\"".to_string()]);
+        // Cartridge registered but not running — capabilities still empty
         assert!(runtime2.capabilities().is_empty(),
-            "Registered but not running plugin should not appear in capabilities");
+            "Registered but not running cartridge should not appear in capabilities");
     }
 
     // TEST415: REQ for known cap triggers spawn attempt (verified by expected spawn error for non-existent binary)
     #[tokio::test]
     async fn test415_req_for_known_cap_triggers_spawn() {
-        let mut runtime = PluginHostRuntime::new();
-        runtime.register_plugin(
-            Path::new("/nonexistent/plugin/binary"),
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.register_cartridge(
+            Path::new("/nonexistent/cartridge/binary"),
             &["cap:in=\"media:void\";op=test;out=\"media:void\"".to_string()],
         );
 
@@ -2099,33 +2099,33 @@ mod tests {
         send_handle.await.unwrap();
     }
 
-    // TEST416: Attach plugin performs HELLO handshake, extracts manifest, updates capabilities
+    // TEST416: Attach cartridge performs HELLO handshake, extracts manifest, updates capabilities
     #[tokio::test]
-    async fn test416_attach_plugin_handshake_updates_capabilities() {
-        let manifest = r#"{"name":"Test","version":"1.0","description":"Test plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Test","command":"test","args":[]}]}"#;
+    async fn test416_attach_cartridge_handshake_updates_capabilities() {
+        let manifest = r#"{"name":"Test","version":"1.0","description":"Test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
-        let (plugin_to_runtime, runtime_from_plugin) = UnixStream::pair().unwrap();
-        let (runtime_to_plugin, plugin_from_runtime) = UnixStream::pair().unwrap();
+        // Cartridge pipe pair (tokio sockets)
+        let (cartridge_to_runtime, runtime_from_cartridge) = UnixStream::pair().unwrap();
+        let (runtime_to_cartridge, cartridge_from_runtime) = UnixStream::pair().unwrap();
 
-        let (plugin_read, _) = runtime_from_plugin.into_split();
-        let (_, plugin_write) = runtime_to_plugin.into_split();
+        let (cartridge_read, _) = runtime_from_cartridge.into_split();
+        let (_, cartridge_write) = runtime_to_cartridge.into_split();
 
-        // Plugin task does handshake + identity verification
+        // Cartridge task does handshake + identity verification
         let manifest_bytes = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            plugin_handshake_with_identity(plugin_from_runtime, plugin_to_runtime, &manifest_bytes).await;
+        let cartridge_handle = tokio::spawn(async move {
+            cartridge_handshake_with_identity(cartridge_from_runtime, cartridge_to_runtime, &manifest_bytes).await;
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        let idx = runtime.attach_plugin(plugin_read, plugin_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        let idx = runtime.attach_cartridge(cartridge_read, cartridge_write).await.unwrap();
 
         assert_eq!(idx, 0);
-        assert!(runtime.plugins[0].running);
-        // Verify plugin has identity cap via semantic comparison (not string comparison)
+        assert!(runtime.cartridges[0].running);
+        // Verify cartridge has identity cap via semantic comparison (not string comparison)
         let identity_urn = crate::CapUrn::from_string(CAP_IDENTITY).unwrap();
-        assert!(runtime.plugins[0].caps.iter().any(|c| identity_urn.conforms_to(&c.urn)),
-            "Plugin must have identity cap");
+        assert!(runtime.cartridges[0].caps.iter().any(|c| identity_urn.conforms_to(&c.urn)),
+            "Cartridge must have identity cap");
         assert!(!runtime.capabilities().is_empty());
 
         // Capabilities JSON must include identity
@@ -2134,16 +2134,16 @@ mod tests {
             .map(|u| identity_urn.conforms_to(&u)).unwrap_or(false)),
             "Capabilities must include identity cap");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST417: Route REQ to correct plugin by cap_urn (with two attached plugins)
+    // TEST417: Route REQ to correct cartridge by cap_urn (with two attached cartridges)
     #[tokio::test]
-    async fn test417_route_req_to_correct_plugin() {
-        let manifest_a = r#"{"name":"PluginA","version":"1.0","description":"Plugin A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
-        let manifest_b = r#"{"name":"PluginB","version":"1.0","description":"Plugin B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=analyze;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    async fn test417_route_req_to_correct_cartridge() {
+        let manifest_a = r#"{"name":"CartridgeA","version":"1.0","description":"Cartridge A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest_b = r#"{"name":"CartridgeB","version":"1.0","description":"Cartridge B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=analyze;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Create two plugin pipe pairs (tokio sockets)
+        // Create two cartridge pipe pairs (tokio sockets)
         let (pa_to_rt, rt_from_pa) = UnixStream::pair().unwrap();
         let (rt_to_pa, pa_from_rt) = UnixStream::pair().unwrap();
         let (pb_to_rt, rt_from_pb) = UnixStream::pair().unwrap();
@@ -2154,15 +2154,15 @@ mod tests {
         let (pb_read, _) = rt_from_pb.into_split();
         let (_, pb_write) = rt_to_pb.into_split();
 
-        // Plugin A task
+        // Cartridge A task
         let ma = manifest_a.as_bytes().to_vec();
         let pa_handle = tokio::spawn(async move {
             let mut seq = SeqAssigner::new();
-            let (mut r, mut w) = plugin_handshake_with_identity(pa_from_rt, pa_to_rt, &ma).await;
+            let (mut r, mut w) = cartridge_handshake_with_identity(pa_from_rt, pa_to_rt, &ma).await;
             // Read one REQ and verify cap
             let frame = r.read().await.unwrap().expect("expected REQ");
             assert_eq!(frame.frame_type, FrameType::Req);
-            assert_eq!(frame.cap.as_deref(), Some("cap:in=\"media:void\";op=convert;out=\"media:void\""), "Plugin A should receive convert REQ");
+            assert_eq!(frame.cap.as_deref(), Some("cap:in=\"media:void\";op=convert;out=\"media:void\""), "Cartridge A should receive convert REQ");
             // Send END response
             let stream_id = "s1".to_string();
             let mut ss = Frame::stream_start(frame.id.clone(), stream_id.clone(), "media:".to_string(), None);
@@ -2182,21 +2182,21 @@ mod tests {
             seq.remove(&FlowKey { rid: frame.id.clone(), xid: None });
         });
 
-        // Plugin B task
+        // Cartridge B task
         let mb = manifest_b.as_bytes().to_vec();
         let pb_handle = tokio::spawn(async move {
-            let (r, w) = plugin_handshake_with_identity(pb_from_rt, pb_to_rt, &mb).await;
-            // Plugin B should NOT receive the convert REQ
-            // It may receive heartbeats, but the REQ should only go to Plugin A
+            let (r, w) = cartridge_handshake_with_identity(pb_from_rt, pb_to_rt, &mb).await;
+            // Cartridge B should NOT receive the convert REQ
+            // It may receive heartbeats, but the REQ should only go to Cartridge A
             // Just exit - the runtime will handle heartbeat timeouts
             drop(r);
             drop(w);
         });
 
         // Setup runtime
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(pa_read, pa_write).await.unwrap();
-        runtime.attach_plugin(pb_read, pb_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(pa_read, pa_write).await.unwrap();
+        runtime.attach_cartridge(pb_read, pb_write).await.unwrap();
 
         // Create relay pipes (tokio sockets)
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -2267,12 +2267,12 @@ mod tests {
         pb_handle.await.unwrap();
     }
 
-    // TEST419: Plugin HEARTBEAT handled locally (not forwarded to relay)
+    // TEST419: Cartridge HEARTBEAT handled locally (not forwarded to relay)
     #[tokio::test]
-    async fn test419_plugin_heartbeat_handled_locally() {
-        let manifest = r#"{"name":"HBPlugin","version":"1.0","description":"Heartbeat plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=hb;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    async fn test419_cartridge_heartbeat_handled_locally() {
+        let manifest = r#"{"name":"HBCartridge","version":"1.0","description":"Heartbeat cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=hb;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -2280,11 +2280,11 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
+        let cartridge_handle = tokio::spawn(async move {
             let mut seq = SeqAssigner::new();
-            let (mut r, mut w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+            let (mut r, mut w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
 
-            // Send a heartbeat from plugin
+            // Send a heartbeat from cartridge
             let hb_id = MessageId::new_uuid();
             let mut hb = Frame::heartbeat(hb_id.clone());
             seq.assign(&mut hb);
@@ -2298,8 +2298,8 @@ mod tests {
             drop(w); // Close to signal EOF
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
         // Relay pipes (tokio sockets)
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -2309,7 +2309,7 @@ mod tests {
         let (_, rt_write_half) = relay_rt_write.into_split();
         let (eng_read_half, _) = relay_eng_read.into_split();
 
-        // Drop engine write to close relay after plugin finishes
+        // Drop engine write to close relay after cartridge finishes
         drop(relay_eng_write);
 
         // Engine reads — should NOT receive any heartbeat frame
@@ -2335,15 +2335,15 @@ mod tests {
             received_types
         );
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST420: Plugin non-HELLO/non-HB frames forwarded to relay (pass-through)
+    // TEST420: Cartridge non-HELLO/non-HB frames forwarded to relay (pass-through)
     #[tokio::test]
-    async fn test420_plugin_frames_forwarded_to_relay() {
-        let manifest = r#"{"name":"FwdPlugin","version":"1.0","description":"Forward plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=fwd;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    async fn test420_cartridge_frames_forwarded_to_relay() {
+        let manifest = r#"{"name":"FwdCartridge","version":"1.0","description":"Forward cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=fwd;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -2352,10 +2352,10 @@ mod tests {
 
         let m = manifest.as_bytes().to_vec();
         let req_id = MessageId::new_uuid();
-        let req_id_for_plugin = req_id.clone();
-        let plugin_handle = tokio::spawn(async move {
+        let req_id_for_cartridge = req_id.clone();
+        let cartridge_handle = tokio::spawn(async move {
             let mut seq = SeqAssigner::new();
-            let (mut r, mut w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+            let (mut r, mut w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
 
             // Read the REQ
             let frame = r.read().await.unwrap().expect("Expected REQ");
@@ -2368,30 +2368,30 @@ mod tests {
             }
 
             // Send LOG + response (LOG should be forwarded too)
-            let mut log = Frame::log(req_id_for_plugin.clone(), "info", "Processing");
+            let mut log = Frame::log(req_id_for_cartridge.clone(), "info", "Processing");
             seq.assign(&mut log);
             w.write(&log).await.unwrap();
             let sid = "rs".to_string();
-            let mut ss = Frame::stream_start(req_id_for_plugin.clone(), sid.clone(), "media:".to_string(), None);
+            let mut ss = Frame::stream_start(req_id_for_cartridge.clone(), sid.clone(), "media:".to_string(), None);
             seq.assign(&mut ss);
             w.write(&ss).await.unwrap();
             let payload = b"result".to_vec();
             let checksum = Frame::compute_checksum(&payload);
-            let mut chunk = Frame::chunk(req_id_for_plugin.clone(), sid.clone(), 0, payload, 0, checksum);
+            let mut chunk = Frame::chunk(req_id_for_cartridge.clone(), sid.clone(), 0, payload, 0, checksum);
             seq.assign(&mut chunk);
             w.write(&chunk).await.unwrap();
-            let mut se = Frame::stream_end(req_id_for_plugin.clone(), sid, 1);
+            let mut se = Frame::stream_end(req_id_for_cartridge.clone(), sid, 1);
             seq.assign(&mut se);
             w.write(&se).await.unwrap();
-            let mut end = Frame::end(req_id_for_plugin.clone(), None);
+            let mut end = Frame::end(req_id_for_cartridge.clone(), None);
             seq.assign(&mut end);
             w.write(&end).await.unwrap();
-            seq.remove(&FlowKey { rid: req_id_for_plugin.clone(), xid: None });
+            seq.remove(&FlowKey { rid: req_id_for_cartridge.clone(), xid: None });
             drop(w);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
         // Relay (tokio sockets)
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -2456,18 +2456,18 @@ mod tests {
         assert!(received_types.contains(&FrameType::Chunk), "CHUNK should be forwarded");
         assert!(received_types.contains(&FrameType::End), "END should be forwarded");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST418: Route STREAM_START/CHUNK/STREAM_END/END by req_id (not cap_urn)
-    // Verifies that after the initial REQ→plugin routing, all subsequent continuation
-    // frames with the same req_id are routed to the same plugin — even though no cap_urn
+    // Verifies that after the initial REQ→cartridge routing, all subsequent continuation
+    // frames with the same req_id are routed to the same cartridge — even though no cap_urn
     // is present on those frames.
     #[tokio::test]
     async fn test418_route_continuation_frames_by_req_id() {
-        let manifest = r#"{"name":"ContPlugin","version":"1.0","description":"Continuation plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=cont;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest = r#"{"name":"ContCartridge","version":"1.0","description":"Continuation cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=cont;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -2475,9 +2475,9 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
+        let cartridge_handle = tokio::spawn(async move {
             let mut seq = SeqAssigner::new();
-            let (mut r, mut w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+            let (mut r, mut w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
 
             // Read REQ
             let req = r.read().await.unwrap().expect("Expected REQ");
@@ -2523,8 +2523,8 @@ mod tests {
             drop(w);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
         // Relay (tokio sockets)
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -2590,15 +2590,15 @@ mod tests {
         let response = engine_task.await.unwrap();
         assert_eq!(response, b"ok");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST421: Plugin death updates capability list (caps removed)
+    // TEST421: Cartridge death updates capability list (caps removed)
     #[tokio::test]
-    async fn test421_plugin_death_updates_capabilities() {
-        let manifest = r#"{"name":"Dying","version":"1.0","description":"Dying plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    async fn test421_cartridge_death_updates_capabilities() {
+        let manifest = r#"{"name":"Dying","version":"1.0","description":"Dying cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -2606,17 +2606,17 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (r, w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (r, w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
             // Die immediately after identity verification
             drop(w);
             drop(r);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
-        // Before death: caps should include the plugin's cap
+        // Before death: caps should include the cartridge's cap
         let expected_urn = CapUrn::from_string("cap:in=\"media:void\";op=die;out=\"media:void\"")
             .expect("Expected URN should parse");
         let caps_before = std::str::from_utf8(runtime.capabilities()).unwrap().to_string();
@@ -2632,7 +2632,7 @@ mod tests {
                 false
             }
         });
-        assert!(found, "Capabilities should contain plugin's cap. Expected URN with op=die, got: {:?}", urn_strings);
+        assert!(found, "Capabilities should contain cartridge's cap. Expected URN with op=die, got: {:?}", urn_strings);
 
         // Relay (close immediately to let runtime exit after processing death) - tokio sockets
         let (relay_rt_read, _relay_eng_write) = UnixStream::pair().unwrap();
@@ -2646,15 +2646,15 @@ mod tests {
 
         let _ = runtime.run(rt_read_half, rt_write_half, || vec![]).await;
 
-        // After death: capabilities should STILL include the plugin's known_caps (for on-demand respawn).
-        // This is the new behavior - dead plugins advertise their known_caps so they can be respawned.
+        // After death: capabilities should STILL include the cartridge's known_caps (for on-demand respawn).
+        // This is the new behavior - dead cartridges advertise their known_caps so they can be respawned.
         let caps_after = runtime.capabilities();
         let caps_str = std::str::from_utf8(caps_after).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(caps_str).unwrap();
         let urn_strings_after: Vec<String> = parsed.as_array().unwrap()
             .iter().map(|v| v.as_str().unwrap().to_string()).collect();
 
-        // Should have CAP_IDENTITY + plugin's known caps (identity + op=die)
+        // Should have CAP_IDENTITY + cartridge's known caps (identity + op=die)
         assert!(urn_strings_after.contains(&CAP_IDENTITY.to_string()),
             "CAP_IDENTITY must always be present");
         let found_after = urn_strings_after.iter().any(|urn_str| {
@@ -2664,17 +2664,17 @@ mod tests {
                 false
             }
         });
-        assert!(found_after, "Dead plugin's known_caps should still be advertised for on-demand respawn. Expected URN with op=die, got: {:?}", urn_strings_after);
+        assert!(found_after, "Dead cartridge's known_caps should still be advertised for on-demand respawn. Expected URN with op=die, got: {:?}", urn_strings_after);
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST422: Plugin death sends ERR for all pending requests via relay
+    // TEST422: Cartridge death sends ERR for all pending requests via relay
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test422_plugin_death_sends_err_for_pending_requests() {
-        let manifest = r#"{"name":"DiePlugin","version":"1.0","description":"Die plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    async fn test422_cartridge_death_sends_err_for_pending_requests() {
+        let manifest = r#"{"name":"DieCartridge","version":"1.0","description":"Die cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -2682,8 +2682,8 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut r, w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut r, w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
 
             // Read REQ and consume all frames until END, then die
             let _req = r.read().await.unwrap().expect("Expected REQ");
@@ -2698,8 +2698,8 @@ mod tests {
             drop(r);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
         // Relay (tokio sockets)
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -2716,7 +2716,7 @@ mod tests {
             let mut w = FrameWriter::new(eng_write_half);
 
             let xid = MessageId::Uint(1);
-            // Send REQ (plugin will die after reading it)
+            // Send REQ (cartridge will die after reading it)
             let mut req = Frame::req(req_id.clone(), "cap:in=\"media:void\";op=die;out=\"media:void\"", vec![], "text/plain");
             req.routing_id = Some(xid.clone());
             seq.assign(&mut req);
@@ -2732,30 +2732,30 @@ mod tests {
             drop(w);
         });
 
-        // Runtime should handle plugin death gracefully and exit when relay disconnects
+        // Runtime should handle cartridge death gracefully and exit when relay disconnects
         let result = tokio::time::timeout(Duration::from_secs(5),
             runtime.run(rt_read_half, rt_write_half, || vec![])
         ).await;
-        assert!(result.is_ok(), "Runtime should exit cleanly when plugin dies and relay disconnects");
+        assert!(result.is_ok(), "Runtime should exit cleanly when cartridge dies and relay disconnects");
 
         engine_task.await.unwrap();
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST423: Multiple plugins registered with distinct caps route independently
+    // TEST423: Multiple cartridges registered with distinct caps route independently
     #[tokio::test]
-    async fn test423_multiple_plugins_route_independently() {
-        let manifest_a = r#"{"name":"PA","version":"1.0","description":"Plugin A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
-        let manifest_b = r#"{"name":"PB","version":"1.0","description":"Plugin B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    async fn test423_multiple_cartridges_route_independently() {
+        let manifest_a = r#"{"name":"PA","version":"1.0","description":"Cartridge A","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest_b = r#"{"name":"PB","version":"1.0","description":"Cartridge B","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin A (tokio sockets)
+        // Cartridge A (tokio sockets)
         let (pa_to_rt, rt_from_pa) = UnixStream::pair().unwrap();
         let (rt_to_pa, pa_from_rt) = UnixStream::pair().unwrap();
         let (pa_read, _) = rt_from_pa.into_split();
         let (_, pa_write) = rt_to_pa.into_split();
 
-        // Plugin B (tokio sockets)
+        // Cartridge B (tokio sockets)
         let (pb_to_rt, rt_from_pb) = UnixStream::pair().unwrap();
         let (rt_to_pb, pb_from_rt) = UnixStream::pair().unwrap();
         let (pb_read, _) = rt_from_pb.into_split();
@@ -2764,7 +2764,7 @@ mod tests {
         let ma = manifest_a.as_bytes().to_vec();
         let pa_handle = tokio::spawn(async move {
             let mut seq = SeqAssigner::new();
-            let (mut r, mut w) = plugin_handshake_with_identity(pa_from_rt, pa_to_rt, &ma).await;
+            let (mut r, mut w) = cartridge_handshake_with_identity(pa_from_rt, pa_to_rt, &ma).await;
             let req = r.read().await.unwrap().expect("Expected REQ");
             assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=alpha;out=\"media:void\""));
             loop { let f = r.read().await.unwrap().expect("f"); if f.frame_type == FrameType::End { break; } }
@@ -2790,7 +2790,7 @@ mod tests {
         let mb = manifest_b.as_bytes().to_vec();
         let pb_handle = tokio::spawn(async move {
             let mut seq = SeqAssigner::new();
-            let (mut r, mut w) = plugin_handshake_with_identity(pb_from_rt, pb_to_rt, &mb).await;
+            let (mut r, mut w) = cartridge_handshake_with_identity(pb_from_rt, pb_to_rt, &mb).await;
             let req = r.read().await.unwrap().expect("Expected REQ");
             assert_eq!(req.cap.as_deref(), Some("cap:in=\"media:void\";op=beta;out=\"media:void\""));
             loop { let f = r.read().await.unwrap().expect("f"); if f.frame_type == FrameType::End { break; } }
@@ -2813,9 +2813,9 @@ mod tests {
             drop(w);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(pa_read, pa_write).await.unwrap();
-        runtime.attach_plugin(pb_read, pb_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(pa_read, pa_write).await.unwrap();
+        runtime.attach_cartridge(pb_read, pb_write).await.unwrap();
 
         // Relay (tokio sockets)
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -2881,28 +2881,28 @@ mod tests {
         let _ = runtime.run(rt_read_half, rt_write_half, || vec![]).await;
 
         let (alpha_data, beta_data) = engine_task.await.unwrap();
-        assert_eq!(alpha_data, b"from-A", "Alpha response from Plugin A");
-        assert_eq!(beta_data, b"from-B", "Beta response from Plugin B");
+        assert_eq!(alpha_data, b"from-A", "Alpha response from Cartridge A");
+        assert_eq!(beta_data, b"from-B", "Beta response from Cartridge B");
 
         pa_handle.await.unwrap();
         pb_handle.await.unwrap();
     }
 
-    // TEST424: Concurrent requests to the same plugin are handled independently
+    // TEST424: Concurrent requests to the same cartridge are handled independently
     #[tokio::test]
-    async fn test424_concurrent_requests_to_same_plugin() {
-        let manifest = r#"{"name":"ConcPlugin","version":"1.0","description":"Concurrent plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=conc;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+    async fn test424_concurrent_requests_to_same_cartridge() {
+        let manifest = r#"{"name":"ConcCartridge","version":"1.0","description":"Concurrent cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=conc;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
         let (p_read, _) = rt_from_p.into_split();
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
+        let cartridge_handle = tokio::spawn(async move {
             let mut seq = SeqAssigner::new();
-            let (mut r, mut w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+            let (mut r, mut w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
 
             // Read two REQs and their streams, then respond to each
             let mut pending: Vec<MessageId> = Vec::new();
@@ -2942,8 +2942,8 @@ mod tests {
             drop(w);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
         // Relay (tokio sockets)
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -3012,28 +3012,28 @@ mod tests {
         assert_eq!(data_0, b"response-0", "First concurrent request response");
         assert_eq!(data_1, b"response-1", "Second concurrent request response");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST425: find_plugin_for_cap returns None for unregistered cap
+    // TEST425: find_cartridge_for_cap returns None for unregistered cap
     #[test]
-    fn test425_find_plugin_for_cap_unknown() {
-        let mut runtime = PluginHostRuntime::new();
-        runtime.register_plugin(Path::new("/test"), &["cap:in=\"media:void\";op=known;out=\"media:void\"".to_string()]);
-        assert!(runtime.find_plugin_for_cap("cap:in=\"media:void\";op=known;out=\"media:void\"").is_some());
-        assert!(runtime.find_plugin_for_cap("cap:in=\"media:void\";op=unknown;out=\"media:void\"").is_none());
+    fn test425_find_cartridge_for_cap_unknown() {
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.register_cartridge(Path::new("/test"), &["cap:in=\"media:void\";op=known;out=\"media:void\"".to_string()]);
+        assert!(runtime.find_cartridge_for_cap("cap:in=\"media:void\";op=known;out=\"media:void\"").is_some());
+        assert!(runtime.find_cartridge_for_cap("cap:in=\"media:void\";op=unknown;out=\"media:void\"").is_none());
     }
 
     // =========================================================================
     // Identity verification integration tests
     // =========================================================================
 
-    // TEST485: attach_plugin completes identity verification with working plugin
+    // TEST485: attach_cartridge completes identity verification with working cartridge
     #[tokio::test]
-    async fn test485_attach_plugin_identity_verification_succeeds() {
+    async fn test485_attach_cartridge_identity_verification_succeeds() {
         let manifest = r#"{"name":"IdentityTest","version":"1.0","description":"Test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -3041,30 +3041,30 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        let idx = runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        let idx = runtime.attach_cartridge(p_read, p_write).await.unwrap();
         assert_eq!(idx, 0);
-        assert!(runtime.plugins[0].running, "Plugin must be running after identity verification");
+        assert!(runtime.cartridges[0].running, "Cartridge must be running after identity verification");
 
         // Verify both caps are registered (semantic comparison, not string)
         let identity_urn = crate::CapUrn::from_string(CAP_IDENTITY).unwrap();
-        assert!(runtime.plugins[0].caps.iter().any(|c| identity_urn.conforms_to(&c.urn)),
+        assert!(runtime.cartridges[0].caps.iter().any(|c| identity_urn.conforms_to(&c.urn)),
             "Must have identity cap");
-        assert_eq!(runtime.plugins[0].caps.len(), 2, "Must have both caps");
+        assert_eq!(runtime.cartridges[0].caps.len(), 2, "Must have both caps");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST486: attach_plugin rejects plugin that fails identity verification
+    // TEST486: attach_cartridge rejects cartridge that fails identity verification
     #[tokio::test]
-    async fn test486_attach_plugin_identity_verification_fails() {
+    async fn test486_attach_cartridge_identity_verification_fails() {
         let manifest = r#"{"name":"BrokenIdentity","version":"1.0","description":"Test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]}]}"#;
 
-        // Plugin pipe pair (tokio sockets)
+        // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -3072,7 +3072,7 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
+        let cartridge_handle = tokio::spawn(async move {
             use crate::bifaci::io::{FrameReader, FrameWriter, handshake_accept};
             let mut reader = FrameReader::new(BufReader::new(p_from_rt));
             let mut writer = FrameWriter::new(BufWriter::new(p_to_rt));
@@ -3085,27 +3085,27 @@ mod tests {
             writer.write(&err).await.unwrap();
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        let result = runtime.attach_plugin(p_read, p_write).await;
-        assert!(result.is_err(), "attach_plugin must fail when identity verification fails");
+        let mut runtime = CartridgeHostRuntime::new();
+        let result = runtime.attach_cartridge(p_read, p_write).await;
+        assert!(result.is_err(), "attach_cartridge must fail when identity verification fails");
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Identity verification failed"),
             "Error must mention identity verification: {}", err);
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
-    // TEST661: Plugin death keeps known_caps advertised for on-demand respawn
+    // TEST661: Cartridge death keeps known_caps advertised for on-demand respawn
     #[tokio::test]
-    async fn test661_plugin_death_keeps_known_caps_advertised() {
-        let mut runtime = PluginHostRuntime::new();
+    async fn test661_cartridge_death_keeps_known_caps_advertised() {
+        let mut runtime = CartridgeHostRuntime::new();
 
-        // Register a plugin with known_caps (not spawned yet)
+        // Register a cartridge with known_caps (not spawned yet)
         let known_caps = vec![
             "cap:".to_string(), // identity
             "cap:in=\"media:pdf\";op=thumbnail;out=\"media:image;png\"".to_string(),
         ];
-        runtime.register_plugin(std::path::Path::new("/fake/plugin"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/cartridge"), &known_caps);
 
         // Verify known_caps are in cap_table
         assert_eq!(runtime.cap_table.len(), 2);
@@ -3126,12 +3126,12 @@ mod tests {
         assert!(cap_urns.iter().any(|s| s.contains("thumbnail")));
     }
 
-    // TEST662: rebuild_capabilities includes non-running plugins' known_caps
+    // TEST662: rebuild_capabilities includes non-running cartridges' known_caps
     #[tokio::test]
-    async fn test662_rebuild_capabilities_includes_non_running_plugins() {
-        let mut runtime = PluginHostRuntime::new();
+    async fn test662_rebuild_capabilities_includes_non_running_cartridges() {
+        let mut runtime = CartridgeHostRuntime::new();
 
-        // Register two plugins with different known_caps
+        // Register two cartridges with different known_caps
         let known_caps_1 = vec![
             "cap:".to_string(),
             "cap:in=\"media:pdf\";op=extract;out=\"media:text\"".to_string(),
@@ -3141,10 +3141,10 @@ mod tests {
             "cap:in=\"media:image\";op=ocr;out=\"media:text\"".to_string(),
         ];
 
-        runtime.register_plugin(std::path::Path::new("/fake/plugin1"), &known_caps_1);
-        runtime.register_plugin(std::path::Path::new("/fake/plugin2"), &known_caps_2);
+        runtime.register_cartridge(std::path::Path::new("/fake/cartridge1"), &known_caps_1);
+        runtime.register_cartridge(std::path::Path::new("/fake/cartridge2"), &known_caps_2);
 
-        // Both plugins are NOT running, but their known_caps should be advertised
+        // Both cartridges are NOT running, but their known_caps should be advertised
         runtime.rebuild_capabilities(None);
 
         let caps_json = std::str::from_utf8(runtime.capabilities()).unwrap();
@@ -3153,36 +3153,36 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
 
-        // Should contain identity (always) + both plugins' known_caps
+        // Should contain identity (always) + both cartridges' known_caps
         assert!(cap_urns.contains(&"cap:"));
         assert!(cap_urns.iter().any(|s| s.contains("extract")));
         assert!(cap_urns.iter().any(|s| s.contains("ocr")));
     }
 
-    // TEST663: Plugin with hello_failed is permanently removed from capabilities
+    // TEST663: Cartridge with hello_failed is permanently removed from capabilities
     #[tokio::test]
-    async fn test663_hello_failed_plugin_removed_from_capabilities() {
-        let mut runtime = PluginHostRuntime::new();
+    async fn test663_hello_failed_cartridge_removed_from_capabilities() {
+        let mut runtime = CartridgeHostRuntime::new();
 
-        // Register a plugin
+        // Register a cartridge
         let known_caps = vec![
             "cap:".to_string(),
             "cap:in=\"media:void\";op=broken;out=\"media:void\"".to_string(),
         ];
-        runtime.register_plugin(std::path::Path::new("/fake/broken"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/broken"), &known_caps);
 
         // Manually mark it as hello_failed (simulating HELLO handshake failure)
-        runtime.plugins[0].hello_failed = true;
+        runtime.cartridges[0].hello_failed = true;
 
-        // update_cap_table should exclude hello_failed plugins
+        // update_cap_table should exclude hello_failed cartridges
         runtime.update_cap_table();
 
-        // Should only have identity cap from the runtime itself, not the broken plugin
+        // Should only have identity cap from the runtime itself, not the broken cartridge
         let found_broken = runtime.cap_table.iter()
             .any(|(urn, _)| urn.contains("broken"));
-        assert!(!found_broken, "hello_failed plugin caps should not be in cap_table");
+        assert!(!found_broken, "hello_failed cartridge caps should not be in cap_table");
 
-        // rebuild_capabilities should also exclude hello_failed plugins
+        // rebuild_capabilities should also exclude hello_failed cartridges
         runtime.rebuild_capabilities(None);
 
         let caps_json = std::str::from_utf8(runtime.capabilities()).unwrap();
@@ -3192,45 +3192,45 @@ mod tests {
             .collect();
 
         assert!(!cap_urns.iter().any(|s| s.contains("broken")),
-            "hello_failed plugin should not be in capabilities");
+            "hello_failed cartridge should not be in capabilities");
     }
 
-    // TEST664: Running plugin uses manifest caps, not known_caps
+    // TEST664: Running cartridge uses manifest caps, not known_caps
     #[tokio::test]
-    async fn test664_running_plugin_uses_manifest_caps() {
+    async fn test664_running_cartridge_uses_manifest_caps() {
         // Manifest with different caps than known_caps
-        let manifest = r#"{"name":"Test","version":"1.0","description":"Test plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=uppercase;out=\"media:text\"","title":"Uppercase","command":"uppercase","args":[]}]}"#;
+        let manifest = r#"{"name":"Test","version":"1.0","description":"Test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=uppercase;out=\"media:text\"","title":"Uppercase","command":"uppercase","args":[]}]}"#;
 
-        // Create socket pairs (runtime side and plugin side)
-        let (rt_sock, plugin_sock) = UnixStream::pair().unwrap();
+        // Create socket pairs (runtime side and cartridge side)
+        let (rt_sock, cartridge_sock) = UnixStream::pair().unwrap();
 
-        // Split runtime socket for attach_plugin
+        // Split runtime socket for attach_cartridge
         let (p_read, p_write) = rt_sock.into_split();
 
-        // Split plugin socket for handshake
-        let (plugin_from_rt, plugin_to_rt) = plugin_sock.into_split();
+        // Split cartridge socket for handshake
+        let (cartridge_from_rt, cartridge_to_rt) = cartridge_sock.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (_r, _w) = plugin_handshake_with_identity(plugin_from_rt, plugin_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (_r, _w) = cartridge_handshake_with_identity(cartridge_from_rt, cartridge_to_rt, &m).await;
             // Keep alive for test
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         });
 
-        let mut runtime = PluginHostRuntime::new();
+        let mut runtime = CartridgeHostRuntime::new();
 
         // Register with different known_caps BEFORE attaching
         let known_caps = vec![
             "cap:".to_string(),
             "cap:in=\"media:pdf\";op=extract;out=\"media:text\"".to_string(),
         ];
-        runtime.register_plugin(std::path::Path::new("/fake/path"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/path"), &known_caps);
 
-        // Now attach the actual plugin (which sends different manifest)
-        // This simulates what happens when a registered plugin spawns
-        let _plugin_idx = runtime.attach_plugin(p_read, p_write).await.unwrap();
+        // Now attach the actual cartridge (which sends different manifest)
+        // This simulates what happens when a registered cartridge spawns
+        let _cartridge_idx = runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
-        // The running plugin should use manifest caps, not known_caps
+        // The running cartridge should use manifest caps, not known_caps
         let caps_json = std::str::from_utf8(runtime.capabilities()).unwrap();
         let caps: serde_json::Value = serde_json::from_str(caps_json).unwrap();
         let cap_urns: Vec<&str> = caps.as_array().unwrap().iter()
@@ -3239,140 +3239,140 @@ mod tests {
 
         // Should have manifest cap (uppercase), NOT known_cap (extract)
         assert!(cap_urns.iter().any(|s| s.contains("uppercase")),
-            "Running plugin should use manifest caps. Got: {:?}", cap_urns);
+            "Running cartridge should use manifest caps. Got: {:?}", cap_urns);
 
-        // Note: Since we're testing attach_plugin (not register+spawn), the plugin is added
-        // separately, so we might also see the known_caps from the first registered plugin
+        // Note: Since we're testing attach_cartridge (not register+spawn), the cartridge is added
+        // separately, so we might also see the known_caps from the first registered cartridge
         // unless we remove it. The key test is that uppercase is present (from manifest).
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // TEST665: Cap table uses manifest caps for running, known_caps for non-running
     #[tokio::test]
     async fn test665_cap_table_mixed_running_and_non_running() {
-        // Set up a running plugin
-        let manifest = r#"{"name":"Running","version":"1.0","description":"Running plugin","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=running-op;out=\"media:text\"","title":"RunningOp","command":"running","args":[]}]}"#;
+        // Set up a running cartridge
+        let manifest = r#"{"name":"Running","version":"1.0","description":"Running cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=running-op;out=\"media:text\"","title":"RunningOp","command":"running","args":[]}]}"#;
 
-        // Create socket pairs (runtime side and plugin side)
-        let (rt_sock, plugin_sock) = UnixStream::pair().unwrap();
+        // Create socket pairs (runtime side and cartridge side)
+        let (rt_sock, cartridge_sock) = UnixStream::pair().unwrap();
 
-        // Split runtime socket for attach_plugin
+        // Split runtime socket for attach_cartridge
         let (p_read, p_write) = rt_sock.into_split();
 
-        // Split plugin socket for handshake
-        let (plugin_from_rt, plugin_to_rt) = plugin_sock.into_split();
+        // Split cartridge socket for handshake
+        let (cartridge_from_rt, cartridge_to_rt) = cartridge_sock.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (_r, _w) = plugin_handshake_with_identity(plugin_from_rt, plugin_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (_r, _w) = cartridge_handshake_with_identity(cartridge_from_rt, cartridge_to_rt, &m).await;
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         });
 
-        let mut runtime = PluginHostRuntime::new();
+        let mut runtime = CartridgeHostRuntime::new();
 
-        // Attach running plugin
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        // Attach running cartridge
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
-        // Register a non-running plugin with known_caps
+        // Register a non-running cartridge with known_caps
         let known_caps = vec![
             "cap:".to_string(),
             "cap:in=\"media:pdf\";op=not-running-op;out=\"media:text\"".to_string(),
         ];
-        runtime.register_plugin(std::path::Path::new("/fake/not-running"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/not-running"), &known_caps);
 
         // Update cap table
         runtime.update_cap_table();
 
         // Cap table should have:
-        // - Running plugin's manifest caps (running-op)
-        // - Non-running plugin's known_caps (not-running-op)
+        // - Running cartridge's manifest caps (running-op)
+        // - Non-running cartridge's known_caps (not-running-op)
         let has_running_op = runtime.cap_table.iter().any(|(urn, _)| urn.contains("running-op"));
         let has_not_running_op = runtime.cap_table.iter().any(|(urn, _)| urn.contains("not-running-op"));
 
-        assert!(has_running_op, "Cap table should have running plugin's manifest caps");
-        assert!(has_not_running_op, "Cap table should have non-running plugin's known_caps");
+        assert!(has_running_op, "Cap table should have running cartridge's manifest caps");
+        assert!(has_not_running_op, "Cap table should have non-running cartridge's known_caps");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // =========================================================================
-    // TEST: PluginProcessHandle — snapshot and kill
+    // TEST: CartridgeProcessHandle — snapshot and kill
     // =========================================================================
 
     #[tokio::test]
     async fn test_process_handle_snapshot_empty_initially() {
-        let runtime = PluginHostRuntime::new();
+        let runtime = CartridgeHostRuntime::new();
         let handle = runtime.process_handle();
-        let plugins = handle.running_plugins();
-        assert!(plugins.is_empty(), "Snapshot should be empty before any plugins are spawned");
+        let cartridges = handle.running_cartridges();
+        assert!(cartridges.is_empty(), "Snapshot should be empty before any cartridges are spawned");
     }
 
     #[tokio::test]
-    async fn test_process_handle_snapshot_excludes_attached_plugins() {
-        // Attached plugins are connected via socketpair, not spawned as separate
+    async fn test_process_handle_snapshot_excludes_attached_cartridges() {
+        // Attached cartridges are connected via socketpair, not spawned as separate
         // processes — they have no PID and should not appear in the process snapshot.
-        let (runtime_sock, plugin_sock) = UnixStream::pair().unwrap();
+        let (runtime_sock, cartridge_sock) = UnixStream::pair().unwrap();
         let (r_read, r_write) = runtime_sock.into_split();
-        let (p_read, p_write) = plugin_sock.into_split();
+        let (p_read, p_write) = cartridge_sock.into_split();
 
-        let manifest = r#"{"name":"SnapPlugin","version":"1.0","description":"Snapshot test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=snap;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
+        let manifest = r#"{"name":"SnapCartridge","version":"1.0","description":"Snapshot test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=snap;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;
 
-        let plugin_handle = tokio::spawn(async move {
-            let (_reader, _writer) = plugin_handshake_with_identity(p_read, p_write, manifest.as_bytes()).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (_reader, _writer) = cartridge_handshake_with_identity(p_read, p_write, manifest.as_bytes()).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
 
-        let mut runtime = PluginHostRuntime::new();
+        let mut runtime = CartridgeHostRuntime::new();
         let handle = runtime.process_handle();
 
-        runtime.attach_plugin(r_read, r_write).await.unwrap();
+        runtime.attach_cartridge(r_read, r_write).await.unwrap();
 
-        // Attached plugins have process=None → no PID → excluded from snapshot
-        let plugins = handle.running_plugins();
-        assert!(plugins.is_empty(), "Attached plugins have no PID and should not appear in process snapshot");
+        // Attached cartridges have process=None → no PID → excluded from snapshot
+        let cartridges = handle.running_cartridges();
+        assert!(cartridges.is_empty(), "Attached cartridges have no PID and should not appear in process snapshot");
 
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn test_process_handle_is_clone_and_send() {
-        let runtime = PluginHostRuntime::new();
+        let runtime = CartridgeHostRuntime::new();
         let handle = runtime.process_handle();
         let handle2 = handle.clone();
 
         // Verify Send + Sync by moving to another task
         let join = tokio::spawn(async move {
-            handle2.running_plugins()
+            handle2.running_cartridges()
         });
         let result = join.await.unwrap();
         assert!(result.is_empty());
 
         // Original handle still works
-        assert!(handle.running_plugins().is_empty());
+        assert!(handle.running_cartridges().is_empty());
     }
 
     #[tokio::test]
     async fn test_process_handle_kill_unknown_pid_is_noop() {
-        let runtime = PluginHostRuntime::new();
+        let runtime = CartridgeHostRuntime::new();
         let handle = runtime.process_handle();
 
         // Kill for a PID that doesn't exist should succeed (command sent)
         // but do nothing (the run loop would handle it as a no-op).
         // Since run() hasn't been called, the command sits in the channel.
-        let result = handle.kill_plugin(99999);
-        assert!(result.is_ok(), "kill_plugin should succeed even if PID is unknown — command is async");
+        let result = handle.kill_cartridge(99999);
+        assert!(result.is_ok(), "kill_cartridge should succeed even if PID is unknown — command is async");
     }
 
     // OOM kill sends ERR frames with OOM_KILLED code for all pending requests.
     // This is the core fix: prior to this change, ordered_shutdown=true suppressed
-    // ERR frames even when the plugin was actively processing requests, causing
+    // ERR frames even when the cartridge was actively processing requests, causing
     // the conversation view and task system to hang indefinitely.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_oom_kill_sends_err_with_oom_killed_code() {
-        let manifest = r#"{"name":"OomPlugin","version":"1.0","description":"OOM test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=oom;out=\"media:void\"","title":"OOM","command":"oom","args":[]}]}"#;
+        let manifest = r#"{"name":"OomCartridge","version":"1.0","description":"OOM test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=oom;out=\"media:void\"","title":"OOM","command":"oom","args":[]}]}"#;
 
-        // Plugin pipe pair
+        // Cartridge pipe pair
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -3380,8 +3380,8 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut r, w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut r, w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
 
             // Read REQ and body END, then die (simulating OOM kill mid-flight)
             let _req = r.read().await.unwrap().expect("Expected REQ");
@@ -3396,14 +3396,14 @@ mod tests {
             drop(r);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
-        // Set shutdown_reason to OomKill BEFORE the plugin dies.
-        // In production this is set by handle_command(KillPlugin) which runs
-        // in the event loop before child.kill(). For attached plugins (no child
+        // Set shutdown_reason to OomKill BEFORE the cartridge dies.
+        // In production this is set by handle_command(KillCartridge) which runs
+        // in the event loop before child.kill(). For attached cartridges (no child
         // process), we set it directly.
-        runtime.plugins[0].shutdown_reason = Some(ShutdownReason::OomKill);
+        runtime.cartridges[0].shutdown_reason = Some(ShutdownReason::OomKill);
 
         // Relay pipe pair
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -3473,7 +3473,7 @@ mod tests {
         assert!(result.is_ok(), "Runtime should exit cleanly");
 
         engine_task.await.unwrap();
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 
     // AppExit suppresses ERR frames — regression test to ensure clean shutdown
@@ -3481,9 +3481,9 @@ mod tests {
     // during app exit, so ERR frames would be wasteful noise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_app_exit_suppresses_err_frames() {
-        let manifest = r#"{"name":"ExitPlugin","version":"1.0","description":"Exit test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=exit;out=\"media:void\"","title":"Exit","command":"exit","args":[]}]}"#;
+        let manifest = r#"{"name":"ExitCartridge","version":"1.0","description":"Exit test","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=exit;out=\"media:void\"","title":"Exit","command":"exit","args":[]}]}"#;
 
-        // Plugin pipe pair
+        // Cartridge pipe pair
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
         let (rt_to_p, p_from_rt) = UnixStream::pair().unwrap();
 
@@ -3491,8 +3491,8 @@ mod tests {
         let (_, p_write) = rt_to_p.into_split();
 
         let m = manifest.as_bytes().to_vec();
-        let plugin_handle = tokio::spawn(async move {
-            let (mut r, w) = plugin_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
+        let cartridge_handle = tokio::spawn(async move {
+            let (mut r, w) = cartridge_handshake_with_identity(p_from_rt, p_to_rt, &m).await;
 
             // Read REQ and body END, then die
             let _req = r.read().await.unwrap().expect("Expected REQ");
@@ -3506,11 +3506,11 @@ mod tests {
             drop(r);
         });
 
-        let mut runtime = PluginHostRuntime::new();
-        runtime.attach_plugin(p_read, p_write).await.unwrap();
+        let mut runtime = CartridgeHostRuntime::new();
+        runtime.attach_cartridge(p_read, p_write).await.unwrap();
 
         // Set AppExit — should suppress ERR frames
-        runtime.plugins[0].shutdown_reason = Some(ShutdownReason::AppExit);
+        runtime.cartridges[0].shutdown_reason = Some(ShutdownReason::AppExit);
 
         // Relay pipe pair
         let (relay_rt_read, relay_eng_write) = UnixStream::pair().unwrap();
@@ -3569,6 +3569,6 @@ mod tests {
         assert!(result.is_ok(), "Runtime should exit cleanly");
 
         engine_task.await.unwrap();
-        plugin_handle.await.unwrap();
+        cartridge_handle.await.unwrap();
     }
 }

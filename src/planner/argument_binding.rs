@@ -31,10 +31,10 @@ pub struct CapInputFile {
     /// Type of source entity
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_type: Option<SourceEntityType>,
-    /// Tracked file ID for file lifecycle management with plugins.
+    /// Tracked file ID for file lifecycle management with cartridges.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tracked_file_id: Option<String>,
-    /// Security bookmark for accessing the file from the sandboxed plugin.
+    /// Security bookmark for accessing the file from the sandboxed cartridge.
     /// Runtime-only — never serialized (macOS sandbox bookmark, opaque binary).
     #[serde(skip)]
     pub security_bookmark: Option<Vec<u8>>,

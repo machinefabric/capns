@@ -7,7 +7,7 @@
 //! - Assembling individually-serialized CBOR items into a CBOR sequence (concatenation, no wrapper)
 //!
 //! A CBOR sequence is the natural format for list-tagged media URNs: each `emit_cbor()` call
-//! by a plugin produces one CBOR value, and concatenating all chunk payloads yields a sequence.
+//! by a cartridge produces one CBOR value, and concatenating all chunk payloads yields a sequence.
 
 use thiserror::Error;
 

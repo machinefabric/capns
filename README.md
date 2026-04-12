@@ -1,10 +1,10 @@
 # CapDag - Cap Namespace System
 
-A capability URN and definition system for plugin architectures, built on [Tagged URNs](https://github.com/machinefabric/tagged-urn-rs).
+A capability URN and definition system for cartridge architectures, built on [Tagged URNs](https://github.com/machinefabric/tagged-urn-rs).
 
 ## Overview
 
-CapDAG provides a formal system for defining, matching, and managing capabilities across distributed plugin systems. It extends Tagged URNs with:
+CapDAG provides a formal system for defining, matching, and managing capabilities across distributed cartridge systems. It extends Tagged URNs with:
 
 - **Required direction specifiers** (`in`/`out`) for input/output media types
 - **Media URN validation** for type-safe capability contracts
@@ -215,11 +215,11 @@ cargo test
 
 ## Performance
 
-Tests conducted on a MacBook M1 Pro (2021) with 16GB RAM running macOS Tahoe 26.3.1 (a), using the identity cap. Each host language (Rust, Go, Python, Swift) was tested with plugins implemented in each of the four languages, measuring throughput in streaming MB/s.
+Tests conducted on a MacBook M1 Pro (2021) with 16GB RAM running macOS Tahoe 26.3.1 (a), using the identity cap. Each host language (Rust, Go, Python, Swift) was tested with cartridges implemented in each of the four languages, measuring throughput in streaming MB/s.
 
 ### Throughput Matrix (MB/s) — Router: Rust
 
-| host \ plugin | rust | go | python | swift |
+| host \ cartridge | rust | go | python | swift |
 |---|---:|---:|---:|---:|
 | **rust** | 112.11 | 210.52 | 5.57 | 163.68 |
 | **go** | 98.68 | 196.55 | 5.57 | 166.10 |
@@ -228,7 +228,7 @@ Tests conducted on a MacBook M1 Pro (2021) with 16GB RAM running macOS Tahoe 26.
 
 ### Throughput Matrix (MB/s) — Router: Swift
 
-| host \ plugin | rust | go | python | swift |
+| host \ cartridge | rust | go | python | swift |
 |---|---:|---:|---:|---:|
 | **rust** | 106.67 | 186.48 | 5.51 | 169.21 |
 | **go** | 111.96 | 190.18 | 5.58 | 174.15 |
@@ -237,7 +237,7 @@ Tests conducted on a MacBook M1 Pro (2021) with 16GB RAM running macOS Tahoe 26.
 
 ### Ranking (fastest to slowest)
 
-| # | router-host-plugin | MB/s |
+| # | router-host-cartridge | MB/s |
 |---:|---|---:|
 | 1 | rust-swift-go | 228.96 |
 | 2 | rust-rust-go | 210.52 |

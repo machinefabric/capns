@@ -1,4 +1,4 @@
-//! CBOR Frame Types for Plugin Communication
+//! CBOR Frame Types for Cartridge Communication
 //!
 //! This module defines the binary CBOR frame format that replaces JSON messages.
 //! Frames use integer keys for compact encoding and support native binary payloads.
@@ -229,7 +229,7 @@ pub struct Frame {
     /// Whether the producer used emit_list_item (true) or write (false).
     /// Present on STREAM_START frames only. None means unknown (empty stream).
     pub is_sequence: Option<bool>,
-    /// Whether Cancel should force-kill the plugin process (true) or cooperatively cancel (false).
+    /// Whether Cancel should force-kill the cartridge process (true) or cooperatively cancel (false).
     /// Present on Cancel frames only.
     pub force_kill: Option<bool>,
 }
@@ -285,9 +285,9 @@ impl Frame {
         frame
     }
 
-    /// Create a HELLO frame for handshake with manifest (plugin side).
-    /// The manifest is JSON-encoded plugin metadata including name, version, and caps.
-    /// This is the ONLY way for plugins to communicate their capabilities.
+    /// Create a HELLO frame for handshake with manifest (cartridge side).
+    /// The manifest is JSON-encoded cartridge metadata including name, version, and caps.
+    /// This is the ONLY way for cartridges to communicate their capabilities.
     pub fn hello_with_manifest(limits: &Limits, manifest: &[u8]) -> Self {
         let mut meta = BTreeMap::new();
         meta.insert(
@@ -487,10 +487,10 @@ impl Frame {
     }
 
     /// Create a RelayNotify frame for capability advertisement (slave → master).
-    /// Carries the aggregate manifest of all plugin capabilities and negotiated limits.
+    /// Carries the aggregate manifest of all cartridge capabilities and negotiated limits.
     ///
     /// # Arguments
-    /// * `manifest` - Aggregate manifest bytes (JSON-encoded list of all plugin caps)
+    /// * `manifest` - Aggregate manifest bytes (JSON-encoded list of all cartridge caps)
     /// * `limits` - Protocol limits for the relay connection
     pub fn relay_notify(manifest: &[u8], limits: &Limits) -> Self {
         let mut meta = BTreeMap::new();
@@ -531,7 +531,7 @@ impl Frame {
     ///
     /// # Arguments
     /// * `target_rid` - The request ID to cancel
-    /// * `force_kill` - If true, force-kill the plugin process. If false, cooperative cancel.
+    /// * `force_kill` - If true, force-kill the cartridge process. If false, cooperative cancel.
     pub fn cancel(target_rid: MessageId, force_kill: bool) -> Self {
         let mut frame = Self::new(FrameType::Cancel, target_rid);
         frame.force_kill = Some(force_kill);
@@ -749,9 +749,9 @@ impl Frame {
         })
     }
 
-    /// Extract manifest from HELLO metadata (plugin side sends this).
+    /// Extract manifest from HELLO metadata (cartridge side sends this).
     /// Returns None if no manifest present (host HELLO) or not a HELLO frame.
-    /// The manifest is JSON-encoded plugin metadata.
+    /// The manifest is JSON-encoded cartridge metadata.
     pub fn hello_manifest(&self) -> Option<&[u8]> {
         if self.frame_type != FrameType::Hello {
             return None;
@@ -976,7 +976,7 @@ pub mod keys {
     pub const CHUNK_COUNT: u64 = 15;    // Total chunk count in STREAM_END
     pub const CHECKSUM: u64 = 16;       // FNV-1a checksum of payload for CHUNK frames
     pub const IS_SEQUENCE: u64 = 17;     // Whether producer used emit_list_item (true) or write (false)
-    pub const FORCE_KILL: u64 = 18;      // Whether Cancel should force-kill the plugin process
+    pub const FORCE_KILL: u64 = 18;      // Whether Cancel should force-kill the cartridge process
 }
 
 #[cfg(test)]
@@ -1099,15 +1099,15 @@ mod tests {
         assert_eq!(frame.id, MessageId::Uint(0));
     }
 
-    // TEST181: Test Frame::hello_with_manifest produces HELLO with manifest bytes for plugin side
+    // TEST181: Test Frame::hello_with_manifest produces HELLO with manifest bytes for cartridge side
     #[test]
     fn test181_hello_frame_with_manifest() {
-        let manifest_json = r#"{"name":"TestPlugin","version":"1.0.0","description":"Test","caps":[]}"#;
+        let manifest_json = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test","caps":[]}"#;
         let frame = Frame::hello_with_manifest(&Limits { max_frame: 1_000_000, max_chunk: 100_000, max_reorder_buffer: DEFAULT_MAX_REORDER_BUFFER }, manifest_json.as_bytes());
         assert_eq!(frame.frame_type, FrameType::Hello);
         assert_eq!(frame.hello_max_frame(), Some(1_000_000));
         assert_eq!(frame.hello_max_chunk(), Some(100_000));
-        let manifest = frame.hello_manifest().expect("Plugin HELLO must include manifest");
+        let manifest = frame.hello_manifest().expect("Cartridge HELLO must include manifest");
         assert_eq!(manifest, manifest_json.as_bytes());
     }
 
@@ -1223,13 +1223,13 @@ mod tests {
     }
 
     // TEST190B: Heartbeat frame with self-reported memory in meta — verifies the
-    // protocol extension where plugins include ri_phys_footprint in heartbeat responses.
+    // protocol extension where cartridges include ri_phys_footprint in heartbeat responses.
     #[test]
     fn test190b_heartbeat_frame_with_memory_meta() {
         let id = MessageId::new_uuid();
         let mut frame = Frame::heartbeat(id.clone());
 
-        // Simulate plugin attaching memory info to heartbeat response
+        // Simulate cartridge attaching memory info to heartbeat response
         let mut meta = std::collections::BTreeMap::new();
         meta.insert("footprint_mb".to_string(), ciborium::Value::Integer(4096i128));
         meta.insert("rss_mb".to_string(), ciborium::Value::Integer(5120i128));
@@ -1646,7 +1646,7 @@ mod tests {
         let rid = MessageId::new_uuid();
         let xid = MessageId::new_uuid();
 
-        // Flow 1: (rid, None) — plugin peer invoke
+        // Flow 1: (rid, None) — cartridge peer invoke
         let mut f0 = Frame::new(FrameType::Req, rid.clone());
         let mut f1 = Frame::new(FrameType::End, rid.clone());
         assigner.assign(&mut f0);

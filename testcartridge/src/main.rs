@@ -1,4 +1,4 @@
-//! testcartridge - Integration test plugin for verifying stream multiplexing protocol
+//! testcartridge - Integration test cartridge for verifying stream multiplexing protocol
 //!
 //! Implements all 6 test-edge caps plus special test caps for:
 //! - File-path auto-conversion (scalar and list)
@@ -8,13 +8,13 @@
 //!
 //! ## Invocation Modes
 //!
-//! The cartridge supports two communication modes, automatically detected by PluginRuntime:
-//! 1. **Plugin CBOR Mode** (no CLI args): Length-prefixed CBOR frames via stdin/stdout
+//! The cartridge supports two communication modes, automatically detected by CartridgeRuntime:
+//! 1. **Cartridge CBOR Mode** (no CLI args): Length-prefixed CBOR frames via stdin/stdout
 //! 2. **CLI Mode** (any CLI args): Command-line invocation with args parsed from manifest
 
 use anyhow::Result;
 use capdag::{
-    ArgSource, Cap, CapArg, CapManifest, CapUrn, PluginRuntime,
+    ArgSource, Cap, CapArg, CapManifest, CapUrn, CartridgeRuntime,
     OutputStream, Request, WET_KEY_REQUEST,
     Op, OpMetadata, DryContext, WetContext, OpResult, OpError, async_trait,
     find_stream_str, require_stream,
@@ -29,7 +29,7 @@ use std::sync::Arc;
 fn build_manifest() -> CapManifest {
     let mut caps = Vec::new();
 
-    // IDENTITY: Required for every plugin manifest
+    // IDENTITY: Required for every cartridge manifest
     let identity_urn = CapUrn::from_string("cap:")
         .expect("Valid identity URN");
     caps.push(Cap::new(
@@ -374,7 +374,7 @@ fn build_manifest() -> CapManifest {
     CapManifest::new(
         "testcartridge".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
-        "Integration test plugin for stream multiplexing protocol verification".to_string(),
+        "Integration test cartridge for stream multiplexing protocol verification".to_string(),
         caps,
     )
     .with_author("https://github.com/machinefabric".to_string())
@@ -522,7 +522,7 @@ impl Op<()> for Edge5Op {
         let req = get_req(wet)?;
         let streams = collect_args(&req).await?;
 
-        // First input: file-path arg with stdin source → PluginRuntime read file, relabeled
+        // First input: file-path arg with stdin source → CartridgeRuntime read file, relabeled
         let input1 = require_stream(&streams, "media:node2;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
         // Second input: file-path arg without stdin source → passed through as file path
@@ -867,7 +867,7 @@ impl Op<()> for MemoryHogOp {
 #[tokio::main]
 async fn main() -> Result<()> {
     let manifest = build_manifest();
-    let mut runtime = PluginRuntime::with_manifest(manifest);
+    let mut runtime = CartridgeRuntime::with_manifest(manifest);
 
     // Register all handlers as Op types
     runtime.register_op_type::<Edge1Op>(
@@ -910,7 +910,7 @@ async fn main() -> Result<()> {
         "cap:in=\"media:void\";op=test_memory_hog;out=\"media:textable\"",
     );
 
-    // Run the plugin runtime (handles both CLI and CBOR modes)
+    // Run the cartridge runtime (handles both CLI and CBOR modes)
     runtime.run().await?;
 
     Ok(())

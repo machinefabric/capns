@@ -2,7 +2,7 @@
 //!
 //! The RelaySwitch sits above multiple RelayMasters and provides deterministic
 //! request routing based on cap URN matching. It plays the same role for RelayMasters
-//! that PluginHost plays for plugins.
+//! that CartridgeHost plays for cartridges.
 //!
 //! ## Architecture
 //!
@@ -26,22 +26,22 @@
 //!  RS  RS  RS  RS   (RelaySlaves)
 //!   │   │   │   │
 //!   ▼   ▼   ▼   ▼
-//!  PH  PH  PH  PH   (PluginHosts)
+//!  PH  PH  PH  PH   (CartridgeHosts)
 //! ```
 //!
 //! ## Routing Rules
 //!
-//! **Engine → Plugin**:
+//! **Engine → Cartridge**:
 //! - REQ: route by cap URN using `is_dispatchable` + closest-specificity matching
 //! - Continuation frames: route by req_id
 //!
-//! **Plugin → Plugin** (peer invocations):
+//! **Cartridge → Cartridge** (peer invocations):
 //! - REQ from master: route to destination master (may be same or different)
 //! - Mark in peer_requests set (special cleanup semantics)
 //! - Response frames: route back to source master
 //!
 //! **Cleanup**:
-//! - Engine-initiated: plugin's END → cleanup immediately
+//! - Engine-initiated: cartridge's END → cleanup immediately
 //! - Peer-initiated: engine's response END → cleanup (wait for final response)
 //!
 //! ## Concurrency Model
@@ -136,7 +136,7 @@ pub struct MasterHealthStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct InstalledPluginIdentity {
+pub struct InstalledCartridgeIdentity {
     pub id: String,
     pub version: String,
     pub sha256: String,
@@ -145,7 +145,7 @@ pub struct InstalledPluginIdentity {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RelayNotifyCapabilitiesPayload {
     caps: Vec<String>,
-    installed_plugins: Vec<InstalledPluginIdentity>,
+    installed_cartridges: Vec<InstalledCartridgeIdentity>,
 }
 
 /// Connection to a single RelayMaster with its socket I/O.
@@ -161,8 +161,8 @@ struct MasterConnection {
     limits: RwLock<Limits>,
     /// Parsed capability URNs from manifest
     caps: RwLock<Vec<String>>,
-    /// Installed plugin identities reported by this master
-    installed_plugins: RwLock<Vec<InstalledPluginIdentity>>,
+    /// Installed cartridge identities reported by this master
+    installed_cartridges: RwLock<Vec<InstalledCartridgeIdentity>>,
     /// Connection health status
     healthy: AtomicBool,
     /// Reader task handle
@@ -184,7 +184,7 @@ impl std::fmt::Debug for MasterConnection {
 /// RelaySwitch — Cap-aware routing multiplexer for multiple RelayMasters.
 ///
 /// Aggregates capabilities from multiple RelayMasters and routes requests
-/// based on cap URN matching. Handles both engine→plugin and plugin→plugin
+/// based on cap URN matching. Handles both engine→cartridge and cartridge→cartridge
 /// (peer) invocations with correct routing semantics.
 ///
 /// Uses interior mutability for concurrent DAG execution support.
@@ -209,8 +209,8 @@ pub struct RelaySwitch {
     external_response_channels: RwLock<HashMap<(MessageId, MessageId), mpsc::UnboundedSender<Frame>>>,
     /// Aggregate capabilities (union of all masters)
     aggregate_capabilities: RwLock<Vec<u8>>,
-    /// Aggregate installed plugin identities (union of all healthy masters)
-    aggregate_installed_plugins: RwLock<Vec<InstalledPluginIdentity>>,
+    /// Aggregate installed cartridge identities (union of all healthy masters)
+    aggregate_installed_cartridges: RwLock<Vec<InstalledCartridgeIdentity>>,
     /// Negotiated limits (minimum across all masters)
     negotiated_limits: RwLock<Limits>,
     /// Channel receiver for frames from master reader tasks (Mutex for exclusive receive)
@@ -348,7 +348,7 @@ impl RelaySwitch {
 
                     match frame.frame_type {
                         FrameType::RelayNotify => {
-                            // PluginHostRuntime sends the full RelayNotify (with all caps)
+                            // CartridgeHostRuntime sends the full RelayNotify (with all caps)
                             // through RelaySlave during identity verification. Update caps.
                             if let Some(manifest) = frame.relay_notify_manifest() {
                                 caps_payload = manifest.to_vec();
@@ -401,7 +401,7 @@ impl RelaySwitch {
                 manifest: RwLock::new(caps_payload),
                 limits: RwLock::new(limits),
                 caps: RwLock::new(caps),
-                installed_plugins: RwLock::new(payload.installed_plugins),
+                installed_cartridges: RwLock::new(payload.installed_cartridges),
                 healthy: AtomicBool::new(true),
                 reader_handle: None, // Spawned in phase 2
                 connected_at: Instant::now(),
@@ -451,7 +451,7 @@ impl RelaySwitch {
             origin_map: RwLock::new(HashMap::new()),
             external_response_channels: RwLock::new(HashMap::new()),
             aggregate_capabilities: RwLock::new(Vec::new()),
-            aggregate_installed_plugins: RwLock::new(Vec::new()),
+            aggregate_installed_cartridges: RwLock::new(Vec::new()),
             negotiated_limits: RwLock::new(Limits::default()),
             frame_rx: Mutex::new(frame_rx),
             frame_tx,
@@ -474,9 +474,9 @@ impl RelaySwitch {
         self.aggregate_capabilities.read().await.clone()
     }
 
-    /// Get the aggregate installed plugins of all healthy masters.
-    pub async fn installed_plugins(&self) -> Vec<InstalledPluginIdentity> {
-        self.aggregate_installed_plugins.read().await.clone()
+    /// Get the aggregate installed cartridges of all healthy masters.
+    pub async fn installed_cartridges(&self) -> Vec<InstalledCartridgeIdentity> {
+        self.aggregate_installed_cartridges.read().await.clone()
     }
 
     /// Get the negotiated limits (minimum across all masters).
@@ -961,7 +961,7 @@ impl RelaySwitch {
             manifest: RwLock::new(caps_payload),
             limits: RwLock::new(limits),
             caps: RwLock::new(caps),
-            installed_plugins: RwLock::new(payload.installed_plugins),
+            installed_cartridges: RwLock::new(payload.installed_cartridges),
             healthy: AtomicBool::new(true),
             reader_handle: Some(reader_handle),
             connected_at: Instant::now(),
@@ -982,7 +982,7 @@ impl RelaySwitch {
         Ok(master_idx)
     }
 
-    /// Send a frame to the appropriate master (engine → plugin direction).
+    /// Send a frame to the appropriate master (engine → cartridge direction).
     ///
     /// REQ frames: Assigned XID if absent, routed by cap URN.
     /// Continuation frames: Routed by (XID, RID) pair.
@@ -1110,10 +1110,10 @@ impl RelaySwitch {
         }
     }
 
-    /// Read the next frame from any master (plugin → engine direction).
+    /// Read the next frame from any master (cartridge → engine direction).
     ///
     /// Awaits until a frame is available from any master. Returns Ok(None) when all masters have closed.
-    /// Peer requests (plugin → plugin) are handled internally and not returned.
+    /// Peer requests (cartridge → cartridge) are handled internally and not returned.
     pub async fn read_from_masters(&self) -> Result<Option<Frame>, RelaySwitchError> {
         loop {
             // Hold lock through handle_master_frame — see read_from_masters_timeout comment.
@@ -1371,7 +1371,7 @@ impl RelaySwitch {
         matches.first().map(|(idx, _, _)| *idx)
     }
 
-    /// Handle a frame arriving from a master (plugin → engine direction).
+    /// Handle a frame arriving from a master (cartridge → engine direction).
     ///
     /// Returns Some(frame) if the frame should be forwarded to the engine.
     /// Returns None if the frame was handled internally (peer request).
@@ -1394,10 +1394,10 @@ impl RelaySwitch {
                 })?;
 
                 // Assign XID if absent (first arrival at RelaySwitch)
-                // REQs from plugins should NOT have XID (per spec)
+                // REQs from cartridges should NOT have XID (per spec)
                 if frame.routing_id.is_some() {
                     return Err(RelaySwitchError::Protocol(
-                        "REQ from plugin should not have XID".to_string()
+                        "REQ from cartridge should not have XID".to_string()
                     ));
                 }
 
@@ -1606,11 +1606,11 @@ impl RelaySwitch {
             }
 
             FrameType::Cancel => {
-                // Cancel from plugin — route to destination like a continuation frame.
-                // Plugin is cancelling its own peer call.
+                // Cancel from cartridge — route to destination like a continuation frame.
+                // Cartridge is cancelling its own peer call.
                 let rid = frame.id.clone();
 
-                // Look up XID from RID (Cancel frames from plugins don't have XID)
+                // Look up XID from RID (Cancel frames from cartridges don't have XID)
                 let xid = if let Some(ref existing_xid) = frame.routing_id {
                     existing_xid.clone()
                 } else {
@@ -1658,7 +1658,7 @@ impl RelaySwitch {
                     let masters = self.masters.read().await;
                     if let Some(master) = masters.get(source_idx) {
                         *master.caps.write().await = new_caps;
-                        *master.installed_plugins.write().await = payload.installed_plugins;
+                        *master.installed_cartridges.write().await = payload.installed_cartridges;
                         *master.manifest.write().await = caps_payload.to_vec();
                         // Extract and update limits from RelayNotify
                         if let Some(new_limits) = frame.relay_notify_limits() {
@@ -1839,14 +1839,14 @@ impl RelaySwitch {
     async fn rebuild_capabilities(&self) {
         // Collect caps per master for detailed logging
         let mut caps_by_master: Vec<(usize, bool, Vec<String>)> = Vec::new();
-        let mut installed_plugins_by_master: Vec<(bool, Vec<InstalledPluginIdentity>)> = Vec::new();
+        let mut installed_cartridges_by_master: Vec<(bool, Vec<InstalledCartridgeIdentity>)> = Vec::new();
         let masters = self.masters.read().await;
         for (idx, master) in masters.iter().enumerate() {
             let healthy = master.healthy.load(Ordering::SeqCst);
             let caps = master.caps.read().await.clone();
-            let installed_plugins = master.installed_plugins.read().await.clone();
+            let installed_cartridges = master.installed_cartridges.read().await.clone();
             caps_by_master.push((idx, healthy, caps));
-            installed_plugins_by_master.push((healthy, installed_plugins));
+            installed_cartridges_by_master.push((healthy, installed_cartridges));
         }
         drop(masters);
 
@@ -1872,22 +1872,22 @@ impl RelaySwitch {
 
         // Build manifest as JSON array (same format as RelayNotify payloads)
         *self.aggregate_capabilities.write().await = serde_json::to_vec(&all_caps).unwrap_or_default();
-        let mut all_installed_plugins: Vec<InstalledPluginIdentity> = Vec::new();
-        for (healthy, installed_plugins) in installed_plugins_by_master {
+        let mut all_installed_cartridges: Vec<InstalledCartridgeIdentity> = Vec::new();
+        for (healthy, installed_cartridges) in installed_cartridges_by_master {
             if healthy {
-                all_installed_plugins.extend(installed_plugins);
+                all_installed_cartridges.extend(installed_cartridges);
             }
         }
-        all_installed_plugins.sort();
-        all_installed_plugins.dedup_by(|left, right| {
+        all_installed_cartridges.sort();
+        all_installed_cartridges.dedup_by(|left, right| {
             left.id == right.id && left.version == right.version && left.sha256 == right.sha256
         });
         tracing::info!(
             target: "relay_switch",
-            installed_plugins = ?all_installed_plugins,
-            "RelaySwitch rebuilt installed plugins"
+            installed_cartridges = ?all_installed_cartridges,
+            "RelaySwitch rebuilt installed cartridges"
         );
-        *self.aggregate_installed_plugins.write().await = all_installed_plugins;
+        *self.aggregate_installed_cartridges.write().await = all_installed_cartridges;
 
         // Log only if changed
         if changed {
@@ -1968,7 +1968,7 @@ impl RelaySwitch {
 // =============================================================================
 
 /// Parse capabilities payload from RelayNotify.
-/// RelayNotify contains a JSON object with capability URNs and installed plugin identities.
+/// RelayNotify contains a JSON object with capability URNs and installed cartridge identities.
 /// Validates that CAP_IDENTITY is present — hard-fail if missing.
 fn parse_relay_notify_payload(notify_payload: &[u8]) -> Result<RelayNotifyCapabilitiesPayload, RelaySwitchError> {
     use crate::urn::cap_urn::CapUrn;
@@ -2024,7 +2024,7 @@ mod tests {
         // Send RelayNotify
         let notify_payload = serde_json::json!({
             "caps": caps_json,
-            "installed_plugins": [],
+            "installed_cartridges": [],
         });
         let notify = Frame::relay_notify(&serde_json::to_vec(&notify_payload).unwrap(), limits);
         writer.write(&notify).await.unwrap();
@@ -2596,7 +2596,7 @@ mod tests {
             // Send RelayNotify
             let caps = serde_json::json!({
                 "caps": ["cap:in=media:;out=media:"],
-                "installed_plugins": [],
+                "installed_cartridges": [],
             });
             let notify = Frame::relay_notify(&serde_json::to_vec(&caps).unwrap(), &Limits::default());
             writer.write(&notify).await.unwrap();
@@ -2615,11 +2615,11 @@ mod tests {
             "error must mention identity verification: {}", err);
     }
 
-    // TEST905: send_to_master + build_request_frames through RelaySwitch → RelaySlave → InProcessPluginHost roundtrip
+    // TEST905: send_to_master + build_request_frames through RelaySwitch → RelaySlave → InProcessCartridgeHost roundtrip
     #[tokio::test]
     async fn test905_send_to_master_build_request_frames_roundtrip() {
-        use crate::bifaci::in_process_host::{InProcessPluginHost, FrameHandler, ResponseWriter, accumulate_input};
-        use crate::bifaci::plugin_runtime::PeerInvoker;
+        use crate::bifaci::in_process_host::{InProcessCartridgeHost, FrameHandler, ResponseWriter, accumulate_input};
+        use crate::bifaci::cartridge_runtime::PeerInvoker;
         use crate::bifaci::relay::RelaySlave;
         use crate::cap::caller::CapArgumentValue;
         use crate::cap::definition::Cap;
@@ -2664,7 +2664,7 @@ mod tests {
             registered_by: None,
         };
 
-        let host = InProcessPluginHost::new(vec![(
+        let host = InProcessCartridgeHost::new(vec![(
             "echo".to_string(),
             vec![cap],
             std::sync::Arc::new(EchoHandler) as std::sync::Arc<dyn FrameHandler>,
@@ -2758,8 +2758,8 @@ mod tests {
     // TEST489: add_master dynamically connects new host to running switch
     #[tokio::test]
     async fn test489_add_master_dynamic() {
-        use crate::bifaci::in_process_host::{InProcessPluginHost, FrameHandler, ResponseWriter};
-        use crate::bifaci::plugin_runtime::PeerInvoker;
+        use crate::bifaci::in_process_host::{InProcessCartridgeHost, FrameHandler, ResponseWriter};
+        use crate::bifaci::cartridge_runtime::PeerInvoker;
         use crate::bifaci::relay::RelaySlave;
         use crate::cap::caller::CapArgumentValue;
         use crate::cap::definition::Cap;
@@ -2789,7 +2789,7 @@ mod tests {
 
         // Helper to wire up host + slave and return switch-side socket + task handles
         async fn wire_host(
-            host: InProcessPluginHost,
+            host: InProcessCartridgeHost,
         ) -> (UnixStream, tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
             let (host_sock, slave_local_sock) = UnixStream::pair().unwrap();
             let (slave_sock, switch_sock) = UnixStream::pair().unwrap();
@@ -2813,7 +2813,7 @@ mod tests {
 
         // Create initial switch with handler A
         let cap_a = "cap:in=\"media:void\";op=alpha;out=\"media:void\"";
-        let host_a = InProcessPluginHost::new(vec![(
+        let host_a = InProcessCartridgeHost::new(vec![(
             "alpha".to_string(),
             vec![Cap {
                 urn: crate::CapUrn::from_string(cap_a).unwrap(),
@@ -2837,7 +2837,7 @@ mod tests {
 
         // Add handler B dynamically
         let cap_b = "cap:in=\"media:void\";op=beta;out=\"media:void\"";
-        let host_b = InProcessPluginHost::new(vec![(
+        let host_b = InProcessCartridgeHost::new(vec![(
             "beta".to_string(),
             vec![Cap {
                 urn: crate::CapUrn::from_string(cap_b).unwrap(),
@@ -2913,8 +2913,8 @@ mod tests {
     // TEST666: Preferred cap routing - routes to exact equivalent when multiple masters match
     #[tokio::test]
     async fn test666_preferred_cap_routing() {
-        use crate::bifaci::in_process_host::{InProcessPluginHost, FrameHandler, ResponseWriter};
-        use crate::bifaci::plugin_runtime::PeerInvoker;
+        use crate::bifaci::in_process_host::{InProcessCartridgeHost, FrameHandler, ResponseWriter};
+        use crate::bifaci::cartridge_runtime::PeerInvoker;
         use crate::bifaci::relay::RelaySlave;
         use crate::cap::definition::Cap;
         use async_trait::async_trait;
@@ -2943,7 +2943,7 @@ mod tests {
 
         // Helper to wire up host + slave
         async fn wire_host(
-            host: InProcessPluginHost,
+            host: InProcessCartridgeHost,
         ) -> (UnixStream, tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
             let (host_sock, slave_local_sock) = UnixStream::pair().unwrap();
             let (slave_sock, switch_sock) = UnixStream::pair().unwrap();
@@ -2967,7 +2967,7 @@ mod tests {
 
         // Master 1: Exact-match handler (matches request exactly — closest specificity)
         let cap_exact = "cap:in=\"media:void\";op=test;out=\"media:void\"";
-        let host_exact = InProcessPluginHost::new(vec![(
+        let host_exact = InProcessCartridgeHost::new(vec![(
             "exact".to_string(),
             vec![Cap {
                 urn: crate::CapUrn::from_string(cap_exact).unwrap(),
@@ -2987,7 +2987,7 @@ mod tests {
 
         // Master 2: More-specific handler (has extra tag — also matches, but further from request)
         let cap_extra = "cap:in=\"media:void\";op=test;ext=pdf;out=\"media:void\"";
-        let host_extra = InProcessPluginHost::new(vec![(
+        let host_extra = InProcessCartridgeHost::new(vec![(
             "extra".to_string(),
             vec![Cap {
                 urn: crate::CapUrn::from_string(cap_extra).unwrap(),

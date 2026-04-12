@@ -4,7 +4,7 @@
 //! 1. Parse and validate machine notation graphs with Cap URNs
 //! 2. Execute DAGs using testcartridge capabilities
 //! 3. Handle data flow between nodes
-//! 4. Work with CBOR protocol via PluginHost
+//! 4. Work with CBOR protocol via CartridgeHost
 //!
 //! testcartridge provides simple, predictable test caps without heavy dependencies
 //! The testcartridge binary will be auto-built if missing or outdated
@@ -191,16 +191,16 @@ fn testcartridge_bin() -> PathBuf {
     bin_path
 }
 
-/// Create a temporary plugin directory for tests
+/// Create a temporary cartridge directory for tests
 fn setup_test_env() -> (TempDir, PathBuf, Vec<PathBuf>) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let plugin_dir = temp_dir.path().join("plugins");
-    fs::create_dir_all(&plugin_dir).expect("Failed to create plugin dir");
+    let cartridge_dir = temp_dir.path().join("cartridges");
+    fs::create_dir_all(&cartridge_dir).expect("Failed to create cartridge dir");
 
     // Use testcartridge as dev binary (no registry lookup needed)
     let dev_binaries = vec![testcartridge_bin()];
 
-    (temp_dir, plugin_dir, dev_binaries)
+    (temp_dir, cartridge_dir, dev_binaries)
 }
 
 /// Create an `Arc<CapRegistry>` with all testcartridge caps.
@@ -258,7 +258,7 @@ async fn test935_parse_simple_testcartridge_graph() {
 #[tokio::test]
 async fn test936_execute_single_edge_dag() {
     let registry = create_test_cap_registry();
-    let (_temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
 [test_edge1 cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable"]
@@ -275,8 +275,8 @@ async fn test936_execute_single_edge_dag() {
     let cap_registry = create_test_cap_registry();
     let result = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         cap_registry,
@@ -301,7 +301,7 @@ async fn test936_execute_single_edge_dag() {
 #[tokio::test]
 async fn test937_execute_edge1_to_edge2_chain() {
     let registry = create_test_cap_registry();
-    let (_temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
 [test_edge1 cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable"]
@@ -318,8 +318,8 @@ async fn test937_execute_edge1_to_edge2_chain() {
     let cap_registry = create_test_cap_registry();
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         cap_registry,
@@ -342,7 +342,7 @@ async fn test937_execute_edge1_to_edge2_chain() {
 #[tokio::test]
 async fn test938_execute_with_file_input() {
     let registry = create_test_cap_registry();
-    let (temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
 [test_edge1 cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable"]
@@ -360,8 +360,8 @@ async fn test938_execute_with_file_input() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -383,7 +383,7 @@ async fn test938_execute_with_file_input() {
 #[tokio::test]
 async fn test939_execute_large_payload() {
     let registry = create_test_cap_registry();
-    let (_temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
 [test_large cap:in="media:void";op=test_large;out="media:"]
@@ -398,8 +398,8 @@ async fn test939_execute_large_payload() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -425,7 +425,7 @@ async fn test939_execute_large_payload() {
 #[tokio::test]
 async fn test940_fan_in_pattern() {
     let registry = create_test_cap_registry();
-    let (_temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     // Two parallel paths that merge
     let route = r#"
@@ -445,8 +445,8 @@ async fn test940_fan_in_pattern() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -552,7 +552,7 @@ async fn test944_cap_not_found() {
 #[tokio::test]
 async fn test945_four_machine() {
     let registry = create_test_cap_registry();
-    let (_temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
 [test_edge1 cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable"]
@@ -572,8 +572,8 @@ async fn test945_four_machine() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -601,7 +601,7 @@ async fn test945_four_machine() {
 #[tokio::test]
 async fn test946_five_machine() {
     let registry = create_test_cap_registry();
-    let (_temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
 [test_edge1 cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable"]
@@ -623,8 +623,8 @@ async fn test946_five_machine() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -650,7 +650,7 @@ async fn test946_five_machine() {
 #[tokio::test]
 async fn test947_six_machine() {
     let registry = create_test_cap_registry();
-    let (_temp, plugin_dir, dev_binaries) = setup_test_env();
+    let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
 [test_edge1 cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable"]
@@ -674,8 +674,8 @@ async fn test947_six_machine() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -724,21 +724,21 @@ async fn test947_six_machine() {
 // =============================================================================
 
 // TEST403: Test peer invoke round-trip (testcartridge calls itself)
-// Disabled: LocalPluginRouter feature not implemented - uses non-existent modules
-#[cfg(feature = "__disabled_local_plugin_router")]
+// Disabled: LocalCartridgeRouter feature not implemented - uses non-existent modules
+#[cfg(feature = "__disabled_local_cartridge_router")]
 #[tokio::test]
 #[ignore]
 async fn test403_peer_invoke_roundtrip() {
-    use capdag::{PluginHost, CapArgumentValue};
-    use capdag::local_plugin_router::LocalPluginRouter;
+    use capdag::{CartridgeHost, CapArgumentValue};
+    use capdag::local_cartridge_router::LocalCartridgeRouter;
     use tokio::process::Command;
     use std::process::Stdio;
     use std::sync::Arc;
 
     let testcartridge = testcartridge_bin();
 
-    // Create LocalPluginRouter for routing peer invoke requests
-    let router = Arc::new(LocalPluginRouter::new());
+    // Create LocalCartridgeRouter for routing peer invoke requests
+    let router = Arc::new(LocalCartridgeRouter::new());
     let router_arc: Arc<dyn capdag::cap_router::CapRouter> = router.clone();
 
     // Spawn testcartridge
@@ -752,12 +752,12 @@ async fn test403_peer_invoke_roundtrip() {
     let stdout = child.stdout.take().unwrap();
 
     // Create host with router
-    let host = PluginHost::new_with_router(stdin, stdout, router_arc)
+    let host = CartridgeHost::new_with_router(stdin, stdout, router_arc)
         .await
         .expect("Failed to create host");
 
     // Get manifest to discover all caps
-    let manifest_bytes = host.plugin_manifest();
+    let manifest_bytes = host.cartridge_manifest();
     let manifest: capdag::CapManifest = serde_json::from_slice(manifest_bytes)
         .expect("Failed to parse manifest");
 
@@ -768,7 +768,7 @@ async fn test403_peer_invoke_roundtrip() {
     for cap in &manifest.caps {
         let cap_urn = cap.urn.to_string();
         eprintln!("[TEST403] Registering cap: {}", cap_urn);
-        router.register_plugin(&cap_urn, Arc::clone(&host_arc)).await;
+        router.register_cartridge(&cap_urn, Arc::clone(&host_arc)).await;
     }
 
     // Now call test-peer, which will peer invoke test-edge1 and test-edge2

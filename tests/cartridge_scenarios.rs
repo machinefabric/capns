@@ -45,7 +45,7 @@ struct CapProgress {
     pct: f32,
     /// Short label (the op= value from the cap URN)
     label: String,
-    /// Last status message from the plugin
+    /// Last status message from the cartridge
     last_msg: String,
     /// When this cap started executing
     start: std::time::Instant,
@@ -843,16 +843,16 @@ async fn ensure_model_downloaded(model_spec: &str, modelcartridge_bin: &PathBuf)
         .expect("Pre-download DAG parse failed");
 
     let temp = TempDir::new().expect("temp dir");
-    let plugin_dir = temp.path().join("plugins");
-    std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
+    let cartridge_dir = temp.path().join("cartridges");
+    std::fs::create_dir_all(&cartridge_dir).expect("cartridge dir");
 
     let mut inputs = HashMap::new();
     inputs.insert("model_spec".to_string(), NodeData::Text(model_spec.to_string()));
 
     match execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         vec![modelcartridge_bin.clone()],
         standard_registry(),
@@ -878,9 +878,9 @@ async fn ensure_model_downloaded(model_spec: &str, modelcartridge_bin: &PathBuf)
 
 fn setup_test_env(dev_binaries: Vec<PathBuf>) -> (TempDir, PathBuf, Vec<PathBuf>) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let plugin_dir = temp_dir.path().join("plugins");
-    std::fs::create_dir_all(&plugin_dir).expect("Failed to create plugin dir");
-    (temp_dir, plugin_dir, dev_binaries)
+    let cartridge_dir = temp_dir.path().join("cartridges");
+    std::fs::create_dir_all(&cartridge_dir).expect("Failed to create cartridge dir");
+    (temp_dir, cartridge_dir, dev_binaries)
 }
 
 fn extract_bytes(outputs: &HashMap<String, NodeData>, node: &str) -> Vec<u8> {
@@ -909,14 +909,14 @@ async fn test948_pdf_document_intelligence() {
     let (_route, graph) = load_and_parse_scenario("test948_pdf_document_intelligence").await;
     assert_eq!(graph.edges.len(), 3);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -969,14 +969,14 @@ async fn test949_pdf_thumbnail_to_image_embedding() {
     let (_route, graph) = load_and_parse_scenario("test949_pdf_thumbnail_to_image_embedding").await;
     assert_eq!(graph.edges.len(), 2);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1019,14 +1019,14 @@ async fn test950_pdf_full_intelligence_pipeline() {
     assert_eq!(graph.edges.len(), 4);
     assert_eq!(graph.nodes.len(), 5); // pdf_input, metadata, outline, thumbnail, img_embedding
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1074,7 +1074,7 @@ async fn test951_text_document_intelligence() {
     let (_route, graph) = load_and_parse_scenario("test951_text_document_intelligence").await;
     assert_eq!(graph.edges.len(), 3);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "md_input".to_string(),
@@ -1083,8 +1083,8 @@ async fn test951_text_document_intelligence() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1126,7 +1126,7 @@ async fn test952_multi_format_document_processing() {
     assert_eq!(graph.edges.len(), 6);
     assert_eq!(graph.nodes.len(), 8); // 2 inputs + 6 outputs
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
     inputs.insert(
@@ -1136,8 +1136,8 @@ async fn test952_multi_format_document_processing() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1198,7 +1198,7 @@ async fn test953_model_plus_dimensions() {
     let (_route, graph) = load_and_parse_scenario("test953_model_plus_dimensions").await;
     assert_eq!(graph.edges.len(), 2);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -1207,8 +1207,8 @@ async fn test953_model_plus_dimensions() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1246,7 +1246,7 @@ async fn test954_model_availability_plus_status() {
     let (_route, graph) = load_and_parse_scenario("test954_model_availability_plus_status").await;
     assert_eq!(graph.edges.len(), 2);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -1255,8 +1255,8 @@ async fn test954_model_availability_plus_status() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1294,7 +1294,7 @@ async fn test955_text_embedding() {
 
     let (_route, graph) = load_and_parse_scenario("test955_text_embedding").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "text_input".to_string(),
@@ -1303,8 +1303,8 @@ async fn test955_text_embedding() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1344,7 +1344,7 @@ async fn test956_candle_describe_image() {
 
     let (_route, graph) = load_and_parse_scenario("test956_candle_describe_image").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "image_input".to_string(),
@@ -1353,8 +1353,8 @@ async fn test956_candle_describe_image() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1388,7 +1388,7 @@ async fn test957_audio_transcription() {
 
     let (_route, graph) = load_and_parse_scenario("test957_audio_transcription").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "audio_input".to_string(),
@@ -1397,8 +1397,8 @@ async fn test957_audio_transcription() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1431,14 +1431,14 @@ async fn test958_pdf_complete_analysis() {
     assert_eq!(graph.edges.len(), 4, "4 edges expected");
     assert_eq!(graph.nodes.len(), 5, "1 input + 4 outputs");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1498,7 +1498,7 @@ async fn test959_model_full_inspection() {
         .clone();
     ensure_model_downloaded(MODEL_BERT, &modelcartridge_bin).await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -1507,8 +1507,8 @@ async fn test959_model_full_inspection() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1558,7 +1558,7 @@ async fn test960_two_format_full_analysis() {
     assert_eq!(graph.edges.len(), 7, "7 edges expected");
     assert_eq!(graph.nodes.len(), 9, "2 inputs + 7 outputs");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
     inputs.insert(
@@ -1568,8 +1568,8 @@ async fn test960_two_format_full_analysis() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1626,7 +1626,7 @@ async fn test961_model_plus_pdf_combined() {
     assert_eq!(graph.edges.len(), 5);
     assert_eq!(graph.nodes.len(), 7); // 2 inputs + 5 outputs
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -1636,8 +1636,8 @@ async fn test961_model_plus_pdf_combined() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1687,7 +1687,7 @@ async fn test962_three_cartridge_pipeline() {
     assert_eq!(graph.edges.len(), 6);
     assert_eq!(graph.nodes.len(), 9); // 3 inputs + 6 outputs
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -1701,8 +1701,8 @@ async fn test962_three_cartridge_pipeline() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1809,14 +1809,14 @@ async fn test963_txt_document_intelligence() {
     let (_route, graph) = load_and_parse_scenario("test963_txt_document_intelligence").await;
     assert_eq!(graph.edges.len(), 2);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("txt_input".to_string(), NodeData::Bytes(generate_test_txt()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1851,14 +1851,14 @@ async fn test964_rst_document_intelligence() {
     let (_route, graph) = load_and_parse_scenario("test964_rst_document_intelligence").await;
     assert_eq!(graph.edges.len(), 3);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("rst_input".to_string(), NodeData::Bytes(generate_test_rst()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1897,14 +1897,14 @@ async fn test965_log_document_intelligence() {
     let (_route, graph) = load_and_parse_scenario("test965_log_document_intelligence").await;
     assert_eq!(graph.edges.len(), 2);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("log_input".to_string(), NodeData::Bytes(generate_test_log()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -1941,7 +1941,7 @@ async fn test966_all_text_formats_intelligence() {
     // 4 inputs + 10 outputs = 14 nodes
     assert_eq!(graph.nodes.len(), 14, "4 inputs + 10 outputs");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("txt_input".to_string(), NodeData::Bytes(generate_test_txt()));
     inputs.insert("rst_input".to_string(), NodeData::Bytes(generate_test_rst()));
@@ -1950,8 +1950,8 @@ async fn test966_all_text_formats_intelligence() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2003,15 +2003,15 @@ async fn test967_model_list_models() {
     let (_route, graph) = load_and_parse_scenario("test967_model_list_models").await;
     assert_eq!(graph.edges.len(), 1);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     // Empty JSON object: list all models without filtering
     inputs.insert("repo_input".to_string(), NodeData::Bytes(b"{}".to_vec()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2051,7 +2051,7 @@ async fn test968_gguf_embeddings_dimensions() {
 
     let (_route, graph) = load_and_parse_scenario("test968_gguf_embeddings_dimensions").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -2060,8 +2060,8 @@ async fn test968_gguf_embeddings_dimensions() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2098,7 +2098,7 @@ async fn test969_gguf_llm_model_info() {
 
     let (_route, graph) = load_and_parse_scenario("test969_gguf_llm_model_info").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "request_input".to_string(),
@@ -2107,8 +2107,8 @@ async fn test969_gguf_llm_model_info() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2147,7 +2147,7 @@ async fn test970_gguf_llm_vocab() {
 
     let (_route, graph) = load_and_parse_scenario("test970_gguf_llm_vocab").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "request_input".to_string(),
@@ -2156,8 +2156,8 @@ async fn test970_gguf_llm_vocab() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2197,7 +2197,7 @@ async fn test971_gguf_model_info_plus_vocab() {
     let (_route, graph) = load_and_parse_scenario("test971_gguf_model_info_plus_vocab").await;
     assert_eq!(graph.edges.len(), 2);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "request_input".to_string(),
@@ -2206,8 +2206,8 @@ async fn test971_gguf_model_info_plus_vocab() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2248,7 +2248,7 @@ async fn test972_gguf_llm_inference() {
 
     let (_route, graph) = load_and_parse_scenario("test972_gguf_llm_inference").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "request_input".to_string(),
@@ -2260,8 +2260,8 @@ async fn test972_gguf_llm_inference() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2295,7 +2295,7 @@ async fn test973_gguf_llm_inference_constrained() {
 
     let (_route, graph) = load_and_parse_scenario("test973_gguf_llm_inference_constrained").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "request_input".to_string(),
@@ -2307,8 +2307,8 @@ async fn test973_gguf_llm_inference_constrained() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2345,7 +2345,7 @@ async fn test974_gguf_generate_embeddings() {
 
     let (_route, graph) = load_and_parse_scenario("test974_gguf_generate_embeddings").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "text_input".to_string(),
@@ -2358,8 +2358,8 @@ async fn test974_gguf_generate_embeddings() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2401,7 +2401,7 @@ async fn test975_gguf_describe_image() {
 
     let (_route, graph) = load_and_parse_scenario("test975_gguf_describe_image").await;
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "image_input".to_string(),
@@ -2414,8 +2414,8 @@ async fn test975_gguf_describe_image() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2451,7 +2451,7 @@ async fn test976_pdf_thumbnail_to_gguf_vision() {
     let (_route, graph) = load_and_parse_scenario("test976_pdf_thumbnail_to_gguf_vision").await;
     assert_eq!(graph.edges.len(), 3);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
     inputs.insert(
@@ -2461,8 +2461,8 @@ async fn test976_pdf_thumbnail_to_gguf_vision() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2507,7 +2507,7 @@ async fn test977_gguf_all_llm_ops() {
     assert_eq!(graph.edges.len(), 4);
     assert_eq!(graph.nodes.len(), 5); // 1 input + 4 outputs
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     // Use constrained request so both inference caps receive valid input
     inputs.insert(
@@ -2520,8 +2520,8 @@ async fn test977_gguf_all_llm_ops() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2578,7 +2578,7 @@ async fn test978_mlx_generate_text() {
     let (_route, graph) = load_and_parse_scenario("test978_mlx_generate_text").await;
     assert_eq!(graph.edges.len(), 1);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -2587,8 +2587,8 @@ async fn test978_mlx_generate_text() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2619,7 +2619,7 @@ async fn test979_mlx_describe_image() {
     let (_route, graph) = load_and_parse_scenario("test979_mlx_describe_image").await;
     assert_eq!(graph.edges.len(), 1);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "image_input".to_string(),
@@ -2628,8 +2628,8 @@ async fn test979_mlx_describe_image() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2660,7 +2660,7 @@ async fn test980_mlx_generate_embeddings() {
     let (_route, graph) = load_and_parse_scenario("test980_mlx_generate_embeddings").await;
     assert_eq!(graph.edges.len(), 1);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "text_input".to_string(),
@@ -2669,8 +2669,8 @@ async fn test980_mlx_generate_embeddings() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2701,7 +2701,7 @@ async fn test981_mlx_embeddings_dimensions() {
     let (_route, graph) = load_and_parse_scenario("test981_mlx_embeddings_dimensions").await;
     assert_eq!(graph.edges.len(), 1);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -2710,8 +2710,8 @@ async fn test981_mlx_embeddings_dimensions() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2740,7 +2740,7 @@ async fn test982_model_download() {
     let (_route, graph) = load_and_parse_scenario("test982_model_download").await;
     assert_eq!(graph.edges.len(), 1);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -2749,8 +2749,8 @@ async fn test982_model_download() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2787,14 +2787,14 @@ async fn test983_pdf_to_thumbnail_to_describe_to_embed() {
     let (_route, graph) = load_and_parse_scenario("test983_pdf_to_thumbnail_to_describe_to_embed").await;
     assert_eq!(graph.edges.len(), 3, "3-step chain");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2834,7 +2834,7 @@ async fn test984_pdf_thumbnail_to_gguf_describe_fanin() {
     // 3 edges: pdf→thumbnail, thumbnail→description, model_spec→description
     assert_eq!(graph.edges.len(), 3, "Chain + fan-in pattern");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
     inputs.insert(
@@ -2844,8 +2844,8 @@ async fn test984_pdf_thumbnail_to_gguf_describe_fanin() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2879,14 +2879,14 @@ async fn test985_audio_transcribe_to_embed() {
     let (_route, graph) = load_and_parse_scenario("test985_audio_transcribe_to_embed").await;
     assert_eq!(graph.edges.len(), 1);
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("audio_input".to_string(), NodeData::Bytes(generate_test_wav()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2920,14 +2920,14 @@ async fn test986_pdf_fanout_with_chain() {
     let (_route, graph) = load_and_parse_scenario("test986_pdf_fanout_with_chain").await;
     assert_eq!(graph.edges.len(), 4, "3 fan-out + 1 chain");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -2966,7 +2966,7 @@ async fn test987_multi_format_parallel_chains() {
     let (_route, graph) = load_and_parse_scenario("test987_multi_format_parallel_chains").await;
     assert_eq!(graph.edges.len(), 4, "2 parallel chains × 2 steps");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
     inputs.insert(
@@ -2976,8 +2976,8 @@ async fn test987_multi_format_parallel_chains() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -3014,14 +3014,14 @@ async fn test988_deep_chain_with_parallel() {
     let (_route, graph) = load_and_parse_scenario("test988_deep_chain_with_parallel").await;
     assert_eq!(graph.edges.len(), 5, "Complex 5-edge graph");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert("pdf_input".to_string(), NodeData::Bytes(generate_test_pdf()));
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -3063,7 +3063,7 @@ async fn test989_five_cartridge_chain() {
     let (_route, graph) = load_and_parse_scenario("test989_five_cartridge_chain").await;
     assert_eq!(graph.edges.len(), 5, "5 edges in stress test");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "model_spec".to_string(),
@@ -3073,8 +3073,8 @@ async fn test989_five_cartridge_chain() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),
@@ -3109,7 +3109,7 @@ async fn test990_all_text_formats_to_image_embeds() {
     let (_route, graph) = load_and_parse_scenario("test990_all_text_formats_to_image_embeds").await;
     assert_eq!(graph.edges.len(), 8, "4 formats × 2 steps = 8 edges");
 
-    let (_temp, plugin_dir, dev_bins) = setup_test_env(dev_binaries);
+    let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
     inputs.insert(
         "txt_input".to_string(),
@@ -3130,8 +3130,8 @@ async fn test990_all_text_formats_to_image_embeds() {
 
     let outputs = execute_dag(
         &graph,
-        plugin_dir,
-        "https://machinefabric.com/api/plugins".to_string(),
+        cartridge_dir,
+        "https://machinefabric.com/api/cartridges".to_string(),
         inputs,
         dev_bins,
         standard_registry(),

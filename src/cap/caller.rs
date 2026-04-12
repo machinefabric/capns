@@ -10,14 +10,14 @@ use crate::media::registry::MediaUrnRegistry;
 
 /// Source for stdin data - either raw bytes or a file reference.
 ///
-/// For plugins (via gRPC/XPC), using FileReference avoids the 4MB gRPC limit
+/// For cartridges (via gRPC/XPC), using FileReference avoids the 4MB gRPC limit
 /// by letting the Swift/XPC side read the file locally instead of sending
 /// bytes over the wire.
 #[derive(Debug, Clone)]
 pub enum StdinSource {
     /// Raw byte data - used for providers (in-process) or small inline data
     Data(Vec<u8>),
-    /// File reference - used for plugins to read files locally on Mac side
+    /// File reference - used for cartridges to read files locally on Mac side
     FileReference {
         tracked_file_id: String,
         original_path: String,
@@ -597,7 +597,7 @@ mod tests {
         let rid = MessageId::new_uuid();
         let frames = CapArgumentValue::build_request_frames(&rid, "cap:op=test", &[arg], 32768);
 
-        // Simulate plugin-side: extract streams from frames (like collect_streams does)
+        // Simulate cartridge-side: extract streams from frames (like collect_streams does)
         let mut streams: Vec<(String, Vec<u8>, Option<std::collections::BTreeMap<String, ciborium::Value>>)> = Vec::new();
         let mut active: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 

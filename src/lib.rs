@@ -5,27 +5,27 @@
 //! - **URN system** (`urn`): Cap URNs, media URNs, cap matrix
 //! - **Cap definitions** (`cap`): Cap types, validation, registry, caller
 //! - **Media types** (`media`): Media spec resolution, registry, profile schemas
-//! - **Bifaci protocol** (`bifaci`): Binary Frame Cap Invocation — plugin runtime,
-//!   host runtime, relay, relay switch, plugin repo
+//! - **Bifaci protocol** (`bifaci`): Binary Frame Cap Invocation — cartridge runtime,
+//!   host runtime, relay, relay switch, cartridge repo
 //! - **Standard** (`standard`): Standard cap and media URN constants
 //!
 //! ## Architecture
 //!
 //! ```text
 //! Router:      (RelaySwitch + RelayMaster × N)
-//! Host × N:    (RelaySlave + PluginHostRuntime)
-//! Plugin × N:  (PluginRuntime + handler × N)
+//! Host × N:    (RelaySlave + CartridgeHostRuntime)
+//! Cartridge × N:  (CartridgeRuntime + handler × N)
 //! ```
 //!
 //! ## Protocol Overview
 //!
-//! Plugins communicate via length-prefixed CBOR frames over stdin/stdout:
+//! Cartridges communicate via length-prefixed CBOR frames over stdin/stdout:
 //!
-//! 1. Host sends HELLO, plugin responds with HELLO (negotiate limits)
+//! 1. Host sends HELLO, cartridge responds with HELLO (negotiate limits)
 //! 2. Host sends REQ frames to invoke caps
-//! 3. Plugin responds with STREAM_START/CHUNK/STREAM_END/END frames
-//! 4. Plugin sends END frame when complete, or ERR on error
-//! 5. Plugin can send LOG frames for progress/status
+//! 3. Cartridge responds with STREAM_START/CHUNK/STREAM_END/END frames
+//! 4. Cartridge sends END frame when complete, or ERR on error
+//! 5. Cartridge can send LOG frames for progress/status
 //! 6. Relay-specific: RelayNotify (slave→master) and RelayState (master→slave)
 
 pub mod urn;
@@ -69,37 +69,37 @@ pub use bifaci::io::{
     verify_identity,
 };
 pub use bifaci::manifest::*;
-pub use bifaci::plugin_runtime::{PluginRuntime, RuntimeError, FrameSender, PeerInvoker, NoPeerInvoker, CliStreamEmitter, InputStream, InputPackage, OutputStream, ProgressSender, StreamSender, StreamMeta, PeerCall, PeerResponse, PeerResponseItem, StreamError, Request, OpFactory, IdentityOp, DiscardOp, CapacityHandle, WET_KEY_REQUEST, find_stream, find_stream_str, find_stream_meta, require_stream, require_stream_str};
+pub use bifaci::cartridge_runtime::{CartridgeRuntime, RuntimeError, FrameSender, PeerInvoker, NoPeerInvoker, CliStreamEmitter, InputStream, InputPackage, OutputStream, ProgressSender, StreamSender, StreamMeta, PeerCall, PeerResponse, PeerResponseItem, StreamError, Request, OpFactory, IdentityOp, DiscardOp, CapacityHandle, WET_KEY_REQUEST, find_stream, find_stream_str, find_stream_meta, require_stream, require_stream_str};
 
 // Re-export ops crate types used by Op-based handlers
 pub use ops::{Op, OpMetadata, DryContext, WetContext, OpResult, OpError};
 pub use async_trait::async_trait;
-pub use bifaci::plugin_repo::{
-    PluginRepo, PluginRepoError,
-    PluginCapSummary, PluginInfo, PluginSuggestion, PluginRegistryResponse,
-    PluginPackageInfo, PluginVersionInfo,
+pub use bifaci::cartridge_repo::{
+    CartridgeRepo, CartridgeRepoError,
+    CartridgeCapSummary, CartridgeInfo, CartridgeSuggestion, CartridgeRegistryResponse,
+    CartridgePackageInfo, CartridgeVersionInfo,
 };
 
-// PluginHost is the primary API for host-side plugin communication (async/tokio-native)
+// CartridgeHost is the primary API for host-side cartridge communication (async/tokio-native)
 pub use bifaci::host_runtime::{
-    PluginHostRuntime as PluginHost,
+    CartridgeHostRuntime as CartridgeHost,
     AsyncHostError as HostError,
-    PluginResponse,
+    CartridgeResponse,
     ResponseChunk,
     StreamingResponse,
 };
 
 // Also export with explicit Async prefix for clarity when needed
-pub use bifaci::host_runtime::PluginHostRuntime;
+pub use bifaci::host_runtime::CartridgeHostRuntime;
 pub use bifaci::host_runtime::AsyncHostError;
 
-// Plugin process monitoring
-pub use bifaci::host_runtime::{PluginProcessInfo, PluginProcessHandle, HostCommand};
+// Cartridge process monitoring
+pub use bifaci::host_runtime::{CartridgeProcessInfo, CartridgeProcessHandle, HostCommand};
 
 // Relay exports
 pub use bifaci::relay::{RelaySlave, RelayMaster};
-pub use bifaci::relay_switch::{InstalledPluginIdentity, RelaySwitch, RelaySwitchError, MasterHealthStatus};
-pub use bifaci::in_process_host::{InProcessPluginHost, FrameHandler, ResponseWriter, accumulate_input};
+pub use bifaci::relay_switch::{InstalledCartridgeIdentity, RelaySwitch, RelaySwitchError, MasterHealthStatus};
+pub use bifaci::in_process_host::{InProcessCartridgeHost, FrameHandler, ResponseWriter, accumulate_input};
 
 // Planner — planning, discovery, and execution for machines
 pub use planner::{
@@ -136,7 +136,7 @@ pub use machine::{
 pub use orchestrator::{
     ParseOrchestrationError, ResolvedEdge, ResolvedGraph,
     parse_machine_to_cap_dag, plan_to_resolved_graph, execute_dag, NodeData, ExecutionError,
-    EdgeGroup, PluginManager, ExecutionContext, CapProgressFn, ProgressMapper, map_progress,
+    EdgeGroup, CartridgeManager, ExecutionContext, CapProgressFn, ProgressMapper, map_progress,
     split_cbor_array, assemble_cbor_array, split_cbor_sequence, assemble_cbor_sequence, CborUtilError,
 };
 

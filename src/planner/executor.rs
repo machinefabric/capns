@@ -9,7 +9,7 @@
 //!
 //! The `CapExecutor` trait is implemented by:
 //! - **machfab**: via `CapService.execute_cap()` through the relay
-//! - **macino**: by spawning plugin binaries
+//! - **macino**: by spawning cartridge binaries
 
 use std::collections::HashMap;
 use std::time::Instant;

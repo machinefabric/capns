@@ -1,11 +1,11 @@
-//! Plugin Runtime - Unified I/O handling for plugin binaries
+//! Cartridge Runtime - Unified I/O handling for cartridge binaries
 //!
-//! The PluginRuntime provides a unified interface for plugin binaries to handle
-//! cap invocations. Plugins register handlers for caps they provide, and the
+//! The CartridgeRuntime provides a unified interface for cartridge binaries to handle
+//! cap invocations. Cartridges register handlers for caps they provide, and the
 //! runtime handles all I/O mechanics:
 //!
-//! - **Automatic mode detection**: CLI mode vs Plugin CBOR mode
-//! - CBOR frame encoding/decoding (Plugin mode)
+//! - **Automatic mode detection**: CLI mode vs Cartridge CBOR mode
+//! - CBOR frame encoding/decoding (Cartridge mode)
 //! - CLI argument parsing from cap definitions (CLI mode)
 //! - Handler routing by cap URN
 //! - Real-time streaming response support
@@ -14,17 +14,17 @@
 //!
 //! # Invocation Modes
 //!
-//! - **No CLI arguments**: Plugin CBOR mode - HELLO handshake, REQ/RES frames via stdin/stdout
+//! - **No CLI arguments**: Cartridge CBOR mode - HELLO handshake, REQ/RES frames via stdin/stdout
 //! - **Any CLI arguments**: CLI mode - parse args based on cap definitions
 //!
 //! # Example
 //!
 //! ```ignore
-//! use capdag::PluginRuntime;
+//! use capdag::CartridgeRuntime;
 //!
 //! fn main() {
 //!     let manifest = build_manifest(); // Your manifest with caps
-//!     let mut runtime = PluginRuntime::new(manifest);
+//!     let mut runtime = CartridgeRuntime::new(manifest);
 //!
 //!     runtime.register::<MyRequest, _>("cap:op=my_op;...", |request, output, peer| {
 //!         output.log("info", "Starting work...");
@@ -32,7 +32,7 @@
 //!         Ok(())
 //!     });
 //!
-//!     // runtime.run() automatically detects CLI vs Plugin CBOR mode
+//!     // runtime.run() automatically detects CLI vs Cartridge CBOR mode
 //!     runtime.run().unwrap();
 //! }
 //! ```
@@ -57,7 +57,7 @@ use std::thread;
 use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::task::JoinHandle;
 
-/// Errors that can occur in the plugin runtime
+/// Errors that can occur in the cartridge runtime
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("CBOR error: {0}")]
@@ -375,7 +375,7 @@ impl InputPackage {
 /// Find a stream's bytes by exact URN equivalence.
 ///
 /// Uses `MediaUrn::is_equivalent()` — matches only if both URNs have the
-/// exact same tag set (order-independent). Both the caller and the plugin
+/// exact same tag set (order-independent). Both the caller and the cartridge
 /// know the arg media URNs from the cap definition, so this is always an
 /// exact match — never a subsumption/pattern match.
 ///
@@ -943,7 +943,7 @@ impl PeerCall {
 
 /// Allows handlers to invoke caps on the peer (host).
 ///
-/// This trait enables bidirectional communication where a plugin handler can
+/// This trait enables bidirectional communication where a cartridge handler can
 /// invoke caps on the host while processing a request.
 ///
 /// The `call` method starts a peer invocation and returns a `PeerCall`.
@@ -1000,9 +1000,9 @@ impl PeerInvoker for NoPeerInvoker {
     }
 }
 
-/// Channel-based frame sender for plugin output.
+/// Channel-based frame sender for cartridge output.
 /// ALL frames (peer requests AND responses) go through a single output channel.
-/// PluginRuntime has a writer task that drains this channel and writes to stdout.
+/// CartridgeRuntime has a writer task that drains this channel and writes to stdout.
 pub(crate) struct ChannelFrameSender {
     pub(crate) tx: tokio::sync::mpsc::UnboundedSender<Frame>,
 }
@@ -1017,7 +1017,7 @@ impl FrameSender for ChannelFrameSender {
 
 
 /// CLI-mode emitter that writes directly to stdout.
-/// Used when the plugin is invoked via CLI (with arguments).
+/// Used when the cartridge is invoked via CLI (with arguments).
 pub struct CliStreamEmitter {
     /// Whether to add newlines after each emit (NDJSON style)
     ndjson: bool,
@@ -1320,7 +1320,7 @@ impl Op<()> for DiscardOp {
     }
 }
 
-/// Tracks a pending peer request (plugin invoking host cap).
+/// Tracks a pending peer request (cartridge invoking host cap).
 /// The reader loop forwards response frames to the channel.
 /// LOG frames are re-stamped with the origin request ID and forwarded
 /// back to the host automatically (no handler involvement).
@@ -1349,7 +1349,7 @@ struct PeerInvokerImpl {
 ///
 /// For non-CBOR content types, returns raw payload as-is.
 ///
-/// `is_cli_mode`: true if CLI mode (args from command line), false if CBOR mode (plugin protocol)
+/// `is_cli_mode`: true if CLI mode (args from command line), false if CBOR mode (cartridge protocol)
 fn extract_effective_payload(
     payload: &[u8],
     content_type: Option<&str>,
@@ -1679,7 +1679,7 @@ fn extract_effective_payload(
 impl PeerInvoker for PeerInvokerImpl {
     fn call(&self, cap_urn: &str) -> Result<PeerCall, RuntimeError> {
         let request_id = MessageId::new_uuid();
-        tracing::info!("[PluginRuntime] PEER_CALL: cap='{}' peer_rid={:?} origin_rid={:?}", cap_urn, request_id, self.origin_request_id);
+        tracing::info!("[CartridgeRuntime] PEER_CALL: cap='{}' peer_rid={:?} origin_rid={:?}", cap_urn, request_id, self.origin_request_id);
 
         // Create tokio channel for response frames (unbounded to avoid backpressure issues)
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -2110,17 +2110,17 @@ impl CapacityHandle {
     }
 }
 
-/// The plugin runtime that handles all I/O for plugin binaries.
+/// The cartridge runtime that handles all I/O for cartridge binaries.
 ///
-/// Plugins create a runtime with their manifest, register handlers for their caps,
+/// Cartridges create a runtime with their manifest, register handlers for their caps,
 /// then call `run()` to process requests.
 ///
-/// The manifest is REQUIRED - plugins MUST provide their manifest which is sent
-/// in the HELLO response during handshake. This is the ONLY way for plugins to
+/// The manifest is REQUIRED - cartridges MUST provide their manifest which is sent
+/// in the HELLO response during handshake. This is the ONLY way for cartridges to
 /// communicate their capabilities to the host.
 ///
 /// **Invocation Modes**:
-/// - No CLI args: Plugin CBOR mode (stdin/stdout binary frames)
+/// - No CLI args: Cartridge CBOR mode (stdin/stdout binary frames)
 /// - Any CLI args: CLI mode (parse args from cap definitions)
 ///
 /// **Multiplexed execution** (CBOR mode): Multiple requests can be processed concurrently.
@@ -2134,12 +2134,12 @@ impl CapacityHandle {
 /// with `level="queued"` so the pipeline knows the request is alive but waiting.
 /// When a handler slot opens, the next queued request is dequeued and dispatched.
 /// Default is 0 (unlimited).
-pub struct PluginRuntime {
+pub struct CartridgeRuntime {
     /// Registered Op factories by cap URN pattern
     handlers: HashMap<String, OpFactory>,
 
-    /// Plugin manifest JSON data - sent in HELLO response.
-    /// This is REQUIRED - plugins must provide their manifest.
+    /// Cartridge manifest JSON data - sent in HELLO response.
+    /// This is REQUIRED - cartridges must provide their manifest.
     manifest_data: Vec<u8>,
 
     /// Parsed manifest for CLI mode processing
@@ -2197,7 +2197,7 @@ fn spawn_handler(
     let done_tx = handler_done_tx.clone();
 
     tokio::spawn(async move {
-        tracing::info!("[PluginRuntime] handler started: cap='{}' rid={:?}", cap_urn, request_id);
+        tracing::info!("[CartridgeRuntime] handler started: cap='{}' rid={:?}", cap_urn, request_id);
         let fp_ctx = FilePathContext::new(&cap_urn, manifest_clone).ok();
         let input_package = demux_multi_stream(raw_rx, fp_ctx);
 
@@ -2231,13 +2231,13 @@ fn spawn_handler(
 
         match result {
             Ok(()) => {
-                tracing::info!("[PluginRuntime] handler completed OK: cap='{}' rid={:?}", cap_urn, request_id);
+                tracing::info!("[CartridgeRuntime] handler completed OK: cap='{}' rid={:?}", cap_urn, request_id);
                 let mut end_frame = Frame::end_ok(request_id, None);
                 end_frame.routing_id = routing_id;
                 let _ = sender.send(&end_frame);
             }
             Err(e) => {
-                tracing::error!("[PluginRuntime] handler FAILED: cap='{}' rid={:?} error={}", cap_urn, request_id, e);
+                tracing::error!("[CartridgeRuntime] handler FAILED: cap='{}' rid={:?} error={}", cap_urn, request_id, e);
                 let mut err_frame = Frame::err(request_id, "HANDLER_ERROR", &e.to_string());
                 err_frame.routing_id = routing_id;
                 let _ = sender.send(&err_frame);
@@ -2248,20 +2248,20 @@ fn spawn_handler(
     })
 }
 
-impl PluginRuntime {
-    /// Create a new plugin runtime with the required manifest.
+impl CartridgeRuntime {
+    /// Create a new cartridge runtime with the required manifest.
     ///
-    /// The manifest is JSON-encoded plugin metadata including:
-    /// - name: Plugin name
-    /// - version: Plugin version
+    /// The manifest is JSON-encoded cartridge metadata including:
+    /// - name: Cartridge name
+    /// - version: Cartridge version
     /// - caps: Array of capability definitions with args and sources
     ///
     /// This manifest is sent in the HELLO response to the host (CBOR mode)
     /// and used for CLI argument parsing (CLI mode).
-    /// **Plugins MUST provide a manifest - there is no fallback.**
+    /// **Cartridges MUST provide a manifest - there is no fallback.**
     ///
     /// Auto-registers standard handlers (identity, discard).
-    /// **PANICS** if manifest is missing CAP_IDENTITY - plugins must declare it explicitly.
+    /// **PANICS** if manifest is missing CAP_IDENTITY - cartridges must declare it explicitly.
     pub fn new(manifest: &[u8]) -> Self {
         // Try to parse the manifest for CLI mode support
         let parsed_manifest = serde_json::from_slice::<CapManifest>(manifest).ok();
@@ -2270,7 +2270,7 @@ impl PluginRuntime {
         let (manifest_data, parsed_manifest) = match parsed_manifest {
             Some(m) => {
                 // FAIL HARD if manifest doesn't have CAP_IDENTITY
-                m.validate().expect("Manifest validation failed - plugin MUST declare CAP_IDENTITY");
+                m.validate().expect("Manifest validation failed - cartridge MUST declare CAP_IDENTITY");
                 let data = serde_json::to_vec(&m).unwrap_or_else(|_| manifest.to_vec());
                 (data, Some(m))
             }
@@ -2288,14 +2288,14 @@ impl PluginRuntime {
         rt
     }
 
-    /// Create a new plugin runtime with a pre-built CapManifest.
+    /// Create a new cartridge runtime with a pre-built CapManifest.
     /// This is the preferred method as it ensures the manifest is valid.
     ///
     /// Auto-registers standard handlers (identity, discard).
-    /// **PANICS** if manifest is missing CAP_IDENTITY - plugins must declare it explicitly.
+    /// **PANICS** if manifest is missing CAP_IDENTITY - cartridges must declare it explicitly.
     pub fn with_manifest(manifest: CapManifest) -> Self {
         // FAIL HARD if manifest doesn't have CAP_IDENTITY
-        manifest.validate().expect("Manifest validation failed - plugin MUST declare CAP_IDENTITY");
+        manifest.validate().expect("Manifest validation failed - cartridge MUST declare CAP_IDENTITY");
 
         let manifest_data = serde_json::to_vec(&manifest).unwrap_or_default();
         let mut rt = Self {
@@ -2309,7 +2309,7 @@ impl PluginRuntime {
         rt
     }
 
-    /// Create a new plugin runtime with manifest JSON string.
+    /// Create a new cartridge runtime with manifest JSON string.
     ///
     /// Auto-registers standard handlers (identity, discard) and ensures
     /// CAP_IDENTITY is present in the manifest.
@@ -2318,7 +2318,7 @@ impl PluginRuntime {
     }
 
     /// Register the standard identity and discard handlers.
-    /// Plugin authors can override either by calling register_op() after construction.
+    /// Cartridge authors can override either by calling register_op() after construction.
     fn register_standard_caps(&mut self) {
         if self.find_handler(CAP_IDENTITY).is_none() {
             self.register_op_type::<IdentityOp>(CAP_IDENTITY);
@@ -2416,10 +2416,10 @@ impl PluginRuntime {
         best.map(|(handler, _)| handler)
     }
 
-    /// Run the plugin runtime.
+    /// Run the cartridge runtime.
     ///
     /// **Mode Detection**:
-    /// - No CLI arguments: Plugin CBOR mode (stdin/stdout binary frames)
+    /// - No CLI arguments: Cartridge CBOR mode (stdin/stdout binary frames)
     /// - Any CLI arguments: CLI mode (parse args from cap definitions)
     ///
     /// **CLI Mode**:
@@ -2427,7 +2427,7 @@ impl PluginRuntime {
     /// - `<op>` subcommand: find cap by op tag, parse args, invoke handler
     /// - `--help`: show available subcommands
     ///
-    /// **Plugin CBOR Mode** (no CLI args):
+    /// **Cartridge CBOR Mode** (no CLI args):
     /// 1. Receive HELLO from host
     /// 2. Send HELLO back with manifest (handshake)
     /// 3. Main loop reads frames:
@@ -2447,7 +2447,7 @@ impl PluginRuntime {
     pub async fn run(&self) -> Result<(), RuntimeError> {
         let args: Vec<String> = std::env::args().collect();
 
-        // No CLI arguments at all → Plugin CBOR mode
+        // No CLI arguments at all → Cartridge CBOR mode
         if args.len() == 1 {
             return self.run_cbor_mode().await;
         }
@@ -3071,7 +3071,7 @@ impl PluginRuntime {
         let _ = writeln!(handle, "Usage: {} <command> [options]", manifest.name);
         let _ = writeln!(handle);
         let _ = writeln!(handle, "Commands:");
-        let _ = writeln!(handle, "    {:16} Output plugin manifest as JSON", "manifest");
+        let _ = writeln!(handle, "    {:16} Output cartridge manifest as JSON", "manifest");
 
         for cap in &manifest.caps {
             let desc = cap.cap_description.as_deref().unwrap_or(&cap.title);
@@ -3118,7 +3118,7 @@ impl PluginRuntime {
         }
     }
 
-    /// Run in Plugin CBOR mode - binary frame protocol via stdin/stdout.
+    /// Run in Cartridge CBOR mode - binary frame protocol via stdin/stdout.
     ///
     /// When `capacity` is set (> 0), incoming requests beyond the active limit
     /// are queued. A LOG frame with `level="queued"` is sent back immediately
@@ -3183,7 +3183,7 @@ impl PluginRuntime {
             let _ = frame_writer.inner_mut().flush().await;
         });
 
-        // Track pending peer requests (plugin invoking host caps)
+        // Track pending peer requests (cartridge invoking host caps)
         let pending_peer_requests: Arc<Mutex<HashMap<MessageId, PendingPeerRequest>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -3261,7 +3261,7 @@ impl PluginRuntime {
                 let queued = request_queue.pop_front().unwrap();
 
                 tracing::info!(
-                    "[PluginRuntime] dequeuing request: cap='{}' rid={:?} remaining_queue={}",
+                    "[CartridgeRuntime] dequeuing request: cap='{}' rid={:?} remaining_queue={}",
                     queued.cap_urn, queued.request_id, request_queue.len()
                 );
 
@@ -3314,7 +3314,7 @@ impl PluginRuntime {
                 FrameType::Req => {
                     // Extract routing_id (XID) FIRST — all error paths must include it
                     let routing_id = frame.routing_id.clone();
-                    tracing::debug!(target: "plugin_runtime", "Received REQ: cap={:?} xid={:?} rid={:?}", frame.cap, routing_id, frame.id);
+                    tracing::debug!(target: "cartridge_runtime", "Received REQ: cap={:?} xid={:?} rid={:?}", frame.cap, routing_id, frame.id);
 
                     let cap_urn = match frame.cap.as_ref() {
                         Some(urn) => urn.clone(),
@@ -3367,7 +3367,7 @@ impl PluginRuntime {
                         let _ = output_tx.send(log_frame);
 
                         tracing::info!(
-                            "[PluginRuntime] request queued: cap='{}' rid={:?} queue_pos={}",
+                            "[CartridgeRuntime] request queued: cap='{}' rid={:?} queue_pos={}",
                             cap_urn, request_id, queue_pos
                         );
 
@@ -3398,7 +3398,7 @@ impl PluginRuntime {
                 FrameType::StreamStart | FrameType::Chunk | FrameType::StreamEnd | FrameType::Log => {
                     // Try active request first
                     if let Some(ar) = active_requests.get(&frame.id) {
-                        tracing::debug!(target: "plugin_runtime", "Routing {:?} to active_request rid={:?}", frame.frame_type, frame.id);
+                        tracing::debug!(target: "cartridge_runtime", "Routing {:?} to active_request rid={:?}", frame.frame_type, frame.id);
                         if ar.raw_tx.send(frame.clone()).is_err() {
                             active_requests.remove(&frame.id);
                         }
@@ -3408,10 +3408,10 @@ impl PluginRuntime {
                     // Try peer response
                     let peer = pending_peer_requests.lock().unwrap();
                     if let Some(pr) = peer.get(&frame.id) {
-                        tracing::debug!(target: "plugin_runtime", "Routing {:?} to peer_response rid={:?}", frame.frame_type, frame.id);
+                        tracing::debug!(target: "cartridge_runtime", "Routing {:?} to peer_response rid={:?}", frame.frame_type, frame.id);
                         let _ = pr.sender.send(frame.clone());
                     } else {
-                        tracing::warn!("[PluginRuntime] {:?} rid={:?} not found in active_requests or pending_peer_requests", frame.frame_type, frame.id);
+                        tracing::warn!("[CartridgeRuntime] {:?} rid={:?} not found in active_requests or pending_peer_requests", frame.frame_type, frame.id);
                     }
                     drop(peer);
                 }
@@ -3419,7 +3419,7 @@ impl PluginRuntime {
                 FrameType::End => {
                     // Try active request first -- send END then remove
                     if let Some(ar) = active_requests.remove(&frame.id) {
-                        tracing::info!("[PluginRuntime] END routed to active_request rid={:?}", frame.id);
+                        tracing::info!("[CartridgeRuntime] END routed to active_request rid={:?}", frame.id);
                         let _ = ar.raw_tx.send(frame.clone());
                         // raw_tx dropped here → Demux sees channel close after END
                         continue;
@@ -3428,16 +3428,16 @@ impl PluginRuntime {
                     // Try peer response — send END then remove
                     let mut peer = pending_peer_requests.lock().unwrap();
                     if let Some(pr) = peer.remove(&frame.id) {
-                        tracing::info!("[PluginRuntime] PEER_END received: peer_rid={:?} origin_rid={:?}", frame.id, pr.origin_request_id);
+                        tracing::info!("[CartridgeRuntime] PEER_END received: peer_rid={:?} origin_rid={:?}", frame.id, pr.origin_request_id);
                         let _ = pr.sender.send(frame.clone());
                     } else {
-                        tracing::warn!("[PluginRuntime] END for unknown rid={:?} (not in active_requests or pending_peer_requests)", frame.id);
+                        tracing::warn!("[CartridgeRuntime] END for unknown rid={:?} (not in active_requests or pending_peer_requests)", frame.id);
                     }
                     drop(peer);
                 }
 
                 FrameType::Err => {
-                    tracing::error!("[PluginRuntime] ERR received: rid={:?} code={:?} msg={:?}", frame.id, frame.error_code(), frame.error_message());
+                    tracing::error!("[CartridgeRuntime] ERR received: rid={:?} code={:?} msg={:?}", frame.id, frame.error_code(), frame.error_message());
                     // Try active request first
                     if let Some(ar) = active_requests.remove(&frame.id) {
                         let _ = ar.raw_tx.send(frame.clone());
@@ -3454,11 +3454,11 @@ impl PluginRuntime {
 
                 FrameType::Cancel => {
                     let target_rid = frame.id.clone();
-                    tracing::info!("[PluginRuntime] Cancel received: rid={:?} force_kill={:?}", target_rid, frame.force_kill);
+                    tracing::info!("[CartridgeRuntime] Cancel received: rid={:?} force_kill={:?}", target_rid, frame.force_kill);
 
                     // Skip if already cancelled (prevent duplicate ERR)
                     if cancelled_requests.contains(&target_rid) {
-                        tracing::debug!("[PluginRuntime] Cancel for already-cancelled rid={:?} — ignoring", target_rid);
+                        tracing::debug!("[CartridgeRuntime] Cancel for already-cancelled rid={:?} — ignoring", target_rid);
                         continue;
                     }
 
@@ -3469,7 +3469,7 @@ impl PluginRuntime {
                         let mut err = Frame::err(target_rid.clone(), "CANCELLED", "Request cancelled while queued");
                         err.routing_id = queued.routing_id;
                         let _ = output_tx.send(err);
-                        tracing::info!("[PluginRuntime] Cancelled queued request rid={:?}", target_rid);
+                        tracing::info!("[CartridgeRuntime] Cancelled queued request rid={:?}", target_rid);
                         continue;
                     }
 
@@ -3509,12 +3509,12 @@ impl PluginRuntime {
                         let mut err = Frame::err(target_rid.clone(), "CANCELLED", "Request cancelled");
                         err.routing_id = routing_id;
                         let _ = output_tx.send(err);
-                        tracing::info!("[PluginRuntime] Cancelled in-flight request rid={:?}", target_rid);
+                        tracing::info!("[CartridgeRuntime] Cancelled in-flight request rid={:?}", target_rid);
                         continue;
                     }
 
                     // Case 3: Unknown RID — silently ignore
-                    tracing::debug!("[PluginRuntime] Cancel for unknown rid={:?} — ignoring", target_rid);
+                    tracing::debug!("[CartridgeRuntime] Cancel for unknown rid={:?} — ignoring", target_rid);
                 }
 
                 FrameType::Heartbeat => {
@@ -3535,7 +3535,7 @@ impl PluginRuntime {
 
                 FrameType::RelayNotify | FrameType::RelayState => {
                     return Err(CborError::Protocol(format!(
-                        "Relay frame {:?} must not reach plugin runtime",
+                        "Relay frame {:?} must not reach cartridge runtime",
                         frame.frame_type
                     )).into());
                 }
@@ -3870,7 +3870,7 @@ mod tests {
     }
 
     /// Helper to test file-path array conversion: returns array of file bytes
-    fn test_filepath_array_conversion(cap: &Cap, cli_args: &[String], runtime: &PluginRuntime) -> Vec<Vec<u8>> {
+    fn test_filepath_array_conversion(cap: &Cap, cli_args: &[String], runtime: &CartridgeRuntime) -> Vec<Vec<u8>> {
         // Extract raw argument value
         let (raw_value, _) = runtime.extract_arg_value(&cap.args[0], cli_args, None).unwrap();
 
@@ -3912,7 +3912,7 @@ mod tests {
     }
 
     /// Helper to test file-path conversion: takes Cap, CLI args, and returns converted bytes
-    fn test_filepath_conversion(cap: &Cap, cli_args: &[String], runtime: &PluginRuntime) -> Vec<u8> {
+    fn test_filepath_conversion(cap: &Cap, cli_args: &[String], runtime: &CartridgeRuntime) -> Vec<u8> {
         // Extract raw argument value
         let (raw_value, _) = runtime.extract_arg_value(&cap.args[0], cli_args, None).unwrap();
 
@@ -3949,7 +3949,7 @@ mod tests {
 
     /// Helper function to create a CapManifest for tests
     fn create_test_manifest(name: &str, version: &str, description: &str, mut caps: Vec<Cap>) -> CapManifest {
-        // Always append CAP_IDENTITY at the end - plugins must declare it
+        // Always append CAP_IDENTITY at the end - cartridges must declare it
         // (Appending instead of prepending to avoid breaking tests that reference caps[0])
         let identity_urn = crate::CapUrn::from_string("cap:").unwrap();
         let identity_cap = Cap::new(identity_urn, "Identity".to_string(), "identity".to_string());
@@ -3968,15 +3968,15 @@ mod tests {
     /// may fail because Cap requires in/out specs. For tests that only need raw manifest bytes
     /// (CBOR mode handshake), this is fine. For tests that need parsed CapManifest, use
     /// VALID_MANIFEST instead.
-    const TEST_MANIFEST: &str = r#"{"name":"TestPlugin","version":"1.0.0","description":"Test plugin","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:op=test","title":"Test","command":"test"}]}"#;
+    const TEST_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:op=test","title":"Test","command":"test"}]}"#;
 
     /// Valid manifest with proper in/out specs for tests that need parsed CapManifest
-    const VALID_MANIFEST: &str = r#"{"name":"TestPlugin","version":"1.0.0","description":"Test plugin","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}]}"#;
+    const VALID_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}]}"#;
 
     // TEST248: Test register_op and find_handler by exact cap URN
     #[test]
     fn test248_register_and_find_handler() {
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
         runtime.register_op("cap:in=*;op=test;out=*", || Box::new(EmitBytesOp { data: b"result".to_vec() }));
         assert!(runtime.find_handler("cap:in=*;op=test;out=*").is_some());
     }
@@ -3984,7 +3984,7 @@ mod tests {
     // TEST249: Test register_op handler echoes bytes directly
     #[tokio::test]
     async fn test249_raw_handler() {
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
         let received: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
 
@@ -4027,7 +4027,7 @@ mod tests {
             fn metadata(&self) -> OpMetadata { OpMetadata::builder("JsonKeyOp").build() }
         }
 
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
         let received = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
 
@@ -4063,7 +4063,7 @@ mod tests {
             fn metadata(&self) -> OpMetadata { OpMetadata::builder("JsonParseOp").build() }
         }
 
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
         runtime.register_op("cap:op=test", || Box::new(JsonParseOp));
 
         let factory = runtime.find_handler("cap:op=test").unwrap();
@@ -4078,14 +4078,14 @@ mod tests {
     // TEST252: Test find_handler returns None for unregistered cap URNs
     #[test]
     fn test252_find_handler_unknown_cap() {
-        let runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
         assert!(runtime.find_handler("cap:op=nonexistent").is_none());
     }
 
     // TEST253: Test OpFactory can be cloned via Arc and sent across tasks (Send + Sync)
     #[tokio::test]
     async fn test253_handler_is_send_sync() {
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
         let received = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
 
@@ -4149,36 +4149,36 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // TEST256: Test PluginRuntime::with_manifest_json stores manifest data and parses when valid
+    // TEST256: Test CartridgeRuntime::with_manifest_json stores manifest data and parses when valid
     #[test]
     fn test256_with_manifest_json() {
         // TEST_MANIFEST has "cap:op=test" — missing in/out defaults to media: (wildcard).
         // Manifest must declare CAP_IDENTITY explicitly or it will fail validation.
-        let runtime_basic = PluginRuntime::with_manifest_json(TEST_MANIFEST);
+        let runtime_basic = CartridgeRuntime::with_manifest_json(TEST_MANIFEST);
         assert!(!runtime_basic.manifest_data.is_empty());
         assert!(runtime_basic.manifest.is_some(), "cap:op=test is valid (defaults to media: for in/out)");
         let manifest = runtime_basic.manifest.unwrap();
         assert_eq!(manifest.caps.len(), 2, "Original cap + auto-added identity");
 
         // VALID_MANIFEST has proper in/out specs
-        let runtime_valid = PluginRuntime::with_manifest_json(VALID_MANIFEST);
+        let runtime_valid = CartridgeRuntime::with_manifest_json(VALID_MANIFEST);
         assert!(!runtime_valid.manifest_data.is_empty());
         assert!(runtime_valid.manifest.is_some(), "VALID_MANIFEST must parse into CapManifest");
     }
 
-    // TEST257: Test PluginRuntime::new with invalid JSON still creates runtime (manifest is None)
+    // TEST257: Test CartridgeRuntime::new with invalid JSON still creates runtime (manifest is None)
     #[test]
     fn test257_new_with_invalid_json() {
-        let runtime = PluginRuntime::new(b"not json");
+        let runtime = CartridgeRuntime::new(b"not json");
         assert!(!runtime.manifest_data.is_empty());
         assert!(runtime.manifest.is_none(), "invalid JSON should leave manifest as None");
     }
 
-    // TEST258: Test PluginRuntime::with_manifest creates runtime with valid manifest data
+    // TEST258: Test CartridgeRuntime::with_manifest creates runtime with valid manifest data
     #[test]
     fn test258_with_manifest_struct() {
         let manifest: crate::bifaci::manifest::CapManifest = serde_json::from_str(VALID_MANIFEST).unwrap();
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
         assert!(!runtime.manifest_data.is_empty());
         assert!(runtime.manifest.is_some());
     }
@@ -4354,7 +4354,7 @@ mod tests {
     // TEST270: Test registering multiple Op handlers for different caps and finding each independently
     #[tokio::test]
     async fn test270_multiple_handlers() {
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
 
         runtime.register_op("cap:op=alpha", || Box::new(EchoTagOp { tag: b"a".to_vec() }));
         runtime.register_op("cap:op=beta", || Box::new(EchoTagOp { tag: b"b".to_vec() }));
@@ -4379,7 +4379,7 @@ mod tests {
     // TEST271: Test Op handler replacing an existing registration for the same cap URN
     #[tokio::test]
     async fn test271_handler_replacement() {
-        let mut runtime = PluginRuntime::new(TEST_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(TEST_MANIFEST.as_bytes());
 
         let result1: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let result2: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -4568,8 +4568,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let mut runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let mut runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Track what handler receives
         let received_payload = Arc::new(Mutex::new(Vec::new()));
@@ -4582,7 +4582,7 @@ mod tests {
             },
         );
 
-        // Simulate CLI invocation: plugin process /path/to/file.pdf
+        // Simulate CLI invocation: cartridge process /path/to/file.pdf
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
         let raw_payload = runtime.build_payload_from_cli(&cap, &cli_args).unwrap();
@@ -4628,8 +4628,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
@@ -4663,8 +4663,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec!["--file".to_string(), test_file.to_string_lossy().to_string()];
         let file_contents = test_filepath_conversion(&cap, &cli_args, &runtime);
@@ -4699,8 +4699,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Pass glob pattern directly (NOT JSON - no ;json tag in media URN)
         let pattern = format!("{}/*.txt", temp_dir.display());
@@ -4734,8 +4734,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec!["/nonexistent/file.pdf".to_string()];
 
@@ -4780,8 +4780,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let stdin_data = b"stdin content 341";
@@ -4817,10 +4817,10 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
-        // CLI: plugin test /path/to/file (position 0 after subcommand)
+        // CLI: cartridge test /path/to/file (position 0 after subcommand)
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let result = test_filepath_conversion(&cap, &cli_args, &runtime);
 
@@ -4847,8 +4847,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec!["mlx-community/Llama-3.2-3B-Instruct-4bit".to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
@@ -4877,8 +4877,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Pass nonexistent path (without `;json` tag, this is NOT JSON - it's a path/pattern)
         let cli_args = vec!["/nonexistent/path/to/nothing".to_string()];
@@ -4921,8 +4921,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Pass literal path (non-glob) that doesn't exist - should fail
         let cli_args = vec![missing_path.to_string_lossy().to_string()];
@@ -4969,8 +4969,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let result = test_filepath_conversion(&cap, &cli_args, &runtime);
@@ -5002,8 +5002,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let result = test_filepath_conversion(&cap, &cli_args, &runtime);
@@ -5035,8 +5035,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
@@ -5072,8 +5072,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Only provide position arg, no --file flag
         let cli_args = vec![test_file.to_string_lossy().to_string()];
@@ -5111,8 +5111,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let mut runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let mut runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Track what the handler receives
         let received_payload = Arc::new(Mutex::new(Vec::new()));
@@ -5240,8 +5240,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
@@ -5286,8 +5286,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec!["test value".to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
@@ -5352,8 +5352,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Glob pattern that matches nothing - should FAIL HARD (no fallback to empty array)
         let pattern = format!("{}/nonexistent_*.xyz", temp_dir.display());
@@ -5402,8 +5402,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Glob that matches both file and directory
         let pattern = format!("{}/*", temp_dir.display());
@@ -5445,8 +5445,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Multiple patterns as CBOR Array (CBOR mode)
         let pattern1 = format!("{}/*.txt", temp_dir.display());
@@ -5533,8 +5533,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![link_file.to_string_lossy().to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
@@ -5571,8 +5571,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let result = test_filepath_conversion(&cap, &cli_args, &runtime);
@@ -5599,8 +5599,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Invalid glob pattern (unclosed bracket)
         let pattern = "[invalid";
@@ -5646,8 +5646,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         let cli_args = vec![test_file.to_string_lossy().to_string()];
         let cap = &runtime.manifest.as_ref().unwrap().caps[0];
@@ -5732,8 +5732,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // CLI mode: pass file path as positional argument
         let cli_args = vec![test_file.to_string_lossy().to_string()];
@@ -5776,8 +5776,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let runtime = CartridgeRuntime::with_manifest(manifest);
 
         // Mock stdin with Cursor (simulates piped binary)
         let mock_stdin = Cursor::new(pdf_content.clone());
@@ -5843,8 +5843,8 @@ mod tests {
             )],
         );
 
-        let manifest = create_test_manifest("TestPlugin", "1.0.0", "Test", vec![cap.clone()]);
-        let mut runtime = PluginRuntime::with_manifest(manifest);
+        let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
+        let mut runtime = CartridgeRuntime::with_manifest(manifest);
         runtime.register_op(&cap.urn_string(), move || {
             Box::new(ExtractValueOp { received: Arc::clone(&received_clone) }) as Box<dyn Op<()>>
         });
@@ -6041,7 +6041,7 @@ mod tests {
             vec![],
         );
 
-        let runtime = PluginRuntime::new(VALID_MANIFEST.as_bytes());
+        let runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
         let data = b"small payload";
         let reader = Cursor::new(data.to_vec());
 
@@ -6084,7 +6084,7 @@ mod tests {
             vec![],
         );
 
-        let runtime = PluginRuntime::new(VALID_MANIFEST.as_bytes());
+        let runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
         // Use small max_chunk to force multi-chunk
         let data: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
         let reader = Cursor::new(data.clone());
@@ -6125,7 +6125,7 @@ mod tests {
             vec![],
         );
 
-        let runtime = PluginRuntime::new(VALID_MANIFEST.as_bytes());
+        let runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
         let reader = Cursor::new(Vec::<u8>::new());
 
         let payload = runtime.build_payload_from_streaming_reader(&cap, reader, Limits::default().max_chunk).unwrap();
@@ -6168,7 +6168,7 @@ mod tests {
             vec![],
         );
 
-        let runtime = PluginRuntime::new(VALID_MANIFEST.as_bytes());
+        let runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
         let result = runtime.build_payload_from_streaming_reader(&cap, ErrorReader, Limits::default().max_chunk);
 
         assert!(result.is_err(), "IO error should propagate");
@@ -6181,18 +6181,18 @@ mod tests {
         }
     }
 
-    // TEST478: PluginRuntime auto-registers identity and discard handlers on construction
+    // TEST478: CartridgeRuntime auto-registers identity and discard handlers on construction
     #[test]
     fn test478_auto_registers_identity_handler() {
-        let runtime = PluginRuntime::new(VALID_MANIFEST.as_bytes());
+        let runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
 
         // Identity handler must be registered at exact CAP_IDENTITY URN
         assert!(runtime.find_handler(CAP_IDENTITY).is_some(),
-            "PluginRuntime must auto-register identity handler");
+            "CartridgeRuntime must auto-register identity handler");
 
         // Discard handler must be registered at exact CAP_DISCARD URN
         assert!(runtime.find_handler(CAP_DISCARD).is_some(),
-            "PluginRuntime must auto-register discard handler");
+            "CartridgeRuntime must auto-register discard handler");
 
         // Standard handlers must NOT match arbitrary specific requests
         // (request is pattern, registered cap is instance — broad caps don't satisfy specific patterns)
@@ -6214,7 +6214,7 @@ mod tests {
             fn metadata(&self) -> OpMetadata { OpMetadata::builder("FailOp").build() }
         }
 
-        let mut runtime = PluginRuntime::new(VALID_MANIFEST.as_bytes());
+        let mut runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
 
         // Auto-registered identity handler must exist
         assert!(runtime.find_handler(CAP_IDENTITY).is_some(),
@@ -7047,7 +7047,7 @@ mod tests {
     /// Verify get_own_memory_mb returns non-zero values on macOS.
     /// This function calls proc_pid_rusage(getpid()) which must always work —
     /// even in a sandbox. If it returns None on macOS, the self-reporting
-    /// mechanism is broken and plugins will report 0 footprint.
+    /// mechanism is broken and cartridges will report 0 footprint.
     #[test]
     #[cfg(target_os = "macos")]
     fn test_get_own_memory_mb_returns_values() {

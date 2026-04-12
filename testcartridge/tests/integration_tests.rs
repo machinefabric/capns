@@ -86,7 +86,7 @@ fn test702_large_payload_1mb() {
     }
 }
 
-// TEST703: Plugin chain via PeerInvoker
+// TEST703: Cartridge chain via PeerInvoker
 // This test is run via macino's integration test suite using --dev-bins
 // Macino spawns testcartridge and routes peer invoke requests through its router
 // The test-peer cap in testcartridge invokes test-edge1 and test-edge2 via PeerInvoker

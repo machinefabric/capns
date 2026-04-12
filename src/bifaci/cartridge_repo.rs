@@ -1,7 +1,7 @@
-//! Plugin Repository
+//! Cartridge Repository
 //!
-//! Fetches and caches plugin registry data from configured plugin repositories.
-//! Provides plugin suggestions when a cap isn't available but a plugin exists that could provide it.
+//! Fetches and caches cartridge registry data from configured cartridge repositories.
+//! Provides cartridge suggestions when a cap isn't available but a cartridge exists that could provide it.
 
 use reqwest::Client;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -12,9 +12,9 @@ use tokio::sync::RwLock;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-/// Plugin repository errors
+/// Cartridge repository errors
 #[derive(Debug, Error)]
-pub enum PluginRepoError {
+pub enum CartridgeRepoError {
     #[error("HTTP request failed: {0}")]
     HttpError(String),
     #[error("Failed to parse registry response: {0}")]
@@ -25,7 +25,7 @@ pub enum PluginRepoError {
     NetworkBlocked(String),
 }
 
-pub type Result<T> = std::result::Result<T, PluginRepoError>;
+pub type Result<T> = std::result::Result<T, CartridgeRepoError>;
 
 /// Deserialize a possibly-null string as an empty string.
 /// Handles API responses where string fields may be `null` instead of absent.
@@ -33,40 +33,40 @@ fn null_as_empty_string<'de, D: Deserializer<'de>>(deserializer: D) -> std::resu
     Option::<String>::deserialize(deserializer).map(|opt| opt.unwrap_or_default())
 }
 
-/// A plugin's capability summary from the registry
+/// A cartridge's capability summary from the registry
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginCapSummary {
+pub struct CartridgeCapSummary {
     pub urn: String,
     pub title: String,
     #[serde(default, deserialize_with = "null_as_empty_string")]
     pub description: String,
 }
 
-/// A plugin version's package info
+/// A cartridge version's package info
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginPackageInfo {
+pub struct CartridgePackageInfo {
     pub name: String,
     pub sha256: String,
     pub size: u64,
 }
 
-/// A plugin version entry
+/// A cartridge version entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginVersionInfo {
+pub struct CartridgeVersionInfo {
     pub release_date: String,
     #[serde(default)]
     pub changelog: Vec<String>,
     pub platform: String,
-    pub package: PluginPackageInfo,
+    pub package: CartridgePackageInfo,
     #[serde(default)]
-    pub binary: Option<PluginPackageInfo>,
+    pub binary: Option<CartridgePackageInfo>,
 }
 
-/// A plugin entry from the registry
+/// A cartridge entry from the registry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginInfo {
+pub struct CartridgeInfo {
     pub id: String,
     pub name: String,
     #[serde(default, deserialize_with = "null_as_empty_string")]
@@ -89,8 +89,8 @@ pub struct PluginInfo {
     pub categories: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
-    pub caps: Vec<PluginCapSummary>,
-    // Distribution fields - required for plugin installation
+    pub caps: Vec<CartridgeCapSummary>,
+    // Distribution fields - required for cartridge installation
     #[serde(default, deserialize_with = "null_as_empty_string")]
     pub platform: String,
     #[serde(default, deserialize_with = "null_as_empty_string")]
@@ -113,39 +113,39 @@ pub struct PluginInfo {
     pub available_versions: Vec<String>,
 }
 
-/// The plugin registry response from the API (flat format)
+/// The cartridge registry response from the API (flat format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginRegistryResponse {
-    pub plugins: Vec<PluginInfo>,
+pub struct CartridgeRegistryResponse {
+    pub cartridges: Vec<CartridgeInfo>,
 }
 
-/// A plugin version's distribution data (v3.0 schema)
+/// A cartridge version's distribution data (v3.0 schema)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginVersionData {
+pub struct CartridgeVersionData {
     pub release_date: String,
     #[serde(default)]
     pub changelog: Vec<String>,
     #[serde(default)]
     pub min_app_version: String,
     pub platform: String,
-    pub package: PluginDistributionInfo,
-    pub binary: PluginDistributionInfo,
+    pub package: CartridgeDistributionInfo,
+    pub binary: CartridgeDistributionInfo,
 }
 
 /// Distribution file info (package or binary)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginDistributionInfo {
+pub struct CartridgeDistributionInfo {
     pub name: String,
     pub sha256: String,
     pub size: u64,
 }
 
-/// A plugin entry in the v3.0 registry (nested format)
+/// A cartridge entry in the v3.0 registry (nested format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginRegistryEntry {
+pub struct CartridgeRegistryEntry {
     pub name: String,
     pub description: String,
     pub author: String,
@@ -155,30 +155,30 @@ pub struct PluginRegistryEntry {
     #[serde(default)]
     pub min_app_version: String,
     #[serde(default)]
-    pub caps: Vec<PluginCapSummary>,
+    pub caps: Vec<CartridgeCapSummary>,
     #[serde(default)]
     pub categories: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     pub latest_version: String,
-    pub versions: HashMap<String, PluginVersionData>,
+    pub versions: HashMap<String, CartridgeVersionData>,
 }
 
-/// The v3.0 plugin registry (nested schema)
+/// The v3.0 cartridge registry (nested schema)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginRegistryV3 {
+pub struct CartridgeRegistryV3 {
     pub schema_version: String,
     pub last_updated: String,
-    pub plugins: HashMap<String, PluginRegistryEntry>,
+    pub cartridges: HashMap<String, CartridgeRegistryEntry>,
 }
 
-/// A plugin suggestion for a missing cap
+/// A cartridge suggestion for a missing cap
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginSuggestion {
-    pub plugin_id: String,
-    pub plugin_name: String,
-    pub plugin_description: String,
+pub struct CartridgeSuggestion {
+    pub cartridge_id: String,
+    pub cartridge_name: String,
+    pub cartridge_description: String,
     pub cap_urn: String,
     pub cap_title: String,
     pub latest_version: String,
@@ -187,30 +187,30 @@ pub struct PluginSuggestion {
     pub page_url: String,
 }
 
-/// Cached plugin repository data
-struct PluginRepoCache {
-    /// All plugins indexed by plugin ID
-    plugins: HashMap<String, PluginInfo>,
-    /// Cap URN to plugin IDs that provide it
-    cap_to_plugins: HashMap<String, Vec<String>>,
+/// Cached cartridge repository data
+struct CartridgeRepoCache {
+    /// All cartridges indexed by cartridge ID
+    cartridges: HashMap<String, CartridgeInfo>,
+    /// Cap URN to cartridge IDs that provide it
+    cap_to_cartridges: HashMap<String, Vec<String>>,
     /// When the cache was last updated
     last_updated: Instant,
     /// The repo URL this cache is from
     repo_url: String,
 }
 
-/// Service for fetching and caching plugin repository data
-pub struct PluginRepo {
+/// Service for fetching and caching cartridge repository data
+pub struct CartridgeRepo {
     http_client: Client,
     /// Cache per repo URL
-    caches: Arc<RwLock<HashMap<String, PluginRepoCache>>>,
+    caches: Arc<RwLock<HashMap<String, CartridgeRepoCache>>>,
     /// Cache TTL in seconds
     cache_ttl: Duration,
     offline_flag: Arc<AtomicBool>,
 }
 
-impl PluginInfo {
-    /// Check if plugin is signed (has team_id and signed_at)
+impl CartridgeInfo {
+    /// Check if cartridge is signed (has team_id and signed_at)
     pub fn is_signed(&self) -> bool {
         !self.team_id.is_empty() && !self.signed_at.is_empty()
     }
@@ -221,8 +221,8 @@ impl PluginInfo {
     }
 }
 
-impl PluginRepo {
-    /// Create a new plugin repo service
+impl CartridgeRepo {
+    /// Create a new cartridge repo service
     pub fn new(cache_ttl_seconds: u64) -> Self {
         let http_client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -243,56 +243,56 @@ impl PluginRepo {
         self.offline_flag.store(offline, Ordering::Relaxed);
     }
 
-    /// Fetch plugin registry from a URL
-    async fn fetch_registry(&self, repo_url: &str) -> Result<PluginRegistryResponse> {
+    /// Fetch cartridge registry from a URL
+    async fn fetch_registry(&self, repo_url: &str) -> Result<CartridgeRegistryResponse> {
         if self.offline_flag.load(Ordering::Relaxed) {
-            return Err(PluginRepoError::NetworkBlocked(format!(
-                "Network access blocked by policy — cannot fetch plugin registry '{}'", repo_url
+            return Err(CartridgeRepoError::NetworkBlocked(format!(
+                "Network access blocked by policy — cannot fetch cartridge registry '{}'", repo_url
             )));
         }
         let response = self.http_client
             .get(repo_url)
             .send()
             .await
-            .map_err(|e| PluginRepoError::HttpError(format!("Failed to fetch from {}: {}", repo_url, e)))?;
+            .map_err(|e| CartridgeRepoError::HttpError(format!("Failed to fetch from {}: {}", repo_url, e)))?;
 
         if !response.status().is_success() {
-            return Err(PluginRepoError::StatusError(response.status().as_u16()));
+            return Err(CartridgeRepoError::StatusError(response.status().as_u16()));
         }
 
-        let registry: PluginRegistryResponse = response
+        let registry: CartridgeRegistryResponse = response
             .json()
             .await
-            .map_err(|e| PluginRepoError::ParseError(format!("Failed to parse from {}: {}", repo_url, e)))?;
+            .map_err(|e| CartridgeRepoError::ParseError(format!("Failed to parse from {}: {}", repo_url, e)))?;
 
         Ok(registry)
     }
 
     /// Update cache from a registry response
-    fn update_cache(caches: &mut HashMap<String, PluginRepoCache>, repo_url: &str, registry: PluginRegistryResponse) {
-        let mut plugins: HashMap<String, PluginInfo> = HashMap::new();
-        let mut cap_to_plugins: HashMap<String, Vec<String>> = HashMap::new();
+    fn update_cache(caches: &mut HashMap<String, CartridgeRepoCache>, repo_url: &str, registry: CartridgeRegistryResponse) {
+        let mut cartridges: HashMap<String, CartridgeInfo> = HashMap::new();
+        let mut cap_to_cartridges: HashMap<String, Vec<String>> = HashMap::new();
 
-        for plugin_info in registry.plugins {
-            let plugin_id = plugin_info.id.clone();
-            for cap in &plugin_info.caps {
-                cap_to_plugins
+        for cartridge_info in registry.cartridges {
+            let cartridge_id = cartridge_info.id.clone();
+            for cap in &cartridge_info.caps {
+                cap_to_cartridges
                     .entry(cap.urn.clone())
                     .or_default()
-                    .push(plugin_id.clone());
+                    .push(cartridge_id.clone());
             }
-            plugins.insert(plugin_id, plugin_info);
+            cartridges.insert(cartridge_id, cartridge_info);
         }
 
-        caches.insert(repo_url.to_string(), PluginRepoCache {
-            plugins,
-            cap_to_plugins,
+        caches.insert(repo_url.to_string(), CartridgeRepoCache {
+            cartridges,
+            cap_to_cartridges,
             last_updated: Instant::now(),
             repo_url: repo_url.to_string(),
         });
     }
 
-    /// Sync plugin data from the given repository URLs
+    /// Sync cartridge data from the given repository URLs
     pub async fn sync_repos(&self, repo_urls: &[String]) {
         for repo_url in repo_urls {
             match self.fetch_registry(repo_url).await {
@@ -301,7 +301,7 @@ impl PluginRepo {
                     Self::update_cache(&mut caches, repo_url, registry);
                 }
                 Err(e) => {
-                    tracing::error!("Failed to sync plugin repo {}: {}", repo_url, e);
+                    tracing::error!("Failed to sync cartridge repo {}: {}", repo_url, e);
                     // Continue with other repos
                 }
             }
@@ -309,35 +309,35 @@ impl PluginRepo {
     }
 
     /// Check if a cache is stale
-    fn is_cache_stale(&self, cache: &PluginRepoCache) -> bool {
+    fn is_cache_stale(&self, cache: &CartridgeRepoCache) -> bool {
         cache.last_updated.elapsed() > self.cache_ttl
     }
 
-    /// Get plugin suggestions for a cap URN that isn't available
-    pub async fn get_suggestions_for_cap(&self, cap_urn: &str) -> Vec<PluginSuggestion> {
+    /// Get cartridge suggestions for a cap URN that isn't available
+    pub async fn get_suggestions_for_cap(&self, cap_urn: &str) -> Vec<CartridgeSuggestion> {
         let caches = self.caches.read().await;
         let mut suggestions = Vec::new();
 
         for cache in caches.values() {
-            if let Some(plugin_ids) = cache.cap_to_plugins.get(cap_urn) {
-                for plugin_id in plugin_ids {
-                    if let Some(plugin) = cache.plugins.get(plugin_id) {
+            if let Some(cartridge_ids) = cache.cap_to_cartridges.get(cap_urn) {
+                for cartridge_id in cartridge_ids {
+                    if let Some(cartridge) = cache.cartridges.get(cartridge_id) {
                         // Find the matching cap info
-                        if let Some(cap_info) = plugin.caps.iter().find(|c| c.urn == cap_urn) {
+                        if let Some(cap_info) = cartridge.caps.iter().find(|c| c.urn == cap_urn) {
                             // Use page_url if available, otherwise fall back to repo_url
-                            let page_url = if plugin.page_url.is_empty() {
+                            let page_url = if cartridge.page_url.is_empty() {
                                 cache.repo_url.clone()
                             } else {
-                                plugin.page_url.clone()
+                                cartridge.page_url.clone()
                             };
-                            suggestions.push(PluginSuggestion {
-                                plugin_id: plugin_id.clone(),
-                                plugin_name: plugin.name.clone(),
-                                plugin_description: plugin.description.clone(),
+                            suggestions.push(CartridgeSuggestion {
+                                cartridge_id: cartridge_id.clone(),
+                                cartridge_name: cartridge.name.clone(),
+                                cartridge_description: cartridge.description.clone(),
                                 cap_urn: cap_urn.to_string(),
                                 cap_title: cap_info.title.clone(),
-                                latest_version: plugin.version.clone(),
-                                binary_sha256: plugin.binary_sha256.clone(),
+                                latest_version: cartridge.version.clone(),
+                                binary_sha256: cartridge.binary_sha256.clone(),
                                 repo_url: cache.repo_url.clone(),
                                 page_url,
                             });
@@ -350,26 +350,26 @@ impl PluginRepo {
         suggestions
     }
 
-    /// Get all available plugins from all repos
-    pub async fn get_all_plugins(&self) -> Vec<(String, PluginInfo)> {
+    /// Get all available cartridges from all repos
+    pub async fn get_all_cartridges(&self) -> Vec<(String, CartridgeInfo)> {
         let caches = self.caches.read().await;
-        let mut plugins = Vec::new();
+        let mut all_cartridges = Vec::new();
 
         for cache in caches.values() {
-            for (plugin_id, plugin_info) in &cache.plugins {
-                plugins.push((plugin_id.clone(), plugin_info.clone()));
+            for (cartridge_id, cartridge_info) in &cache.cartridges {
+                all_cartridges.push((cartridge_id.clone(), cartridge_info.clone()));
             }
         }
 
-        plugins
+        all_cartridges
     }
 
-    /// Get all caps available from plugins (not necessarily installed)
+    /// Get all caps available from cartridges (not necessarily installed)
     pub async fn get_all_available_caps(&self) -> Vec<String> {
         let caches = self.caches.read().await;
         let mut caps: Vec<String> = caches
             .values()
-            .flat_map(|cache| cache.cap_to_plugins.keys().cloned())
+            .flat_map(|cache| cache.cap_to_cartridges.keys().cloned())
             .collect();
         caps.sort();
         caps.dedup();
@@ -391,26 +391,26 @@ impl PluginRepo {
         false
     }
 
-    /// Get plugin info by ID
-    pub async fn get_plugin(&self, plugin_id: &str) -> Option<PluginInfo> {
+    /// Get cartridge info by ID
+    pub async fn get_cartridge(&self, cartridge_id: &str) -> Option<CartridgeInfo> {
         let caches = self.caches.read().await;
 
         for cache in caches.values() {
-            if let Some(plugin) = cache.plugins.get(plugin_id) {
-                return Some(plugin.clone());
+            if let Some(cartridge) = cache.cartridges.get(cartridge_id) {
+                return Some(cartridge.clone());
             }
         }
 
         None
     }
 
-    /// Get suggestions for caps that could be provided by plugins but aren't currently available
+    /// Get suggestions for caps that could be provided by cartridges but aren't currently available
     /// Takes a list of currently available cap URNs and returns suggestions for missing ones
     pub async fn get_suggestions_for_missing_caps(
         &self,
         available_caps: &[String],
         requested_caps: &[String],
-    ) -> Vec<PluginSuggestion> {
+    ) -> Vec<CartridgeSuggestion> {
         let available_set: std::collections::HashSet<&String> = available_caps.iter().collect();
         let mut suggestions = Vec::new();
 
@@ -425,19 +425,19 @@ impl PluginRepo {
     }
 }
 
-/// Plugin repository server - serves registry data with queries
+/// Cartridge repository server - serves registry data with queries
 /// Transforms v3.0 nested registry schema to flat API response format
 #[derive(Debug)]
-pub struct PluginRepoServer {
-    registry: PluginRegistryV3,
+pub struct CartridgeRepoServer {
+    registry: CartridgeRegistryV3,
 }
 
-impl PluginRepoServer {
+impl CartridgeRepoServer {
     /// Create a new server instance from v3.0 registry
-    pub fn new(registry: PluginRegistryV3) -> Result<Self> {
+    pub fn new(registry: CartridgeRegistryV3) -> Result<Self> {
         // Validate schema version - fail hard
         if registry.schema_version != "3.0" {
-            return Err(PluginRepoError::ParseError(format!(
+            return Err(CartridgeRepoError::ParseError(format!(
                 "Unsupported registry schema version: {}. Required: 3.0",
                 registry.schema_version
             )));
@@ -447,22 +447,22 @@ impl PluginRepoServer {
     }
 
     /// Validate version data has all required fields
-    fn validate_version_data(id: &str, version: &str, version_data: &PluginVersionData) -> Result<()> {
+    fn validate_version_data(id: &str, version: &str, version_data: &CartridgeVersionData) -> Result<()> {
         if version_data.platform.is_empty() {
-            return Err(PluginRepoError::ParseError(format!(
-                "Plugin {} v{}: missing required field 'platform'",
+            return Err(CartridgeRepoError::ParseError(format!(
+                "Cartridge {} v{}: missing required field 'platform'",
                 id, version
             )));
         }
         if version_data.package.name.is_empty() {
-            return Err(PluginRepoError::ParseError(format!(
-                "Plugin {} v{}: missing required field 'package.name'",
+            return Err(CartridgeRepoError::ParseError(format!(
+                "Cartridge {} v{}: missing required field 'package.name'",
                 id, version
             )));
         }
         if version_data.binary.name.is_empty() {
-            return Err(PluginRepoError::ParseError(format!(
-                "Plugin {} v{}: missing required field 'binary.name'",
+            return Err(CartridgeRepoError::ParseError(format!(
+                "Cartridge {} v{}: missing required field 'binary.name'",
                 id, version
             )));
         }
@@ -490,7 +490,7 @@ impl PluginRepoServer {
     }
 
     /// Build changelog map from versions
-    fn build_changelog_map(versions: &HashMap<String, PluginVersionData>) -> HashMap<String, Vec<String>> {
+    fn build_changelog_map(versions: &HashMap<String, CartridgeVersionData>) -> HashMap<String, Vec<String>> {
         let mut changelog = HashMap::new();
         for (version, data) in versions {
             if !data.changelog.is_empty() {
@@ -500,15 +500,15 @@ impl PluginRepoServer {
         changelog
     }
 
-    /// Transform registry to flat plugin array
-    pub fn transform_to_plugin_array(&self) -> Result<Vec<PluginInfo>> {
-        let mut plugins = Vec::new();
+    /// Transform registry to flat cartridge array
+    pub fn transform_to_cartridge_array(&self) -> Result<Vec<CartridgeInfo>> {
+        let mut result = Vec::new();
 
-        for (id, plugin) in &self.registry.plugins {
-            let latest_version = &plugin.latest_version;
-            let version_data = plugin.versions.get(latest_version)
-                .ok_or_else(|| PluginRepoError::ParseError(format!(
-                    "Plugin {}: latest version {} not found in versions",
+        for (id, entry) in &self.registry.cartridges {
+            let latest_version = &entry.latest_version;
+            let version_data = entry.versions.get(latest_version)
+                .ok_or_else(|| CartridgeRepoError::ParseError(format!(
+                    "Cartridge {}: latest version {} not found in versions",
                     id, latest_version
                 )))?;
 
@@ -516,33 +516,33 @@ impl PluginRepoServer {
             Self::validate_version_data(id, latest_version, version_data)?;
 
             // Get all versions sorted descending
-            let mut available_versions: Vec<String> = plugin.versions.keys().cloned().collect();
+            let mut available_versions: Vec<String> = entry.versions.keys().cloned().collect();
             available_versions.sort_by(|a, b| Self::compare_versions(b, a));
 
-            // Build flat plugin object
-            let package_url = format!("https://machinefabric.com/plugins/packages/{}", version_data.package.name);
-            plugins.push(PluginInfo {
+            // Build flat cartridge object
+            let package_url = format!("https://machinefabric.com/cartridges/packages/{}", version_data.package.name);
+            result.push(CartridgeInfo {
                 id: id.clone(),
-                name: plugin.name.clone(),
+                name: entry.name.clone(),
                 version: latest_version.clone(),
-                description: plugin.description.clone(),
-                author: plugin.author.clone(),
+                description: entry.description.clone(),
+                author: entry.author.clone(),
                 homepage: String::new(),
-                team_id: plugin.team_id.clone(),
+                team_id: entry.team_id.clone(),
                 signed_at: version_data.release_date.clone(),
                 min_app_version: if !version_data.min_app_version.is_empty() {
                     version_data.min_app_version.clone()
                 } else {
-                    plugin.min_app_version.clone()
+                    entry.min_app_version.clone()
                 },
-                page_url: if !plugin.page_url.is_empty() {
-                    plugin.page_url.clone()
+                page_url: if !entry.page_url.is_empty() {
+                    entry.page_url.clone()
                 } else {
                     package_url
                 },
-                categories: plugin.categories.clone(),
-                tags: plugin.tags.clone(),
-                caps: plugin.caps.clone(),
+                categories: entry.categories.clone(),
+                tags: entry.tags.clone(),
+                caps: entry.caps.clone(),
                 // Distribution fields - ALL REQUIRED
                 platform: version_data.platform.clone(),
                 package_name: version_data.package.name.clone(),
@@ -551,32 +551,32 @@ impl PluginRepoServer {
                 binary_name: version_data.binary.name.clone(),
                 binary_sha256: version_data.binary.sha256.clone(),
                 binary_size: version_data.binary.size,
-                changelog: Self::build_changelog_map(&plugin.versions),
+                changelog: Self::build_changelog_map(&entry.versions),
                 available_versions,
             });
         }
 
-        Ok(plugins)
+        Ok(result)
     }
 
-    /// Get all plugins (API response format)
-    pub fn get_plugins(&self) -> Result<PluginRegistryResponse> {
-        let plugins = self.transform_to_plugin_array()?;
-        Ok(PluginRegistryResponse { plugins })
+    /// Get all cartridges (API response format)
+    pub fn get_cartridges(&self) -> Result<CartridgeRegistryResponse> {
+        let cartridges = self.transform_to_cartridge_array()?;
+        Ok(CartridgeRegistryResponse { cartridges })
     }
 
-    /// Get plugin by ID
-    pub fn get_plugin_by_id(&self, id: &str) -> Result<Option<PluginInfo>> {
-        let plugins = self.transform_to_plugin_array()?;
-        Ok(plugins.into_iter().find(|p| p.id == id))
+    /// Get cartridge by ID
+    pub fn get_cartridge_by_id(&self, id: &str) -> Result<Option<CartridgeInfo>> {
+        let all = self.transform_to_cartridge_array()?;
+        Ok(all.into_iter().find(|p| p.id == id))
     }
 
-    /// Search plugins by query
-    pub fn search_plugins(&self, query: &str) -> Result<Vec<PluginInfo>> {
-        let plugins = self.transform_to_plugin_array()?;
+    /// Search cartridges by query
+    pub fn search_cartridges(&self, query: &str) -> Result<Vec<CartridgeInfo>> {
+        let all = self.transform_to_cartridge_array()?;
         let lower_query = query.to_lowercase();
 
-        Ok(plugins.into_iter().filter(|p| {
+        Ok(all.into_iter().filter(|p| {
             p.name.to_lowercase().contains(&lower_query)
                 || p.description.to_lowercase().contains(&lower_query)
                 || p.tags.iter().any(|t| t.to_lowercase().contains(&lower_query))
@@ -587,16 +587,16 @@ impl PluginRepoServer {
         }).collect())
     }
 
-    /// Get plugins by category
-    pub fn get_plugins_by_category(&self, category: &str) -> Result<Vec<PluginInfo>> {
-        let plugins = self.transform_to_plugin_array()?;
-        Ok(plugins.into_iter().filter(|p| p.categories.contains(&category.to_string())).collect())
+    /// Get cartridges by category
+    pub fn get_cartridges_by_category(&self, category: &str) -> Result<Vec<CartridgeInfo>> {
+        let all = self.transform_to_cartridge_array()?;
+        Ok(all.into_iter().filter(|p| p.categories.contains(&category.to_string())).collect())
     }
 
-    /// Get plugins that provide a specific cap
-    pub fn get_plugins_by_cap(&self, cap_urn: &str) -> Result<Vec<PluginInfo>> {
-        let plugins = self.transform_to_plugin_array()?;
-        Ok(plugins.into_iter().filter(|p| p.caps.iter().any(|c| c.urn == cap_urn)).collect())
+    /// Get cartridges that provide a specific cap
+    pub fn get_cartridges_by_cap(&self, cap_urn: &str) -> Result<Vec<CartridgeInfo>> {
+        let all = self.transform_to_cartridge_array()?;
+        Ok(all.into_iter().filter(|p| p.caps.iter().any(|c| c.urn == cap_urn)).collect())
     }
 }
 
@@ -604,50 +604,50 @@ impl PluginRepoServer {
 mod tests {
     use super::*;
 
-    // TEST630: Verify PluginRepo creation starts with empty plugin list
+    // TEST630: Verify CartridgeRepo creation starts with empty cartridge list
     #[tokio::test]
-    async fn test630_plugin_repo_creation() {
-        let repo = PluginRepo::new(3600);
-        assert!(repo.get_all_plugins().await.is_empty());
+    async fn test630_cartridge_repo_creation() {
+        let repo = CartridgeRepo::new(3600);
+        assert!(repo.get_all_cartridges().await.is_empty());
     }
 
     // TEST631: Verify needs_sync returns true with empty cache and non-empty URLs
     #[tokio::test]
     async fn test631_needs_sync_empty_cache() {
-        let repo = PluginRepo::new(3600);
-        let urls = vec!["https://example.com/plugins".to_string()];
+        let repo = CartridgeRepo::new(3600);
+        let urls = vec!["https://example.com/cartridges".to_string()];
         assert!(repo.needs_sync(&urls).await);
     }
 
-    // TEST632: Verify PluginCapSummary deserializes null description as empty string
+    // TEST632: Verify CartridgeCapSummary deserializes null description as empty string
     #[test]
     fn test632_deserialize_cap_summary_with_null_description() {
         let json = r#"{"urn": "media:text;llm;gen", "title": "Generate Text", "description": null}"#;
-        let cap: PluginCapSummary = serde_json::from_str(json).unwrap();
+        let cap: CartridgeCapSummary = serde_json::from_str(json).unwrap();
         assert_eq!(cap.urn, "media:text;llm;gen");
         assert_eq!(cap.title, "Generate Text");
         assert_eq!(cap.description, "");
     }
 
-    // TEST633: Verify PluginCapSummary deserializes missing description as empty string
+    // TEST633: Verify CartridgeCapSummary deserializes missing description as empty string
     #[test]
     fn test633_deserialize_cap_summary_with_missing_description() {
         let json = r#"{"urn": "media:text;llm;gen", "title": "Generate Text"}"#;
-        let cap: PluginCapSummary = serde_json::from_str(json).unwrap();
+        let cap: CartridgeCapSummary = serde_json::from_str(json).unwrap();
         assert_eq!(cap.description, "");
     }
 
-    // TEST634: Verify PluginCapSummary deserializes present description correctly
+    // TEST634: Verify CartridgeCapSummary deserializes present description correctly
     #[test]
     fn test634_deserialize_cap_summary_with_present_description() {
         let json = r#"{"urn": "media:text;llm;gen", "title": "Generate Text", "description": "A real description"}"#;
-        let cap: PluginCapSummary = serde_json::from_str(json).unwrap();
+        let cap: CartridgeCapSummary = serde_json::from_str(json).unwrap();
         assert_eq!(cap.description, "A real description");
     }
 
-    // TEST635: Verify PluginInfo deserializes null version/description/author as empty strings
+    // TEST635: Verify CartridgeInfo deserializes null version/description/author as empty strings
     #[test]
-    fn test635_deserialize_plugin_info_with_null_fields() {
+    fn test635_deserialize_cartridge_info_with_null_fields() {
         let json = r#"{
             "id": "mlxcartridge",
             "name": "MLX Cartridge",
@@ -658,24 +658,24 @@ mod tests {
                 {"urn": "media:text;llm;gen", "title": "Generate Text", "description": null}
             ]
         }"#;
-        let plugin: PluginInfo = serde_json::from_str(json).unwrap();
-        assert_eq!(plugin.id, "mlxcartridge");
-        assert_eq!(plugin.name, "MLX Cartridge");
-        assert_eq!(plugin.version, "");
-        assert_eq!(plugin.description, "");
-        assert_eq!(plugin.author, "");
-        assert_eq!(plugin.caps.len(), 1);
-        assert_eq!(plugin.caps[0].description, "");
+        let cartridge: CartridgeInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(cartridge.id, "mlxcartridge");
+        assert_eq!(cartridge.name, "MLX Cartridge");
+        assert_eq!(cartridge.version, "");
+        assert_eq!(cartridge.description, "");
+        assert_eq!(cartridge.author, "");
+        assert_eq!(cartridge.caps.len(), 1);
+        assert_eq!(cartridge.caps[0].description, "");
     }
 
-    // TEST636: Verify PluginRegistryResponse deserializes with mixed null/present descriptions
+    // TEST636: Verify CartridgeRegistryResponse deserializes with mixed null/present descriptions
     #[test]
     fn test636_deserialize_registry_with_null_descriptions() {
         let json = r#"{
-            "plugins": [{
-                "id": "test-plugin",
-                "name": "Test Plugin",
-                "description": "A test plugin",
+            "cartridges": [{
+                "id": "test-cartridge",
+                "name": "Test Cartridge",
+                "description": "A test cartridge",
                 "caps": [
                     {"urn": "media:text;llm;gen", "title": "Gen Text", "description": null},
                     {"urn": "media:image;vision", "title": "Vision", "description": "Analyze images"}
@@ -684,15 +684,15 @@ mod tests {
             "total": 1,
             "registryVersion": "3.0"
         }"#;
-        let registry: PluginRegistryResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(registry.plugins.len(), 1);
-        assert_eq!(registry.plugins[0].caps[0].description, "");
-        assert_eq!(registry.plugins[0].caps[1].description, "Analyze images");
+        let registry: CartridgeRegistryResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(registry.cartridges.len(), 1);
+        assert_eq!(registry.cartridges[0].caps[0].description, "");
+        assert_eq!(registry.cartridges[0].caps[1].description, "Analyze images");
     }
 
-    // TEST637: Verify full PluginInfo deserialization with signature and binary fields
+    // TEST637: Verify full CartridgeInfo deserialization with signature and binary fields
     #[test]
-    fn test637_deserialize_full_plugin_with_signature() {
+    fn test637_deserialize_full_cartridge_with_signature() {
         let json = r#"{
             "id": "pdfcartridge",
             "name": "pdfcartridge",
@@ -723,34 +723,34 @@ mod tests {
             "availableVersions": ["0.81.5325"]
         }"#;
 
-        let plugin: PluginInfo = serde_json::from_str(json).unwrap();
-        assert_eq!(plugin.id, "pdfcartridge");
-        assert_eq!(plugin.team_id, "P336JK947M");
-        assert_eq!(plugin.signed_at, "2026-02-07T16:40:28Z");
-        assert_eq!(plugin.binary_name, "pdfcartridge-0.81.5325-darwin-arm64");
-        assert_eq!(plugin.binary_sha256, "908187ec35632758f1a00452ff4755ba01020ea288619098b6998d5d33851d19");
-        assert_eq!(plugin.binary_size, 12980288);
-        assert!(!plugin.team_id.is_empty(), "Plugin must have team_id for signature verification");
-        assert!(!plugin.signed_at.is_empty(), "Plugin must have signed_at timestamp");
-        assert!(!plugin.binary_sha256.is_empty(), "Plugin must have SHA256 hash");
+        let cartridge: CartridgeInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(cartridge.id, "pdfcartridge");
+        assert_eq!(cartridge.team_id, "P336JK947M");
+        assert_eq!(cartridge.signed_at, "2026-02-07T16:40:28Z");
+        assert_eq!(cartridge.binary_name, "pdfcartridge-0.81.5325-darwin-arm64");
+        assert_eq!(cartridge.binary_sha256, "908187ec35632758f1a00452ff4755ba01020ea288619098b6998d5d33851d19");
+        assert_eq!(cartridge.binary_size, 12980288);
+        assert!(!cartridge.team_id.is_empty(), "Cartridge must have team_id for signature verification");
+        assert!(!cartridge.signed_at.is_empty(), "Cartridge must have signed_at timestamp");
+        assert!(!cartridge.binary_sha256.is_empty(), "Cartridge must have SHA256 hash");
     }
 
-    // TEST320-335: PluginRepoServer and PluginRepoClient tests
+    // TEST320-335: CartridgeRepoServer and CartridgeRepoClient tests
 
     #[test]
-    fn test320_plugin_info_construction() {
-        // TEST320: Construct PluginInfo and verify fields
-        let plugin = PluginInfo {
-            id: "testplugin".to_string(),
-            name: "Test Plugin".to_string(),
+    fn test320_cartridge_info_construction() {
+        // TEST320: Construct CartridgeInfo and verify fields
+        let cartridge = CartridgeInfo {
+            id: "testcartridge".to_string(),
+            name: "Test Cartridge".to_string(),
             version: "1.0.0".to_string(),
-            description: "A test plugin".to_string(),
+            description: "A test cartridge".to_string(),
             author: "Test Author".to_string(),
             homepage: "https://example.com".to_string(),
             team_id: "TEAM123".to_string(),
             signed_at: "2026-02-07T00:00:00Z".to_string(),
             min_app_version: "1.0.0".to_string(),
-            page_url: "https://example.com/plugin".to_string(),
+            page_url: "https://example.com/cartridge".to_string(),
             categories: vec!["test".to_string()],
             tags: vec!["testing".to_string()],
             caps: vec![],
@@ -765,16 +765,16 @@ mod tests {
             available_versions: vec!["1.0.0".to_string()],
         };
 
-        assert_eq!(plugin.id, "testplugin");
-        assert_eq!(plugin.name, "Test Plugin");
-        assert_eq!(plugin.version, "1.0.0");
+        assert_eq!(cartridge.id, "testcartridge");
+        assert_eq!(cartridge.name, "Test Cartridge");
+        assert_eq!(cartridge.version, "1.0.0");
     }
 
     #[test]
-    fn test321_plugin_info_is_signed() {
+    fn test321_cartridge_info_is_signed() {
         // TEST321: Verify is_signed() method
-        let mut plugin = PluginInfo {
-            id: "testplugin".to_string(),
+        let mut cartridge = CartridgeInfo {
+            id: "testcartridge".to_string(),
             name: "Test".to_string(),
             version: "1.0.0".to_string(),
             description: String::new(),
@@ -798,21 +798,21 @@ mod tests {
             available_versions: vec![],
         };
 
-        assert!(plugin.is_signed());
+        assert!(cartridge.is_signed());
 
-        plugin.team_id = String::new();
-        assert!(!plugin.is_signed());
+        cartridge.team_id = String::new();
+        assert!(!cartridge.is_signed());
 
-        plugin.team_id = "TEAM123".to_string();
-        plugin.signed_at = String::new();
-        assert!(!plugin.is_signed());
+        cartridge.team_id = "TEAM123".to_string();
+        cartridge.signed_at = String::new();
+        assert!(!cartridge.is_signed());
     }
 
     #[test]
-    fn test322_plugin_info_has_binary() {
+    fn test322_cartridge_info_has_binary() {
         // TEST322: Verify has_binary() method
-        let mut plugin = PluginInfo {
-            id: "testplugin".to_string(),
+        let mut cartridge = CartridgeInfo {
+            id: "testcartridge".to_string(),
             name: "Test".to_string(),
             version: "1.0.0".to_string(),
             description: String::new(),
@@ -836,66 +836,66 @@ mod tests {
             available_versions: vec![],
         };
 
-        assert!(plugin.has_binary());
+        assert!(cartridge.has_binary());
 
-        plugin.binary_name = String::new();
-        assert!(!plugin.has_binary());
+        cartridge.binary_name = String::new();
+        assert!(!cartridge.has_binary());
 
-        plugin.binary_name = "test-1.0.0".to_string();
-        plugin.binary_sha256 = String::new();
-        assert!(!plugin.has_binary());
+        cartridge.binary_name = "test-1.0.0".to_string();
+        cartridge.binary_sha256 = String::new();
+        assert!(!cartridge.has_binary());
     }
 
     #[test]
-    fn test323_plugin_repo_server_validate_registry() {
+    fn test323_cartridge_repo_server_validate_registry() {
         // TEST323: Validate registry schema version
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins: HashMap::new(),
+            cartridges: HashMap::new(),
         };
 
-        let server = PluginRepoServer::new(registry);
+        let server = CartridgeRepoServer::new(registry);
         assert!(server.is_ok());
 
         // Test v2.0 schema rejection
-        let old_registry = PluginRegistryV3 {
+        let old_registry = CartridgeRegistryV3 {
             schema_version: "2.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins: HashMap::new(),
+            cartridges: HashMap::new(),
         };
 
-        let result = PluginRepoServer::new(old_registry);
+        let result = CartridgeRepoServer::new(old_registry);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("3.0"));
     }
 
     #[test]
-    fn test324_plugin_repo_server_transform_to_array() {
-        // TEST324: Transform v3 registry to flat plugin array
-        let mut plugins = HashMap::new();
+    fn test324_cartridge_repo_server_transform_to_array() {
+        // TEST324: Transform v3 registry to flat cartridge array
+        let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
-        versions.insert("1.0.0".to_string(), PluginVersionData {
+        versions.insert("1.0.0".to_string(), CartridgeVersionData {
             release_date: "2026-02-07".to_string(),
             changelog: vec!["Initial release".to_string()],
             min_app_version: "1.0.0".to_string(),
             platform: "darwin-arm64".to_string(),
-            package: PluginDistributionInfo {
+            package: CartridgeDistributionInfo {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: PluginDistributionInfo {
+            binary: CartridgeDistributionInfo {
                 name: "test-1.0.0-darwin-arm64".to_string(),
                 sha256: "def456".to_string(),
                 size: 2000,
             },
         });
 
-        plugins.insert("testplugin".to_string(), PluginRegistryEntry {
-            name: "Test Plugin".to_string(),
-            description: "A test plugin".to_string(),
+        cartridges_map.insert("testcartridge".to_string(), CartridgeRegistryEntry {
+            name: "Test Cartridge".to_string(),
+            description: "A test cartridge".to_string(),
             author: "Test Author".to_string(),
             page_url: "https://example.com".to_string(),
             team_id: "TEAM123".to_string(),
@@ -907,50 +907,50 @@ mod tests {
             versions,
         });
 
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins,
+            cartridges: cartridges_map,
         };
 
-        let server = PluginRepoServer::new(registry).unwrap();
-        let result = server.transform_to_plugin_array();
+        let server = CartridgeRepoServer::new(registry).unwrap();
+        let result = server.transform_to_cartridge_array();
         assert!(result.is_ok());
 
-        let plugins_array = result.unwrap();
-        assert_eq!(plugins_array.len(), 1);
-        assert_eq!(plugins_array[0].id, "testplugin");
-        assert_eq!(plugins_array[0].name, "Test Plugin");
-        assert_eq!(plugins_array[0].version, "1.0.0");
-        assert_eq!(plugins_array[0].binary_name, "test-1.0.0-darwin-arm64");
+        let cartridges_array = result.unwrap();
+        assert_eq!(cartridges_array.len(), 1);
+        assert_eq!(cartridges_array[0].id, "testcartridge");
+        assert_eq!(cartridges_array[0].name, "Test Cartridge");
+        assert_eq!(cartridges_array[0].version, "1.0.0");
+        assert_eq!(cartridges_array[0].binary_name, "test-1.0.0-darwin-arm64");
     }
 
     #[test]
-    fn test325_plugin_repo_server_get_plugins() {
-        // TEST325: Get all plugins via get_plugins()
-        let mut plugins = HashMap::new();
+    fn test325_cartridge_repo_server_get_cartridges() {
+        // TEST325: Get all cartridges via get_cartridges()
+        let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
-        versions.insert("1.0.0".to_string(), PluginVersionData {
+        versions.insert("1.0.0".to_string(), CartridgeVersionData {
             release_date: "2026-02-07".to_string(),
             changelog: vec![],
             min_app_version: String::new(),
             platform: "darwin-arm64".to_string(),
-            package: PluginDistributionInfo {
+            package: CartridgeDistributionInfo {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: PluginDistributionInfo {
+            binary: CartridgeDistributionInfo {
                 name: "test-1.0.0-darwin-arm64".to_string(),
                 sha256: "def456".to_string(),
                 size: 2000,
             },
         });
 
-        plugins.insert("testplugin".to_string(), PluginRegistryEntry {
-            name: "Test Plugin".to_string(),
-            description: "A test plugin".to_string(),
+        cartridges_map.insert("testcartridge".to_string(), CartridgeRegistryEntry {
+            name: "Test Cartridge".to_string(),
+            description: "A test cartridge".to_string(),
             author: "Test Author".to_string(),
             page_url: String::new(),
             team_id: "TEAM123".to_string(),
@@ -962,44 +962,44 @@ mod tests {
             versions,
         });
 
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins,
+            cartridges: cartridges_map,
         };
 
-        let server = PluginRepoServer::new(registry).unwrap();
-        let response = server.get_plugins().unwrap();
-        assert_eq!(response.plugins.len(), 1);
-        assert_eq!(response.plugins[0].id, "testplugin");
+        let server = CartridgeRepoServer::new(registry).unwrap();
+        let response = server.get_cartridges().unwrap();
+        assert_eq!(response.cartridges.len(), 1);
+        assert_eq!(response.cartridges[0].id, "testcartridge");
     }
 
     #[test]
-    fn test326_plugin_repo_server_get_plugin_by_id() {
-        // TEST326: Get plugin by ID
-        let mut plugins = HashMap::new();
+    fn test326_cartridge_repo_server_get_cartridge_by_id() {
+        // TEST326: Get cartridge by ID
+        let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
-        versions.insert("1.0.0".to_string(), PluginVersionData {
+        versions.insert("1.0.0".to_string(), CartridgeVersionData {
             release_date: "2026-02-07".to_string(),
             changelog: vec![],
             min_app_version: String::new(),
             platform: "darwin-arm64".to_string(),
-            package: PluginDistributionInfo {
+            package: CartridgeDistributionInfo {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: PluginDistributionInfo {
+            binary: CartridgeDistributionInfo {
                 name: "test-1.0.0-darwin-arm64".to_string(),
                 sha256: "def456".to_string(),
                 size: 2000,
             },
         });
 
-        plugins.insert("testplugin".to_string(), PluginRegistryEntry {
-            name: "Test Plugin".to_string(),
-            description: "A test plugin".to_string(),
+        cartridges_map.insert("testcartridge".to_string(), CartridgeRegistryEntry {
+            name: "Test Cartridge".to_string(),
+            description: "A test cartridge".to_string(),
             author: "Test Author".to_string(),
             page_url: String::new(),
             team_id: "TEAM123".to_string(),
@@ -1011,46 +1011,46 @@ mod tests {
             versions,
         });
 
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins,
+            cartridges: cartridges_map,
         };
 
-        let server = PluginRepoServer::new(registry).unwrap();
-        let result = server.get_plugin_by_id("testplugin").unwrap();
+        let server = CartridgeRepoServer::new(registry).unwrap();
+        let result = server.get_cartridge_by_id("testcartridge").unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().id, "testplugin");
+        assert_eq!(result.unwrap().id, "testcartridge");
 
-        let not_found = server.get_plugin_by_id("nonexistent").unwrap();
+        let not_found = server.get_cartridge_by_id("nonexistent").unwrap();
         assert!(not_found.is_none());
     }
 
     #[test]
-    fn test327_plugin_repo_server_search_plugins() {
-        // TEST327: Search plugins by text query
-        let mut plugins = HashMap::new();
+    fn test327_cartridge_repo_server_search_cartridges() {
+        // TEST327: Search cartridges by text query
+        let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
-        versions.insert("1.0.0".to_string(), PluginVersionData {
+        versions.insert("1.0.0".to_string(), CartridgeVersionData {
             release_date: "2026-02-07".to_string(),
             changelog: vec![],
             min_app_version: String::new(),
             platform: "darwin-arm64".to_string(),
-            package: PluginDistributionInfo {
+            package: CartridgeDistributionInfo {
                 name: "pdf-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: PluginDistributionInfo {
+            binary: CartridgeDistributionInfo {
                 name: "pdf-1.0.0-darwin-arm64".to_string(),
                 sha256: "def456".to_string(),
                 size: 2000,
             },
         });
 
-        plugins.insert("pdfplugin".to_string(), PluginRegistryEntry {
-            name: "PDF Plugin".to_string(),
+        cartridges_map.insert("pdfcartridge".to_string(), CartridgeRegistryEntry {
+            name: "PDF Cartridge".to_string(),
             description: "Process PDF documents".to_string(),
             author: "Test Author".to_string(),
             page_url: String::new(),
@@ -1063,46 +1063,46 @@ mod tests {
             versions,
         });
 
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins,
+            cartridges: cartridges_map,
         };
 
-        let server = PluginRepoServer::new(registry).unwrap();
-        let results = server.search_plugins("pdf").unwrap();
+        let server = CartridgeRepoServer::new(registry).unwrap();
+        let results = server.search_cartridges("pdf").unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "pdfplugin");
+        assert_eq!(results[0].id, "pdfcartridge");
 
-        let no_match = server.search_plugins("nonexistent").unwrap();
+        let no_match = server.search_cartridges("nonexistent").unwrap();
         assert_eq!(no_match.len(), 0);
     }
 
     #[test]
-    fn test328_plugin_repo_server_get_by_category() {
-        // TEST328: Filter plugins by category
-        let mut plugins = HashMap::new();
+    fn test328_cartridge_repo_server_get_by_category() {
+        // TEST328: Filter cartridges by category
+        let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
-        versions.insert("1.0.0".to_string(), PluginVersionData {
+        versions.insert("1.0.0".to_string(), CartridgeVersionData {
             release_date: "2026-02-07".to_string(),
             changelog: vec![],
             min_app_version: String::new(),
             platform: "darwin-arm64".to_string(),
-            package: PluginDistributionInfo {
+            package: CartridgeDistributionInfo {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: PluginDistributionInfo {
+            binary: CartridgeDistributionInfo {
                 name: "test-1.0.0-darwin-arm64".to_string(),
                 sha256: "def456".to_string(),
                 size: 2000,
             },
         });
 
-        plugins.insert("docplugin".to_string(), PluginRegistryEntry {
-            name: "Doc Plugin".to_string(),
+        cartridges_map.insert("doccartridge".to_string(), CartridgeRegistryEntry {
+            name: "Doc Cartridge".to_string(),
             description: "Process documents".to_string(),
             author: "Test Author".to_string(),
             page_url: String::new(),
@@ -1115,38 +1115,38 @@ mod tests {
             versions,
         });
 
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins,
+            cartridges: cartridges_map,
         };
 
-        let server = PluginRepoServer::new(registry).unwrap();
-        let results = server.get_plugins_by_category("document").unwrap();
+        let server = CartridgeRepoServer::new(registry).unwrap();
+        let results = server.get_cartridges_by_category("document").unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "docplugin");
+        assert_eq!(results[0].id, "doccartridge");
 
-        let no_match = server.get_plugins_by_category("nonexistent").unwrap();
+        let no_match = server.get_cartridges_by_category("nonexistent").unwrap();
         assert_eq!(no_match.len(), 0);
     }
 
     #[test]
-    fn test329_plugin_repo_server_get_by_cap() {
-        // TEST329: Find plugins by cap URN
-        let mut plugins = HashMap::new();
+    fn test329_cartridge_repo_server_get_by_cap() {
+        // TEST329: Find cartridges by cap URN
+        let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
-        versions.insert("1.0.0".to_string(), PluginVersionData {
+        versions.insert("1.0.0".to_string(), CartridgeVersionData {
             release_date: "2026-02-07".to_string(),
             changelog: vec![],
             min_app_version: String::new(),
             platform: "darwin-arm64".to_string(),
-            package: PluginDistributionInfo {
+            package: CartridgeDistributionInfo {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: PluginDistributionInfo {
+            binary: CartridgeDistributionInfo {
                 name: "test-1.0.0-darwin-arm64".to_string(),
                 sha256: "def456".to_string(),
                 size: 2000,
@@ -1154,14 +1154,14 @@ mod tests {
         });
 
         let cap_urn = r#"cap:in="media:pdf";op=disbind;out="media:disbound-page;textable;list""#;
-        plugins.insert("pdfplugin".to_string(), PluginRegistryEntry {
-            name: "PDF Plugin".to_string(),
+        cartridges_map.insert("pdfcartridge".to_string(), CartridgeRegistryEntry {
+            name: "PDF Cartridge".to_string(),
             description: "Process PDFs".to_string(),
             author: "Test Author".to_string(),
             page_url: String::new(),
             team_id: "TEAM123".to_string(),
             min_app_version: String::new(),
-            caps: vec![PluginCapSummary {
+            caps: vec![CartridgeCapSummary {
                 urn: cap_urn.to_string(),
                 title: "Disbind PDF".to_string(),
                 description: "Extract pages".to_string(),
@@ -1172,32 +1172,32 @@ mod tests {
             versions,
         });
 
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins,
+            cartridges: cartridges_map,
         };
 
-        let server = PluginRepoServer::new(registry).unwrap();
-        let results = server.get_plugins_by_cap(cap_urn).unwrap();
+        let server = CartridgeRepoServer::new(registry).unwrap();
+        let results = server.get_cartridges_by_cap(cap_urn).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "pdfplugin");
+        assert_eq!(results[0].id, "pdfcartridge");
 
-        let no_match = server.get_plugins_by_cap("cap:nonexistent").unwrap();
+        let no_match = server.get_cartridges_by_cap("cap:nonexistent").unwrap();
         assert_eq!(no_match.len(), 0);
     }
 
     #[tokio::test]
-    async fn test330_plugin_repo_client_update_cache() {
-        // TEST330: PluginRepoClient cache update
-        let repo = PluginRepo::new(3600);
+    async fn test330_cartridge_repo_client_update_cache() {
+        // TEST330: CartridgeRepoClient cache update
+        let repo = CartridgeRepo::new(3600);
 
         // Create a mock registry response
-        let registry = PluginRegistryResponse {
-            plugins: vec![
-                PluginInfo {
-                    id: "testplugin".to_string(),
-                    name: "Test Plugin".to_string(),
+        let registry = CartridgeRegistryResponse {
+            cartridges: vec![
+                CartridgeInfo {
+                    id: "testcartridge".to_string(),
+                    name: "Test Cartridge".to_string(),
                     version: "1.0.0".to_string(),
                     description: String::new(),
                     author: String::new(),
@@ -1224,26 +1224,26 @@ mod tests {
 
         // Update cache directly (simulating a fetch)
         let mut caches = repo.caches.write().await;
-        PluginRepo::update_cache(&mut caches, "https://example.com/plugins", registry);
+        CartridgeRepo::update_cache(&mut caches, "https://example.com/cartridges", registry);
         drop(caches);
 
         // Verify cache was updated
-        let plugin = repo.get_plugin("testplugin").await;
-        assert!(plugin.is_some());
-        assert_eq!(plugin.unwrap().id, "testplugin");
+        let cartridge = repo.get_cartridge("testcartridge").await;
+        assert!(cartridge.is_some());
+        assert_eq!(cartridge.unwrap().id, "testcartridge");
     }
 
     #[tokio::test]
-    async fn test331_plugin_repo_client_get_suggestions() {
+    async fn test331_cartridge_repo_client_get_suggestions() {
         // TEST331: Get suggestions for missing cap
-        let repo = PluginRepo::new(3600);
+        let repo = CartridgeRepo::new(3600);
 
         let cap_urn = r#"cap:in="media:pdf";op=disbind;out="media:disbound-page;textable;list""#;
-        let registry = PluginRegistryResponse {
-            plugins: vec![
-                PluginInfo {
-                    id: "pdfplugin".to_string(),
-                    name: "PDF Plugin".to_string(),
+        let registry = CartridgeRegistryResponse {
+            cartridges: vec![
+                CartridgeInfo {
+                    id: "pdfcartridge".to_string(),
+                    name: "PDF Cartridge".to_string(),
                     version: "1.0.0".to_string(),
                     description: "Process PDFs".to_string(),
                     author: String::new(),
@@ -1254,7 +1254,7 @@ mod tests {
                     page_url: "https://example.com/pdf".to_string(),
                     categories: vec![],
                     tags: vec![],
-                    caps: vec![PluginCapSummary {
+                    caps: vec![CartridgeCapSummary {
                         urn: cap_urn.to_string(),
                         title: "Disbind PDF".to_string(),
                         description: "Extract pages".to_string(),
@@ -1273,25 +1273,25 @@ mod tests {
         };
 
         let mut caches = repo.caches.write().await;
-        PluginRepo::update_cache(&mut caches, "https://example.com/plugins", registry);
+        CartridgeRepo::update_cache(&mut caches, "https://example.com/cartridges", registry);
         drop(caches);
 
         let suggestions = repo.get_suggestions_for_cap(cap_urn).await;
         assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].plugin_id, "pdfplugin");
+        assert_eq!(suggestions[0].cartridge_id, "pdfcartridge");
         assert_eq!(suggestions[0].cap_urn, cap_urn);
     }
 
     #[tokio::test]
-    async fn test332_plugin_repo_client_get_plugin() {
-        // TEST332: Get plugin by ID from client
-        let repo = PluginRepo::new(3600);
+    async fn test332_cartridge_repo_client_get_cartridge() {
+        // TEST332: Get cartridge by ID from client
+        let repo = CartridgeRepo::new(3600);
 
-        let registry = PluginRegistryResponse {
-            plugins: vec![
-                PluginInfo {
-                    id: "testplugin".to_string(),
-                    name: "Test Plugin".to_string(),
+        let registry = CartridgeRegistryResponse {
+            cartridges: vec![
+                CartridgeInfo {
+                    id: "testcartridge".to_string(),
+                    name: "Test Cartridge".to_string(),
                     version: "1.0.0".to_string(),
                     description: String::new(),
                     author: String::new(),
@@ -1317,30 +1317,30 @@ mod tests {
         };
 
         let mut caches = repo.caches.write().await;
-        PluginRepo::update_cache(&mut caches, "https://example.com/plugins", registry);
+        CartridgeRepo::update_cache(&mut caches, "https://example.com/cartridges", registry);
         drop(caches);
 
-        let plugin = repo.get_plugin("testplugin").await;
-        assert!(plugin.is_some());
-        assert_eq!(plugin.unwrap().id, "testplugin");
+        let cartridge = repo.get_cartridge("testcartridge").await;
+        assert!(cartridge.is_some());
+        assert_eq!(cartridge.unwrap().id, "testcartridge");
 
-        let not_found = repo.get_plugin("nonexistent").await;
+        let not_found = repo.get_cartridge("nonexistent").await;
         assert!(not_found.is_none());
     }
 
     #[tokio::test]
-    async fn test333_plugin_repo_client_get_all_caps() {
+    async fn test333_cartridge_repo_client_get_all_caps() {
         // TEST333: Get all available caps
-        let repo = PluginRepo::new(3600);
+        let repo = CartridgeRepo::new(3600);
 
         let cap1 = "cap:in=\"media:pdf\";op=disbind;out=\"media:disbound-page;textable;list\"";
         let cap2 = "cap:in=\"media:txt;textable\";op=disbind;out=\"media:disbound-page;textable;list\"";
 
-        let registry = PluginRegistryResponse {
-            plugins: vec![
-                PluginInfo {
-                    id: "plugin1".to_string(),
-                    name: "Plugin 1".to_string(),
+        let registry = CartridgeRegistryResponse {
+            cartridges: vec![
+                CartridgeInfo {
+                    id: "cartridge1".to_string(),
+                    name: "Cartridge 1".to_string(),
                     version: "1.0.0".to_string(),
                     description: String::new(),
                     author: String::new(),
@@ -1351,7 +1351,7 @@ mod tests {
                     page_url: String::new(),
                     categories: vec![],
                     tags: vec![],
-                    caps: vec![PluginCapSummary {
+                    caps: vec![CartridgeCapSummary {
                         urn: cap1.to_string(),
                         title: "Cap 1".to_string(),
                         description: String::new(),
@@ -1366,9 +1366,9 @@ mod tests {
                     changelog: HashMap::new(),
                     available_versions: vec![],
                 },
-                PluginInfo {
-                    id: "plugin2".to_string(),
-                    name: "Plugin 2".to_string(),
+                CartridgeInfo {
+                    id: "cartridge2".to_string(),
+                    name: "Cartridge 2".to_string(),
                     version: "1.0.0".to_string(),
                     description: String::new(),
                     author: String::new(),
@@ -1379,7 +1379,7 @@ mod tests {
                     page_url: String::new(),
                     categories: vec![],
                     tags: vec![],
-                    caps: vec![PluginCapSummary {
+                    caps: vec![CartridgeCapSummary {
                         urn: cap2.to_string(),
                         title: "Cap 2".to_string(),
                         description: String::new(),
@@ -1398,7 +1398,7 @@ mod tests {
         };
 
         let mut caches = repo.caches.write().await;
-        PluginRepo::update_cache(&mut caches, "https://example.com/plugins", registry);
+        CartridgeRepo::update_cache(&mut caches, "https://example.com/cartridges", registry);
         drop(caches);
 
         let caps = repo.get_all_available_caps().await;
@@ -1408,41 +1408,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test334_plugin_repo_client_needs_sync() {
+    async fn test334_cartridge_repo_client_needs_sync() {
         // TEST334: Check if client needs sync
-        let repo = PluginRepo::new(3600);
+        let repo = CartridgeRepo::new(3600);
 
-        let urls = vec!["https://example.com/plugins".to_string()];
+        let urls = vec!["https://example.com/cartridges".to_string()];
 
         // Empty cache should need sync
         assert!(repo.needs_sync(&urls).await);
 
         // After update, should not need sync
-        let registry = PluginRegistryResponse { plugins: vec![] };
+        let registry = CartridgeRegistryResponse { cartridges: vec![] };
         let mut caches = repo.caches.write().await;
-        PluginRepo::update_cache(&mut caches, "https://example.com/plugins", registry);
+        CartridgeRepo::update_cache(&mut caches, "https://example.com/cartridges", registry);
         drop(caches);
 
         assert!(!repo.needs_sync(&urls).await);
     }
 
     #[test]
-    fn test335_plugin_repo_server_client_integration() {
+    fn test335_cartridge_repo_server_client_integration() {
         // TEST335: Server creates response, client consumes it
-        let mut plugins = HashMap::new();
+        let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
-        versions.insert("1.0.0".to_string(), PluginVersionData {
+        versions.insert("1.0.0".to_string(), CartridgeVersionData {
             release_date: "2026-02-07".to_string(),
             changelog: vec![],
             min_app_version: String::new(),
             platform: "darwin-arm64".to_string(),
-            package: PluginDistributionInfo {
+            package: CartridgeDistributionInfo {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: PluginDistributionInfo {
+            binary: CartridgeDistributionInfo {
                 name: "test-1.0.0-darwin-arm64".to_string(),
                 sha256: "def456".to_string(),
                 size: 2000,
@@ -1450,14 +1450,14 @@ mod tests {
         });
 
         let cap_urn = "cap:in=\"media:test\";op=test;out=\"media:result\"";
-        plugins.insert("testplugin".to_string(), PluginRegistryEntry {
-            name: "Test Plugin".to_string(),
-            description: "A test plugin".to_string(),
+        cartridges_map.insert("testcartridge".to_string(), CartridgeRegistryEntry {
+            name: "Test Cartridge".to_string(),
+            description: "A test cartridge".to_string(),
             author: "Test Author".to_string(),
             page_url: "https://example.com".to_string(),
             team_id: "TEAM123".to_string(),
             min_app_version: String::new(),
-            caps: vec![PluginCapSummary {
+            caps: vec![CartridgeCapSummary {
                 urn: cap_urn.to_string(),
                 title: "Test Cap".to_string(),
                 description: "Test capability".to_string(),
@@ -1468,29 +1468,29 @@ mod tests {
             versions,
         });
 
-        let registry = PluginRegistryV3 {
+        let registry = CartridgeRegistryV3 {
             schema_version: "3.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            plugins,
+            cartridges: cartridges_map,
         };
 
         // Server transforms registry
-        let server = PluginRepoServer::new(registry).unwrap();
-        let response = server.get_plugins().unwrap();
+        let server = CartridgeRepoServer::new(registry).unwrap();
+        let response = server.get_cartridges().unwrap();
 
         // Verify response structure
-        assert_eq!(response.plugins.len(), 1);
-        let plugin = &response.plugins[0];
-        assert_eq!(plugin.id, "testplugin");
-        assert_eq!(plugin.name, "Test Plugin");
-        assert!(plugin.is_signed());
-        assert!(plugin.has_binary());
-        assert_eq!(plugin.caps.len(), 1);
-        assert_eq!(plugin.caps[0].urn, cap_urn);
+        assert_eq!(response.cartridges.len(), 1);
+        let cartridge = &response.cartridges[0];
+        assert_eq!(cartridge.id, "testcartridge");
+        assert_eq!(cartridge.name, "Test Cartridge");
+        assert!(cartridge.is_signed());
+        assert!(cartridge.has_binary());
+        assert_eq!(cartridge.caps.len(), 1);
+        assert_eq!(cartridge.caps[0].urn, cap_urn);
 
         // Simulate client consuming this response
         // (Client would deserialize the JSON and cache it)
-        assert_eq!(plugin.binary_name, "test-1.0.0-darwin-arm64");
-        assert_eq!(plugin.binary_sha256, "def456");
+        assert_eq!(cartridge.binary_name, "test-1.0.0-darwin-arm64");
+        assert_eq!(cartridge.binary_sha256, "def456");
     }
 }
