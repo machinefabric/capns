@@ -60,6 +60,15 @@ pub fn discard_urn() -> CapUrn {
 }
 
 /// Construct the canonical Identity `Cap` definition.
+///
+/// The identity cap declares one wildcard input arg
+/// (`media:`) that any concrete media URN conforms to. This
+/// makes the resolver's source-to-cap-arg matching trivially
+/// succeed for identity: any source URN feeds the wildcard
+/// arg with specificity-distance equal to the source's own
+/// specificity. Without this arg the resolver would fail
+/// with `UnmatchedSourceInCapArgs` because an empty args list
+/// has no candidate slot for any source.
 pub fn identity_cap() -> Cap {
     let urn = identity_urn();
 
@@ -70,11 +79,23 @@ pub fn identity_cap() -> Cap {
         "The categorical identity morphism. Echoes input as output unchanged. Mandatory in every capability set.".to_string(),
     );
 
+    cap.args.push(crate::cap::definition::CapArg::new(
+        "media:",
+        true,
+        vec![crate::cap::definition::ArgSource::Stdin {
+            stdin: "media:".to_string(),
+        }],
+    ));
     cap.set_output(crate::cap::definition::CapOutput::new("media:", "The input data, unchanged"));
     cap
 }
 
 /// Construct the canonical Discard `Cap` definition.
+///
+/// Like the identity cap, discard declares a wildcard input
+/// arg (`media:`) so the resolver's source-to-cap-arg
+/// matching can route any source URN through it. The output
+/// is `media:void`.
 pub fn discard_cap() -> Cap {
     let urn = discard_urn();
 
@@ -85,6 +106,13 @@ pub fn discard_cap() -> Cap {
         "The terminal morphism. Accepts any input and produces void output. Standard but not mandatory.".to_string(),
     );
 
+    cap.args.push(crate::cap::definition::CapArg::new(
+        "media:",
+        true,
+        vec![crate::cap::definition::ArgSource::Stdin {
+            stdin: "media:".to_string(),
+        }],
+    ));
     cap.set_output(crate::cap::definition::CapOutput::new(MEDIA_VOID, "Void (no output)"));
     cap
 }

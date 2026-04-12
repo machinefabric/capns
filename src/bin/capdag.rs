@@ -3,7 +3,7 @@
 //! A unified CLI for executing and validating machine notation pipelines.
 
 use capdag::orchestrator::{parse_machine_to_cap_dag, execute_dag, NodeData};
-use capdag::machine::Machine;
+use capdag::machine::parse_machine_with_node_names;
 use capdag::{CapProgressFn, CapRegistry};
 use std::collections::HashMap;
 use std::env;
@@ -54,83 +54,39 @@ fn expand_dev_binary_path(path: &str) -> Vec<PathBuf> {
 
 /// Find input nodes in the machine notation (root sources with no incoming edges).
 ///
-/// Parses the machine notation into a Machine and returns the node names
-/// that are root sources (not produced by any cap).
-fn find_input_nodes(notation: &str) -> Vec<String> {
-    let graph = match Machine::from_string(notation) {
-        Ok(g) => g,
+/// Parses the machine notation into a `Machine` (alongside the
+/// per-strand `name → NodeId` map) and returns the user-written
+/// node names of every input anchor across all strands. The
+/// resolver computes the input anchors as part of the resolved
+/// `MachineStrand`; we just translate the NodeIds back to the
+/// names the user wrote.
+fn find_input_nodes(notation: &str, registry: &CapRegistry) -> Vec<String> {
+    let (machine, strand_node_names) = match parse_machine_with_node_names(notation, registry) {
+        Ok(pair) => pair,
         Err(e) => {
             eprintln!("Failed to parse machine notation for input node detection: {}", e);
             return vec![];
         }
     };
 
-    // Re-parse to get node names — Machine discards them.
-    // Use the same pest extraction as the orchestrator.
-    use pest::Parser;
-    use capdag::machine::parser::{MachineParser, Rule};
-
-    let pairs = match MachineParser::parse(Rule::program, notation.trim()) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to re-parse machine notation: {}", e);
-            return vec![];
+    let mut seen = std::collections::HashSet::new();
+    let mut inputs: Vec<String> = Vec::new();
+    for (strand, name_to_id) in machine.strands().iter().zip(strand_node_names.iter()) {
+        // Invert name → NodeId so we can label each input
+        // anchor with its user-written name.
+        let mut id_to_name: HashMap<u32, String> = HashMap::with_capacity(name_to_id.len());
+        for (name, id) in name_to_id {
+            id_to_name.insert(*id, name.clone());
         }
-    };
-
-    // Collect all source and target node names from wirings
-    let mut all_sources: Vec<String> = Vec::new();
-    let mut all_targets: Vec<String> = Vec::new();
-
-    let program = pairs.into_iter().next().unwrap();
-    for pair in program.into_inner() {
-        if pair.as_rule() != Rule::stmt {
-            continue;
-        }
-        let inner = pair.into_inner().next().unwrap();
-        let content = inner.into_inner().next().unwrap();
-        if content.as_rule() != Rule::wiring {
-            continue;
-        }
-
-        let mut inner_pairs = content.into_inner();
-
-        // Source
-        let source_pair = inner_pairs.next().unwrap();
-        let source_inner = source_pair.into_inner().next().unwrap();
-        match source_inner.as_rule() {
-            Rule::group => {
-                for p in source_inner.into_inner() {
-                    if p.as_rule() == Rule::alias {
-                        all_sources.push(p.as_str().to_string());
-                    }
+        for anchor_id in strand.input_anchor_ids() {
+            if let Some(name) = id_to_name.get(anchor_id) {
+                if seen.insert(name.clone()) {
+                    inputs.push(name.clone());
                 }
             }
-            Rule::alias => {
-                all_sources.push(source_inner.as_str().to_string());
-            }
-            _ => {}
         }
-
-        // Skip arrow, loop_cap, arrow
-        inner_pairs.next();
-        inner_pairs.next();
-        inner_pairs.next();
-
-        // Target
-        let target = inner_pairs.next().unwrap().as_str().to_string();
-        all_targets.push(target);
     }
-
-    // Input nodes are sources that never appear as targets
-    let target_set: std::collections::HashSet<&str> =
-        all_targets.iter().map(|s| s.as_str()).collect();
-
-    let mut seen = std::collections::HashSet::new();
-    all_sources
-        .into_iter()
-        .filter(|s| !target_set.contains(s.as_str()) && seen.insert(s.clone()))
-        .collect()
+    inputs
 }
 
 /// File extensions to skip when expanding directories
@@ -324,7 +280,7 @@ async fn main() {
     }
 
     // Find input nodes automatically
-    let input_nodes = find_input_nodes(&notation);
+    let input_nodes = find_input_nodes(&notation, registry.as_ref());
     if input_nodes.is_empty() {
         eprintln!("No input nodes found in machine notation");
         process::exit(1);

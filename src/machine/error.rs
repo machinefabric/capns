@@ -1,74 +1,130 @@
-//! Error types for machine notation parsing and serialization
+//! Error types for machine notation parsing, resolution, and serialization.
 
 use thiserror::Error;
 
-/// Errors that can occur when abstracting a resolved strand into a machine
-/// or serializing an already-built machine.
+/// Errors raised when building or resolving a `Machine`.
+///
+/// These cover anchor-realization (computing each `MachineStrand`'s
+/// resolved DAG via the source-to-arg matching algorithm) and
+/// downstream invariants on the resulting machine. They are
+/// distinct from `MachineSyntaxError`, which covers lexical and
+/// grammatical failures of the notation parser.
 #[derive(Debug, Error)]
 pub enum MachineAbstractionError {
-    /// The strand contains no capability steps and therefore does not define a machine.
-    #[error("resolved strand does not contain any capability steps")]
+    /// The strand or wiring set contains no Cap step (no edge to
+    /// resolve). A machine must declare at least one capability.
+    #[error("strand or wiring set contains no capability steps")]
     NoCapabilitySteps,
 
-    /// A secondary (non-primary) source in a fan-in edge could not be
-    /// matched against any earlier output via `is_equivalent`. Secondary
-    /// sources carry concrete URNs set by prior wirings; an unmatched
-    /// secondary means the machine's edge sequence is structurally
-    /// broken (the parser couldn't have produced this Machine, and any
-    /// other constructor that did is buggy).
+    /// A cap URN referenced by a strand or a wiring could not be
+    /// found in the cap registry's in-memory cache. Resolution
+    /// requires the cap definition (specifically its `args` list)
+    /// to compute source-to-arg assignment.
+    #[error("cap URN '{cap_urn}' is not in the cap registry cache")]
+    UnknownCap { cap_urn: String },
+
+    /// A source URN does not conform to any of the cap's input
+    /// argument media URNs. The source has no valid slot to be
+    /// assigned to.
     #[error(
-        "unmatched secondary fan-in source at edge {edge_index}, source index {source_index}: no earlier output produces an equivalent URN"
+        "in strand {strand_index}, cap '{cap_urn}': source URN '{source_urn}' does not conform to any of the cap's input arguments"
     )]
-    UnmatchedSecondaryFanInSource {
-        edge_index: usize,
-        source_index: usize,
+    UnmatchedSourceInCapArgs {
+        strand_index: usize,
+        cap_urn: String,
+        source_urn: String,
     },
+
+    /// The bipartite minimum-cost source-to-arg assignment is not
+    /// unique. Either two distinct assignments tie at the same
+    /// total specificity-distance cost, or the equality subgraph
+    /// admits more than one perfect matching at the minimum cost.
+    /// The notation cannot be resolved deterministically; no
+    /// fall-back to source-vec position is permitted.
+    #[error(
+        "in strand {strand_index}, cap '{cap_urn}': source-to-cap-arg assignment is ambiguous (multiple minimum-cost matchings exist)"
+    )]
+    AmbiguousMachineNotation {
+        strand_index: usize,
+        cap_urn: String,
+    },
+
+    /// The resolved data-flow graph of a strand contains a cycle.
+    /// A planner-produced strand cannot trigger this; only
+    /// programmatic misconstruction or notation that wires a cap's
+    /// output back into one of its own ancestors can.
+    #[error("strand {strand_index}: resolved data-flow graph contains a cycle")]
+    CyclicMachineStrand { strand_index: usize },
 }
 
-/// Errors that can occur during machine notation parsing
+/// Errors raised during lexical / grammatical parsing of machine
+/// notation.
+///
+/// These represent failures BEFORE the parser hands the wiring
+/// set to the resolver. Resolution-level failures (cap not in
+/// registry, ambiguous matching, cyclic strand, …) are reported
+/// as `MachineAbstractionError`.
 #[derive(Debug, Error)]
 pub enum MachineSyntaxError {
-    /// Input string is empty or contains only whitespace
+    /// Input string is empty or contains only whitespace.
     #[error("machine notation is empty")]
     Empty,
 
-    /// A statement bracket `[` was opened but never closed with `]`
+    /// A statement bracket `[` was opened but never closed with `]`.
     #[error("unterminated statement starting at byte {position}")]
     UnterminatedStatement { position: usize },
 
-    /// A cap URN in a header statement failed to parse
+    /// A cap URN in a header statement failed to parse.
     #[error("invalid cap URN in header '{alias}': {details}")]
     InvalidCapUrn { alias: String, details: String },
 
-    /// A wiring statement references an alias that was never defined in a header
+    /// A wiring statement references an alias that was never defined in a header.
     #[error("wiring references undefined alias '{alias}'")]
     UndefinedAlias { alias: String },
 
-    /// Two header statements define the same alias
+    /// Two header statements define the same alias.
     #[error("duplicate alias '{alias}' (first defined at statement {first_position})")]
     DuplicateAlias { alias: String, first_position: usize },
 
-    /// A wiring statement has invalid structure (wrong number of arrows, missing parts)
+    /// A wiring statement has invalid structure (wrong number of
+    /// arrows, missing parts).
     #[error("invalid wiring at statement {position}: {details}")]
     InvalidWiring { position: usize, details: String },
 
-    /// A media URN referenced in a header failed to parse
+    /// A media URN referenced in a header failed to parse.
     #[error("invalid media URN in cap '{alias}': {details}")]
     InvalidMediaUrn { alias: String, details: String },
 
-    /// A header statement has invalid structure
+    /// A header statement has invalid structure.
     #[error("invalid header at statement {position}: {details}")]
     InvalidHeader { position: usize, details: String },
 
-    /// The parsed machine graph has no edges (headers were defined but no wirings)
+    /// The parsed machine has headers but no wirings.
     #[error("machine has headers but no wirings — define at least one edge")]
     NoEdges,
 
-    /// A wiring references an alias used as a node name that collides with a header alias
+    /// A wiring references an alias used as a node name that
+    /// collides with a header alias.
     #[error("node name '{name}' collides with cap alias '{alias}'")]
     NodeAliasCollision { name: String, alias: String },
 
-    /// PEG parse error from the pest grammar
+    /// PEG parse error from the pest grammar.
     #[error("parse error: {details}")]
     ParseError { details: String },
+}
+
+/// Combined error returned by `Machine::from_string`.
+///
+/// Notation parsing has two phases: lexical/grammatical (yields
+/// `MachineSyntaxError`) and resolution (yields
+/// `MachineAbstractionError`). This enum is the union returned
+/// from `Machine::from_string` and `parse_machine` so callers can
+/// branch on either kind of failure.
+#[derive(Debug, Error)]
+pub enum MachineParseError {
+    #[error(transparent)]
+    Syntax(#[from] MachineSyntaxError),
+
+    #[error(transparent)]
+    Resolution(#[from] MachineAbstractionError),
 }

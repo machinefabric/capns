@@ -1,12 +1,13 @@
 //! Orchestrator: Machine Notation Parser with CapDag Orchestration
 //!
-//! This module parses machine notation and resolves cap URNs via a registry,
-//! validates the graph, and produces a validated, executable DAG IR.
+//! This module parses machine notation through `Machine::from_string`,
+//! looks up the resolved caps in the registry, and produces a
+//! validated executable DAG IR (`ResolvedGraph`).
 //!
 //! # Example
 //!
 //! ```ignore
-//! use capdag::orchestrator::{parse_machine_to_cap_dag, CapRegistryTrait};
+//! use capdag::orchestrator::parse_machine_to_cap_dag;
 //! use capdag::CapRegistry;
 //!
 //! let route = r#"
@@ -19,7 +20,6 @@
 //! ```
 
 pub mod types;
-pub mod validation;
 pub mod parser;
 pub mod executor;
 pub mod plan_converter;
@@ -30,7 +30,6 @@ pub use types::{
     ParseOrchestrationError,
     ResolvedEdge,
     ResolvedGraph,
-    CapRegistryTrait,
 };
 
 pub use parser::parse_machine_to_cap_dag;

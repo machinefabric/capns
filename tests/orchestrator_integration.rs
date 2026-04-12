@@ -9,7 +9,8 @@
 //! testcartridge provides simple, predictable test caps without heavy dependencies
 //! The testcartridge binary will be auto-built if missing or outdated
 
-use capdag::orchestrator::{parse_machine_to_cap_dag, execute_dag, NodeData, CapRegistryTrait, ParseOrchestrationError};
+use capdag::orchestrator::{parse_machine_to_cap_dag, execute_dag, NodeData};
+use capdag::cap::definition::{ArgSource, CapArg, CapOutput};
 use capdag::{Cap, CapUrn, CapRegistry};
 use std::collections::HashMap;
 use std::env;
@@ -20,77 +21,37 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 // =============================================================================
-// Mock Registry for testcartridge Caps
+// Test Cap Registry for testcartridge Caps
+//
+// Builds a `CapRegistry::new_for_test()` populated with the
+// testcartridge caps. Each cap declares one stdin arg matching
+// its `in=` spec so the resolver's source-to-cap-arg matching
+// can succeed. Used by both `parse_machine_to_cap_dag` (for
+// resolution) and `execute_dag` (for runtime cap lookup).
 // =============================================================================
 
-/// Mock registry that contains testcartridge caps
-struct TestcartridgeRegistry {
-    caps: HashMap<String, Cap>,
-}
-
-impl TestcartridgeRegistry {
-    fn new() -> Self {
-        let mut caps = HashMap::new();
-
-        // Helper to add a cap
-        let mut add_cap = |urn_str: &str| {
-            let cap_urn = CapUrn::from_string(urn_str).expect("Invalid test cap URN");
-            let cap = Cap {
-                urn: cap_urn.clone(),
-                title: format!("Test {}", cap_urn.get_tag("op").map_or("unknown", |s| s.as_str())),
-                cap_description: None,
-                documentation: None,
-                metadata: HashMap::new(),
-                command: "testcartridge".to_string(),
-                media_specs: vec![],
-                args: vec![],
-                output: None,
-                metadata_json: None,
-                registered_by: None,
-            };
-            caps.insert(cap_urn.to_string(), cap);
-        };
-
-        // Register all testcartridge caps
-        add_cap(r#"cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable""#);
-        add_cap(r#"cap:in="media:node2;textable";op=test_edge2;out="media:node3;textable""#);
-        add_cap(r#"cap:in="media:node3;textable";op=test_edge3;out="media:node4;list;textable""#);
-        add_cap(r#"cap:in="media:node4;list;textable";op=test_edge4;out="media:node5;textable""#);
-        add_cap(r#"cap:in="media:node3;textable";op=test_edge7;out="media:node6;textable""#);
-        add_cap(r#"cap:in="media:node6;textable";op=test_edge8;out="media:node7;textable""#);
-        add_cap(r#"cap:in="media:node7;textable";op=test_edge9;out="media:node8;textable""#);
-        add_cap(r#"cap:in="media:node8;textable";op=test_edge10;out="media:node1;textable""#);
-        add_cap(r#"cap:in="media:void";op=test_large;out="media:""#);
-        add_cap(r#"cap:in="media:node1;textable";op=test_peer;out="media:node3;textable""#);
-
-        // Add identity cap for cycle testing
-        add_cap(r#"cap:in="media:node1;textable";op=identity;out="media:node1;textable""#);
-
-        Self { caps }
-    }
-}
-
-#[async_trait::async_trait]
-impl CapRegistryTrait for TestcartridgeRegistry {
-    async fn lookup(&self, urn: &str) -> Result<Cap, ParseOrchestrationError> {
-        // Normalize the URN for lookup
-        let normalized = CapUrn::from_string(urn)
-            .map_err(|e| ParseOrchestrationError::CapUrnParseError(format!("{:?}", e)))?
-            .to_string();
-
-        self.caps
-            .iter()
-            .find(|(k, _)| {
-                if let Ok(k_norm) = CapUrn::from_string(k) {
-                    k_norm.to_string() == normalized
-                } else {
-                    false
-                }
-            })
-            .map(|(_, v)| v.clone())
-            .ok_or_else(|| ParseOrchestrationError::CapNotFound {
-                cap_urn: urn.to_string(),
-            })
+/// Build a `Cap` from a cap URN string with one stdin arg
+/// matching its `in=` spec.
+fn build_testcartridge_cap(urn_str: &str) -> Cap {
+    let cap_urn = CapUrn::from_string(urn_str).expect("Invalid test cap URN");
+    let in_spec = cap_urn.in_spec().to_string();
+    let out_spec = cap_urn.out_spec().to_string();
+    Cap {
+        urn: cap_urn.clone(),
+        title: format!("Test {}", cap_urn.get_tag("op").map_or("unknown", |s| s.as_str())),
+        cap_description: None,
+        documentation: None,
+        metadata: HashMap::new(),
+        command: "testcartridge".to_string(),
+        media_specs: vec![],
+        args: vec![CapArg::new(
+            in_spec.clone(),
+            true,
+            vec![ArgSource::Stdin { stdin: in_spec }],
+        )],
+        output: Some(CapOutput::new(out_spec, "testcartridge output".to_string())),
+        metadata_json: None,
+        registered_by: None,
     }
 }
 
@@ -242,43 +203,25 @@ fn setup_test_env() -> (TempDir, PathBuf, Vec<PathBuf>) {
     (temp_dir, plugin_dir, dev_binaries)
 }
 
-/// Create an Arc<CapRegistry> with all test caps for execute_dag
+/// Create an `Arc<CapRegistry>` with all testcartridge caps.
+/// Used by both `parse_machine_to_cap_dag` (which needs the
+/// resolver's `args` lists) and `execute_dag` (which looks up
+/// the full cap definition at runtime).
 fn create_test_cap_registry() -> Arc<CapRegistry> {
     let registry = CapRegistry::new_for_test();
-
-    // Helper to add a cap
-    let add_cap = |urn_str: &str| -> Cap {
-        let cap_urn = CapUrn::from_string(urn_str).expect("Invalid test cap URN");
-        Cap {
-            urn: cap_urn.clone(),
-            title: format!("Test {}", cap_urn.get_tag("op").map_or("unknown", |s| s.as_str())),
-            cap_description: None,
-            documentation: None,
-            metadata: HashMap::new(),
-            command: "testcartridge".to_string(),
-            media_specs: vec![],
-            args: vec![],
-            output: None,
-            metadata_json: None,
-            registered_by: None,
-        }
-    };
-
-    // Register all testcartridge caps
     let caps = vec![
-        add_cap(r#"cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable""#),
-        add_cap(r#"cap:in="media:node2;textable";op=test_edge2;out="media:node3;textable""#),
-        add_cap(r#"cap:in="media:node3;textable";op=test_edge3;out="media:node4;list;textable""#),
-        add_cap(r#"cap:in="media:node4;list;textable";op=test_edge4;out="media:node5;textable""#),
-        add_cap(r#"cap:in="media:node3;textable";op=test_edge7;out="media:node6;textable""#),
-        add_cap(r#"cap:in="media:node6;textable";op=test_edge8;out="media:node7;textable""#),
-        add_cap(r#"cap:in="media:node7;textable";op=test_edge9;out="media:node8;textable""#),
-        add_cap(r#"cap:in="media:node8;textable";op=test_edge10;out="media:node1;textable""#),
-        add_cap(r#"cap:in="media:void";op=test_large;out="media:""#),
-        add_cap(r#"cap:in="media:node1;textable";op=test_peer;out="media:node3;textable""#),
-        add_cap(r#"cap:in="media:node1;textable";op=identity;out="media:node1;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node2;textable";op=test_edge2;out="media:node3;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node3;textable";op=test_edge3;out="media:node4;list;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node4;list;textable";op=test_edge4;out="media:node5;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node3;textable";op=test_edge7;out="media:node6;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node6;textable";op=test_edge8;out="media:node7;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node7;textable";op=test_edge9;out="media:node8;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node8;textable";op=test_edge10;out="media:node1;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:void";op=test_large;out="media:""#),
+        build_testcartridge_cap(r#"cap:in="media:node1;textable";op=test_peer;out="media:node3;textable""#),
+        build_testcartridge_cap(r#"cap:in="media:node1;textable";op=identity;out="media:node1;textable""#),
     ];
-
     registry.add_caps_to_cache(caps);
     Arc::new(registry)
 }
@@ -290,14 +233,14 @@ fn create_test_cap_registry() -> Arc<CapRegistry> {
 // TEST001: Parse simple machine notation graph with test-edge1
 #[tokio::test]
 async fn test935_parse_simple_testcartridge_graph() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
 
     let route = r#"
 [test_edge1 cap:in="media:node1;textable";op=test_edge1;out="media:node2;textable"]
 [A -> test_edge1 -> B]
 "#;
 
-    let result = parse_machine_to_cap_dag(route, &registry).await;
+    let result = parse_machine_to_cap_dag(route, &*registry).await;
     assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
 
     let graph = result.unwrap();
@@ -314,7 +257,7 @@ async fn test935_parse_simple_testcartridge_graph() {
 // TEST002: Execute single-edge DAG (test-edge1)
 #[tokio::test]
 async fn test936_execute_single_edge_dag() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (_temp, plugin_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
@@ -322,7 +265,7 @@ async fn test936_execute_single_edge_dag() {
 [input -> test_edge1 -> output]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     // Create initial input
     let mut initial_inputs = HashMap::new();
@@ -357,7 +300,7 @@ async fn test936_execute_single_edge_dag() {
 // TEST003: Execute two-edge chain (test-edge1 -> test-edge2)
 #[tokio::test]
 async fn test937_execute_edge1_to_edge2_chain() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (_temp, plugin_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
@@ -367,7 +310,7 @@ async fn test937_execute_edge1_to_edge2_chain() {
 [B -> test_edge2 -> C]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     let mut initial_inputs = HashMap::new();
     initial_inputs.insert("A".to_string(), NodeData::Text("CHAIN".to_string()));
@@ -398,7 +341,7 @@ async fn test937_execute_edge1_to_edge2_chain() {
 // TEST004: Execute with file-path input
 #[tokio::test]
 async fn test938_execute_with_file_input() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (temp, plugin_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
@@ -406,7 +349,7 @@ async fn test938_execute_with_file_input() {
 [input -> test_edge1 -> output]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     // Create test input file
     let input_file = temp.path().join("input.txt");
@@ -439,7 +382,7 @@ async fn test938_execute_with_file_input() {
 // TEST005: Execute large payload (test-large cap)
 #[tokio::test]
 async fn test939_execute_large_payload() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (_temp, plugin_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
@@ -447,7 +390,7 @@ async fn test939_execute_large_payload() {
 [input -> test_large -> output]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     // test-large generates payload based on size, but with media:void input
     let mut initial_inputs = HashMap::new();
@@ -481,7 +424,7 @@ async fn test939_execute_large_payload() {
 // TEST006: Multi-input DAG (fan-in pattern)
 #[tokio::test]
 async fn test940_fan_in_pattern() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (_temp, plugin_dir, dev_binaries) = setup_test_env();
 
     // Two parallel paths that merge
@@ -494,7 +437,7 @@ async fn test940_fan_in_pattern() {
 [D -> test_edge2 -> E]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     let mut initial_inputs = HashMap::new();
     initial_inputs.insert("A".to_string(), NodeData::Text("PATH1".to_string()));
@@ -527,7 +470,7 @@ async fn test940_fan_in_pattern() {
 // TEST007: Validate that cycles are rejected
 #[tokio::test]
 async fn test941_reject_cycles() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
 
     // Create a self-loop using identity cap
     let route = r#"
@@ -535,7 +478,7 @@ async fn test941_reject_cycles() {
 [A -> identity -> A]
 "#;
 
-    let result = parse_machine_to_cap_dag(route, &registry).await;
+    let result = parse_machine_to_cap_dag(route, &*registry).await;
     assert!(result.is_err(), "Should reject cycle");
 
     match result.err() {
@@ -549,11 +492,11 @@ async fn test941_reject_cycles() {
 // TEST008: Empty machine notation (no edges)
 #[tokio::test]
 async fn test942_empty_graph() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
 
     let route = "";
 
-    let result = parse_machine_to_cap_dag(route, &registry).await;
+    let result = parse_machine_to_cap_dag(route, &*registry).await;
     assert!(result.is_err(), "Should fail on empty machine notation");
 
     match result.err() {
@@ -567,28 +510,28 @@ async fn test942_empty_graph() {
 // TEST009: Invalid cap URN in machine notation
 #[tokio::test]
 async fn test943_invalid_cap_urn() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
 
     let route = concat!(
         r#"[bad cap:INVALID]"#,
         "[A -> bad -> B]"
     );
 
-    let result = parse_machine_to_cap_dag(route, &registry).await;
+    let result = parse_machine_to_cap_dag(route, &*registry).await;
     assert!(result.is_err(), "Should reject invalid cap URN");
 }
 
 // TEST010: Cap not found in registry
 #[tokio::test]
 async fn test944_cap_not_found() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
 
     let route = r#"
 [nonexistent cap:in="media:unknown";op=nonexistent;out="media:unknown"]
 [A -> nonexistent -> B]
 "#;
 
-    let result = parse_machine_to_cap_dag(route, &registry).await;
+    let result = parse_machine_to_cap_dag(route, &*registry).await;
     assert!(result.is_err(), "Should fail when cap not found");
 
     match result.err() {
@@ -608,7 +551,7 @@ async fn test944_cap_not_found() {
 // "hello" -> "[PREPEND]hello" -> "[PREPEND]hello[APPEND]" -> "[PREPEND]HELLO[APPEND]" -> "]DNEPPA[OLLEH]DNEPERP["
 #[tokio::test]
 async fn test945_four_machine() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (_temp, plugin_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
@@ -622,7 +565,7 @@ async fn test945_four_machine() {
 [D -> test_edge8 -> E]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     let mut initial_inputs = HashMap::new();
     initial_inputs.insert("A".to_string(), NodeData::Text("hello".to_string()));
@@ -657,7 +600,7 @@ async fn test945_four_machine() {
 // adds <<...>> wrapping around the reversed string
 #[tokio::test]
 async fn test946_five_machine() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (_temp, plugin_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
@@ -673,7 +616,7 @@ async fn test946_five_machine() {
 [E -> test_edge9 -> F]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     let mut initial_inputs = HashMap::new();
     initial_inputs.insert("A".to_string(), NodeData::Text("hello".to_string()));
@@ -706,7 +649,7 @@ async fn test946_five_machine() {
 // Completes the round trip: unwrap markers + lowercase
 #[tokio::test]
 async fn test947_six_machine() {
-    let registry = TestcartridgeRegistry::new();
+    let registry = create_test_cap_registry();
     let (_temp, plugin_dir, dev_binaries) = setup_test_env();
 
     let route = r#"
@@ -724,7 +667,7 @@ async fn test947_six_machine() {
 [F -> test_edge10 -> G]
 "#;
 
-    let graph = parse_machine_to_cap_dag(route, &registry).await.expect("Parse failed");
+    let graph = parse_machine_to_cap_dag(route, &*registry).await.expect("Parse failed");
 
     let mut initial_inputs = HashMap::new();
     initial_inputs.insert("A".to_string(), NodeData::Text("hello".to_string()));

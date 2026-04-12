@@ -27,6 +27,7 @@ This specification defines the **semantic foundations** for URN matching and cap
 | [04-CAP-URN-STRUCTURE](./04-CAP-URN-STRUCTURE.md) | Cap URN as product C = U × U × U | 01, 03 |
 | [05-DISPATCH](./05-DISPATCH.md) | The dispatch predicate | 01, 02, 04 |
 | [06-RANKING](./06-RANKING.md) | Selection among valid providers | 03, 05 |
+| [07-MACHINE-NOTATION](./07-MACHINE-NOTATION.md) | Textual encoding of multi-cap data-flow graphs | 02, 04 |
 | [10-VALIDATION-RULES](./10-VALIDATION-RULES.md) | Structural validation rules | 01, 04 |
 | [11-MEDIA-URNS](./11-MEDIA-URNS.md) | Media URN structure and coercion | 01 |
 
@@ -39,8 +40,9 @@ This specification defines the **semantic foundations** for URN matching and cap
 5. **04-CAP-URN-STRUCTURE** — See how Cap URNs compose three dimensions
 6. **05-DISPATCH** — The central routing rule
 7. **06-RANKING** — How to choose among valid providers
-8. **10-VALIDATION-RULES** — Structural constraints
-9. **11-MEDIA-URNS** — Media type details
+8. **07-MACHINE-NOTATION** — Wire multiple caps into a data-flow graph
+9. **10-VALIDATION-RULES** — Structural constraints
+10. **11-MEDIA-URNS** — Media type details
 
 ---
 
@@ -58,6 +60,8 @@ This specification defines the **semantic foundations** for URN matching and cap
 | **Dispatch** | The act of routing a request to a valid provider |
 | **Specificity** | A numeric score measuring how constrained a URN is |
 | **Wildcard** | A special value (`*`, `?`, `!`) with matching semantics |
+| **Machine** | An ordered sequence of Cap URN edges wired into a data-flow graph |
+| **Machine notation** | The textual encoding of a Machine (see [07-MACHINE-NOTATION](./07-MACHINE-NOTATION.md)) |
 
 ---
 

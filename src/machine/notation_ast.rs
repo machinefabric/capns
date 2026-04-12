@@ -19,7 +19,6 @@ use crate::urn::cap_urn::CapUrn;
 use crate::urn::media_urn::MediaUrn;
 
 use super::error::MachineSyntaxError;
-use super::graph::Machine;
 use super::parser::{MachineParser, Rule};
 
 // =============================================================================
@@ -107,7 +106,11 @@ pub enum ParsedStatement {
 ///
 /// Always contains as much information as could be extracted — even on parse
 /// failures. The `error` field holds the first error encountered (if any).
-/// The `machine` field holds the fully resolved Machine graph (if no errors).
+///
+/// `NotationAST` is a purely lexical / syntactic view: the editor consumes
+/// it for highlighting, hover, and completion. It does NOT carry a resolved
+/// `Machine`, since resolution requires the cap registry (out of scope for
+/// the lexical analyzer).
 #[derive(Debug)]
 pub struct NotationAST {
     pub statements: Vec<ParsedStatement>,
@@ -119,8 +122,6 @@ pub struct NotationAST {
     pub node_media: HashMap<String, MediaUrn>,
     /// Node name → whether the node carries a sequence shape.
     pub node_is_sequence: HashMap<String, bool>,
-    /// Successfully resolved machine graph, if no errors.
-    pub machine: Option<Machine>,
     /// First error encountered during parsing, if any.
     pub error: Option<MachineSyntaxError>,
 }
@@ -261,7 +262,6 @@ pub fn parse_notation_ast(input: &str) -> NotationAST {
         alias_map: BTreeMap::new(),
         node_media: HashMap::new(),
         node_is_sequence: HashMap::new(),
-        machine: None,
         error: None,
     };
 
@@ -447,26 +447,11 @@ pub fn parse_notation_ast(input: &str) -> NotationAST {
         }
     }
 
-    // Phase 4: Resolve wirings → node media types. Attempt full Machine build.
-    if ast.error.is_none() {
-        match super::parser::parse_machine(input) {
-            Ok(machine) => {
-                // Extract node_media from the machine's edges
-                for edge in machine.edges() {
-                    for (i, src_media) in edge.sources.iter().enumerate() {
-                        // Find source node name from wiring statements
-                        // We already have the data from the AST wirings
-                    }
-                }
-                ast.machine = Some(machine);
-            }
-            Err(e) => {
-                ast.error = Some(e);
-            }
-        }
-    }
-
-    // Build node_media from AST wirings + alias_map
+    // Phase 4: Build the lexical node_media / node_is_sequence
+    // maps from the AST wirings + alias map. This is the
+    // editor's lexical view; full anchor resolution against
+    // the cap registry is done elsewhere (the gRPC layer
+    // calls `Machine::from_string` for the resolved view).
     build_node_media(&ast.statements, &ast.alias_map, &mut ast.node_media);
     build_node_sequence_map(&ast.statements, &ast.alias_map, &mut ast.node_is_sequence);
 
@@ -1683,7 +1668,6 @@ mod tests {
         assert!(ast.error.is_none(), "expected no error, got: {:?}", ast.error);
         assert_eq!(ast.statements.len(), 2);
         assert_eq!(ast.bracket_spans.len(), 2);
-        assert!(ast.machine.is_some());
 
         // Check alias map
         assert!(ast.alias_map.contains_key("extract"));
@@ -2007,7 +1991,6 @@ doc -> extract -> text"#;
         assert_eq!(ast.statements.len(), 2);
         // Line-based statements have no bracket spans
         assert_eq!(ast.bracket_spans.len(), 0);
-        assert!(ast.machine.is_some());
         assert!(ast.alias_map.contains_key("extract"));
     }
 
@@ -2021,7 +2004,6 @@ doc -> extract -> text"#;
         assert_eq!(ast.statements.len(), 2);
         // Only the bracketed statement has bracket spans
         assert_eq!(ast.bracket_spans.len(), 1);
-        assert!(ast.machine.is_some());
     }
 
     #[test]

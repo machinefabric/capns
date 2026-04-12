@@ -15,8 +15,9 @@
 //!   ForEach plans into sub-plans before conversion (see MachinePlan::extract_*)
 
 use std::collections::HashMap;
+use crate::cap::registry::CapRegistry;
 use crate::planner::{MachinePlan, ExecutionNodeType};
-use super::types::{ResolvedEdge, ResolvedGraph, CapRegistryTrait, ParseOrchestrationError};
+use super::types::{ResolvedEdge, ResolvedGraph, ParseOrchestrationError};
 
 /// Convert a MachinePlan to a ResolvedGraph for execution.
 ///
@@ -31,10 +32,18 @@ use super::types::{ResolvedEdge, ResolvedGraph, CapRegistryTrait, ParseOrchestra
 /// A ResolvedGraph suitable for execute_dag, or an error if conversion fails
 pub async fn plan_to_resolved_graph(
     plan: &MachinePlan,
-    registry: &dyn CapRegistryTrait,
+    registry: &CapRegistry,
 ) -> Result<ResolvedGraph, ParseOrchestrationError> {
     let mut nodes: HashMap<String, String> = HashMap::new();
     let mut resolved_edges: Vec<ResolvedEdge> = Vec::new();
+
+    let lookup_cached = |cap_urn: &str| -> Result<crate::cap::definition::Cap, ParseOrchestrationError> {
+        registry
+            .get_cached_cap(cap_urn)
+            .ok_or_else(|| ParseOrchestrationError::CapNotFound {
+                cap_urn: cap_urn.to_string(),
+            })
+    };
 
     // First pass: identify all data nodes (InputSlots and cap outputs)
     // and their media URNs
@@ -45,7 +54,7 @@ pub async fn plan_to_resolved_graph(
             }
             ExecutionNodeType::Cap { cap_urn, .. } => {
                 // Cap nodes produce output - get the out_spec from the cap URN
-                let cap = registry.lookup(cap_urn).await?;
+                let cap = lookup_cached(cap_urn)?;
                 let out_media = cap.urn.out_spec().to_string();
                 // The cap's output is associated with this node's ID
                 nodes.insert(node_id.clone(), out_media);
@@ -54,7 +63,7 @@ pub async fn plan_to_resolved_graph(
                 // Output nodes inherit media from their source
                 if let Some(source) = plan.nodes.get(source_node) {
                     if let ExecutionNodeType::Cap { cap_urn, .. } = &source.node_type {
-                        let cap = registry.lookup(cap_urn).await?;
+                        let cap = lookup_cached(cap_urn)?;
                         nodes.insert(node_id.clone(), cap.urn.out_spec().to_string());
                     }
                 }
@@ -133,7 +142,7 @@ pub async fn plan_to_resolved_graph(
 
         // Only create ResolvedEdges for edges that point to Cap nodes
         if let ExecutionNodeType::Cap { cap_urn, .. } = &to_node.node_type {
-            let cap = registry.lookup(cap_urn).await?;
+            let cap = lookup_cached(cap_urn)?;
             let in_media = cap.urn.in_spec().to_string();
             let out_media = cap.urn.out_spec().to_string();
 
@@ -169,41 +178,52 @@ pub async fn plan_to_resolved_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cap::definition::{ArgSource, Cap, CapArg, CapOutput};
+    use crate::cap::registry::CapRegistry;
     use crate::planner::{ExecutionNodeType, MachinePlan, MachineNode, MachinePlanEdge, InputCardinality};
-    use crate::{Cap, CapUrn};
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use crate::urn::cap_urn::CapUrn;
 
-    struct MockRegistry {
-        caps: Arc<Mutex<HashMap<String, Cap>>>,
-    }
-
-    impl MockRegistry {
-        fn new() -> Self {
-            Self { caps: Arc::new(Mutex::new(HashMap::new())) }
-        }
-
-        async fn add_cap(&self, urn: &str) {
+    /// Build a `CapRegistry::new_for_test()` populated with the
+    /// supplied cap URNs. plan_converter doesn't exercise the
+    /// resolver's source-to-arg matching (it walks plan nodes
+    /// directly), so each cap gets a single stdin arg matching
+    /// its in= spec to keep cap definitions consistent with
+    /// the rest of the system.
+    fn build_test_registry(cap_urns: &[&str]) -> CapRegistry {
+        let registry = CapRegistry::new_for_test();
+        let mut caps = Vec::new();
+        for urn in cap_urns {
             let cap_urn = CapUrn::from_string(urn).unwrap();
-            let cap = Cap::new(cap_urn, urn.to_string(), "test".to_string());
-            self.caps.lock().await.insert(urn.to_string(), cap);
+            let in_spec = cap_urn.in_spec().to_string();
+            let out_spec = cap_urn.out_spec().to_string();
+            caps.push(Cap {
+                urn: cap_urn,
+                title: "Test Cap".to_string(),
+                cap_description: None,
+                documentation: None,
+                metadata: HashMap::new(),
+                command: "test".to_string(),
+                media_specs: vec![],
+                args: vec![CapArg::new(
+                    in_spec.clone(),
+                    true,
+                    vec![ArgSource::Stdin { stdin: in_spec }],
+                )],
+                output: Some(CapOutput::new(out_spec, "Test output".to_string())),
+                metadata_json: None,
+                registered_by: None,
+            });
         }
-    }
-
-    #[async_trait::async_trait]
-    impl CapRegistryTrait for MockRegistry {
-        async fn lookup(&self, urn: &str) -> Result<Cap, ParseOrchestrationError> {
-            self.caps.lock().await.get(urn).cloned().ok_or_else(|| {
-                ParseOrchestrationError::CapNotFound { cap_urn: urn.to_string() }
-            })
-        }
+        registry.add_caps_to_cache(caps);
+        registry
     }
 
     #[tokio::test]
     async fn test_simple_linear_chain_conversion() {
-        let registry = MockRegistry::new();
-        registry.add_cap("cap:in=media:pdf;op=extract;out=media:text").await;
-        registry.add_cap("cap:in=media:text;op=summarize;out=media:summary").await;
+        let registry = build_test_registry(&[
+            "cap:in=media:pdf;op=extract;out=media:text",
+            "cap:in=media:text;op=summarize;out=media:summary",
+        ]);
 
         let mut plan = MachinePlan::new("test_chain");
 
@@ -229,23 +249,33 @@ mod tests {
         // because output nodes are not Cap nodes
         assert_eq!(graph.edges.len(), 2);
 
-        // First edge: input → cap_0 via extract cap
-        assert_eq!(graph.edges[0].from, "input");
-        assert_eq!(graph.edges[0].to, "cap_0");  // Output stored at cap_0
-        assert_eq!(graph.edges[0].cap_urn, "cap:in=media:pdf;op=extract;out=media:text");
-
-        // Second edge: cap_0 → cap_1 via summarize cap
-        assert_eq!(graph.edges[1].from, "cap_0");
-        assert_eq!(graph.edges[1].to, "cap_1");  // Output stored at cap_1
-        assert_eq!(graph.edges[1].cap_urn, "cap:in=media:text;op=summarize;out=media:summary");
+        // The two edges should reference the two caps; HashMap
+        // iteration order is non-deterministic so we check by
+        // membership rather than by index.
+        let edge_keys: std::collections::HashSet<(String, String, String)> = graph
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone(), e.cap_urn.clone()))
+            .collect();
+        assert!(edge_keys.contains(&(
+            "input".to_string(),
+            "cap_0".to_string(),
+            "cap:in=media:pdf;op=extract;out=media:text".to_string(),
+        )));
+        assert!(edge_keys.contains(&(
+            "cap_0".to_string(),
+            "cap_1".to_string(),
+            "cap:in=media:text;op=summarize;out=media:summary".to_string(),
+        )));
     }
 
     // TEST770: plan_to_resolved_graph rejects plans containing ForEach nodes
     #[tokio::test]
     async fn test770_rejects_foreach() {
-        let registry = MockRegistry::new();
-        registry.add_cap("cap:in=media:pdf;op=disbind;out=media:pdf-page").await;
-        registry.add_cap("cap:in=media:pdf-page;op=process;out=media:text").await;
+        let registry = build_test_registry(&[
+            "cap:in=media:pdf;op=disbind;out=media:pdf-page",
+            "cap:in=media:pdf-page;op=process;out=media:text",
+        ]);
 
         let mut plan = MachinePlan::new("foreach_plan");
         plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
@@ -269,9 +299,10 @@ mod tests {
     // TEST771: plan_to_resolved_graph rejects plans containing Collect nodes
     #[tokio::test]
     async fn test771_rejects_collect() {
-        let registry = MockRegistry::new();
-        registry.add_cap("cap:in=media:pdf;op=disbind;out=media:pdf-page").await;
-        registry.add_cap("cap:in=media:pdf-page;op=process;out=media:text").await;
+        let registry = build_test_registry(&[
+            "cap:in=media:pdf;op=disbind;out=media:pdf-page",
+            "cap:in=media:pdf-page;op=process;out=media:text",
+        ]);
 
         let mut plan = MachinePlan::new("collect_plan");
         plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
@@ -298,8 +329,7 @@ mod tests {
     // TEST953: Linear plans (no ForEach/Collect) still convert successfully
     #[tokio::test]
     async fn test953_linear_plan_still_works() {
-        let registry = MockRegistry::new();
-        registry.add_cap("cap:in=media:pdf;op=extract;out=media:text").await;
+        let registry = build_test_registry(&["cap:in=media:pdf;op=extract;out=media:text"]);
 
         let mut plan = MachinePlan::new("linear_plan");
         plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
@@ -320,9 +350,10 @@ mod tests {
     // should be rewritten to go from cap_0 to cap_1 directly.
     #[tokio::test]
     async fn test954_standalone_collect_passthrough() {
-        let registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in=media:pdf;op=extract;out="media:text;textable""#).await;
-        registry.add_cap(r#"cap:in="media:list;text;textable";op=embed;out="media:embedding-vector;record;textable""#).await;
+        let registry = build_test_registry(&[
+            r#"cap:in=media:pdf;op=extract;out="media:text;textable""#,
+            r#"cap:in="media:list;text;textable";op=embed;out="media:embedding-vector;record;textable""#,
+        ]);
 
         let mut plan = MachinePlan::new("collect_plan");
         plan.add_node(MachineNode::input_slot("input", "input", "media:pdf", InputCardinality::Single));
@@ -349,18 +380,33 @@ mod tests {
         assert!(result.is_ok(), "Plan with standalone Collect should convert: {:?}", result.err());
 
         let graph = result.unwrap();
-        // Two resolved edges: input→cap_0, cap_0→cap_1 (Collect resolved through)
+        // Two resolved edges: input→cap_0 and cap_0→cap_1 (the
+        // standalone Collect node is resolved through, so its
+        // outgoing edge becomes a direct cap_0 → cap_1 edge).
+        // HashMap iteration order is non-deterministic, so
+        // assert by membership rather than by index.
         assert_eq!(graph.edges.len(), 2, "Expected 2 edges, got {}: {:?}",
             graph.edges.len(), graph.edges.iter().map(|e| format!("{}→{}", e.from, e.to)).collect::<Vec<_>>());
 
-        // First edge: input → cap_0
-        assert_eq!(graph.edges[0].from, "input");
-        assert_eq!(graph.edges[0].to, "cap_0");
-
-        // Second edge: cap_0 → cap_1 (NOT collect_0 → cap_1)
-        assert_eq!(graph.edges[1].from, "cap_0",
-            "Standalone Collect should be resolved through — edge should come from cap_0, not collect_0");
-        assert_eq!(graph.edges[1].to, "cap_1");
+        let edge_pairs: std::collections::HashSet<(String, String)> = graph
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone()))
+            .collect();
+        assert!(
+            edge_pairs.contains(&("input".to_string(), "cap_0".to_string())),
+            "expected input → cap_0 edge"
+        );
+        assert!(
+            edge_pairs.contains(&("cap_0".to_string(), "cap_1".to_string())),
+            "expected cap_0 → cap_1 edge (Collect resolved through)"
+        );
+        // The standalone Collect should NOT appear as an
+        // edge endpoint — it's a pass-through.
+        assert!(
+            !edge_pairs.iter().any(|(f, t)| f == "collect_0" || t == "collect_0"),
+            "standalone Collect must not appear as an edge endpoint"
+        );
 
         // has_foreach should be false (standalone Collect does NOT trigger ForEach execution path)
         assert!(!plan.has_foreach(),

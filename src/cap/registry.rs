@@ -584,27 +584,35 @@ impl CapRegistry {
     /// Create an empty registry for testing purposes.
     /// This is a synchronous constructor that doesn't perform any initialization.
     /// Intended for use in tests only - creates a registry with no network configuration.
+    /// The mandatory identity cap is auto-installed so the resolver's
+    /// source-to-cap-arg matching can route through identity in any
+    /// notation, matching the production `CapRegistry::new` invariant.
     pub fn new_for_test() -> Self {
         use std::path::PathBuf;
-        Self {
+        let registry = Self {
             client: reqwest::Client::new(),
             cache_dir: PathBuf::from("/tmp/capdag-test-cache"),
             cached_caps: Arc::new(Mutex::new(HashMap::new())),
             config: RegistryConfig::default(),
             offline_flag: Arc::new(AtomicBool::new(false)),
-        }
+        };
+        registry.ensure_identity_cap();
+        registry
     }
 
-    /// Create a registry for testing with a custom configuration
+    /// Create a registry for testing with a custom configuration.
+    /// The mandatory identity cap is auto-installed (see `new_for_test`).
     pub fn new_for_test_with_config(config: RegistryConfig) -> Self {
         use std::path::PathBuf;
-        Self {
+        let registry = Self {
             client: reqwest::Client::new(),
             cache_dir: PathBuf::from("/tmp/capdag-test-cache"),
             cached_caps: Arc::new(Mutex::new(HashMap::new())),
             config,
             offline_flag: Arc::new(AtomicBool::new(false)),
-        }
+        };
+        registry.ensure_identity_cap();
+        registry
     }
 
     /// Add caps to the in-memory cache for testing purposes.

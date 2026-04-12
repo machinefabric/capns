@@ -270,26 +270,37 @@ pub struct Strand {
 }
 
 impl Strand {
-    /// Convert this resolved path to a machine graph.
+    /// Convert this resolved strand into a single-strand
+    /// `Machine`. Each `Cap` step becomes one resolved
+    /// `MachineEdge`; `ForEach` sets `is_loop` on the next cap;
+    /// `Collect` is elided.
     ///
-    /// Cap steps become edges; ForEach sets `is_loop` on the next cap;
-    /// Collect is elided (implicit in transitions).
-    /// Convert this resolved strand into a `Machine`.
+    /// Resolution requires the cap registry to look up each
+    /// cap's argument list (used by the Hungarian source-to-
+    /// arg matching algorithm).
     ///
-    /// Fails if the strand contains no capability steps.
-    pub fn knit(&self) -> Result<crate::machine::Machine, crate::machine::MachineAbstractionError> {
-        crate::machine::Machine::from_path(self)
+    /// Fails if the strand contains no capability steps, if
+    /// any cap is not in the registry, if a source cannot be
+    /// matched to a cap arg, if the matching is ambiguous, or
+    /// if the resolved data-flow graph contains a cycle.
+    pub fn knit(
+        &self,
+        registry: &crate::cap::registry::CapRegistry,
+    ) -> Result<crate::machine::Machine, crate::machine::MachineAbstractionError> {
+        crate::machine::Machine::from_strand(self, registry)
     }
 
-    /// Serialize this resolved path to canonical one-line
-    /// machine notation. This is the primary identifier for
-    /// accessibility and comparison.
+    /// Serialize this resolved strand to canonical one-line
+    /// machine notation. This is the primary identifier used
+    /// for accessibility and persistence.
     ///
-    /// Fails if the strand cannot be converted to a machine or
-    /// the resulting machine's data-flow cannot be serialized
-    /// (cycles, ambiguous fan-in).
-    pub fn to_machine_notation(&self) -> Result<String, crate::machine::MachineAbstractionError> {
-        self.knit()?.to_machine_notation()
+    /// Same failure modes as `knit`, since this method first
+    /// builds the `Machine` and then serializes it.
+    pub fn to_machine_notation(
+        &self,
+        registry: &crate::cap::registry::CapRegistry,
+    ) -> Result<String, crate::machine::MachineAbstractionError> {
+        self.knit(registry)?.to_machine_notation()
     }
 }
 
@@ -829,7 +840,6 @@ impl LiveCapGraph {
             );
 
             total_nodes_explored += nodes_this_depth;
-            let new_paths = all_paths.len() - paths_before;
 
             // Report progress after each depth
             on_event(PathFindingEvent::DepthComplete {
@@ -1112,6 +1122,49 @@ mod tests {
             media_specs: vec![],
             output: None,
             args: vec![],
+            metadata_json: None,
+            registered_by: None,
+        }
+    }
+
+    /// Build a `Cap` whose `args` list is populated with a
+    /// stdin arg matching the `in_spec`. Required for tests
+    /// that pass a strand built from this cap into
+    /// `Strand::knit` or `Strand::to_machine_notation`, since
+    /// the resolver looks up the cap's args list to compute
+    /// the source-to-arg matching.
+    fn make_test_cap_with_arg(
+        in_spec: &str,
+        out_spec: &str,
+        op: &str,
+        title: &str,
+    ) -> Cap {
+        use crate::cap::definition::{ArgSource, CapArg, CapOutput};
+        use crate::urn::cap_urn::CapUrnBuilder;
+
+        let cap_urn = CapUrnBuilder::new()
+            .in_spec(in_spec)
+            .out_spec(out_spec)
+            .tag("op", op)
+            .build()
+            .expect("Failed to build test cap URN");
+
+        Cap {
+            urn: cap_urn,
+            title: title.to_string(),
+            cap_description: None,
+            documentation: None,
+            metadata: Default::default(),
+            command: "test".to_string(),
+            media_specs: vec![],
+            output: Some(CapOutput::new(out_spec.to_string(), title.to_string())),
+            args: vec![CapArg::new(
+                in_spec.to_string(),
+                true,
+                vec![ArgSource::Stdin {
+                    stdin: in_spec.to_string(),
+                }],
+            )],
             metadata_json: None,
             registered_by: None,
         }
@@ -1902,5 +1955,93 @@ mod tests {
 
         let foreach_edge = edges.iter().find(|(e, _)| matches!(e.edge_type, LiveMachinePlanEdgeType::ForEach));
         assert!(foreach_edge.is_none(), "Should NOT synthesize ForEach without cap consumers");
+    }
+
+    // TEST800: Strand::knit returns a single-strand Machine via the new
+    // resolver. Smoke test the registry-threaded API end-to-end.
+    #[test]
+    fn test800_strand_knit_with_registry_returns_single_strand_machine() {
+        use crate::cap::registry::CapRegistry;
+
+        let cap = make_test_cap_with_arg(
+            "media:pdf",
+            "media:txt;textable",
+            "extract",
+            "Extract",
+        );
+        let registry = CapRegistry::new_for_test();
+        registry.add_caps_to_cache(vec![cap]);
+
+        let cap_urn = CapUrn::from_string(
+            "cap:in=media:pdf;op=extract;out=media:txt;textable",
+        )
+        .unwrap();
+        let strand = Strand {
+            steps: vec![StrandStep {
+                step_type: StrandStepType::Cap {
+                    cap_urn: cap_urn.clone(),
+                    title: "Extract".to_string(),
+                    specificity: 0,
+                    input_is_sequence: false,
+                    output_is_sequence: false,
+                },
+                from_spec: MediaUrn::from_string("media:pdf").unwrap(),
+                to_spec: MediaUrn::from_string("media:txt;textable").unwrap(),
+            }],
+            source_spec: MediaUrn::from_string("media:pdf").unwrap(),
+            target_spec: MediaUrn::from_string("media:txt;textable").unwrap(),
+            total_steps: 1,
+            cap_step_count: 1,
+            description: "pdf to txt".to_string(),
+        };
+
+        let machine = strand.knit(&registry).expect("knit must succeed");
+        assert_eq!(machine.strand_count(), 1);
+        assert_eq!(machine.strands()[0].edges().len(), 1);
+
+        // Same registry → `to_machine_notation` produces the
+        // same canonical form as the explicit knit + serialize.
+        let direct = strand.to_machine_notation(&registry).expect("must serialize");
+        let via_machine = machine.to_machine_notation().unwrap();
+        assert_eq!(direct, via_machine);
+    }
+
+    // TEST801: Strand::knit fails hard when the cap is not in
+    // the registry — the planner produces strands referencing
+    // caps that must be present in the cap registry's cache for
+    // resolution to succeed.
+    #[test]
+    fn test801_strand_knit_unknown_cap_fails_hard() {
+        use crate::cap::registry::CapRegistry;
+        use crate::machine::MachineAbstractionError;
+
+        let registry = CapRegistry::new_for_test();
+        // Note: no caps added to the registry.
+
+        let cap_urn = CapUrn::from_string(
+            "cap:in=media:pdf;op=ghost;out=media:txt;textable",
+        )
+        .unwrap();
+        let strand = Strand {
+            steps: vec![StrandStep {
+                step_type: StrandStepType::Cap {
+                    cap_urn: cap_urn.clone(),
+                    title: "Ghost".to_string(),
+                    specificity: 0,
+                    input_is_sequence: false,
+                    output_is_sequence: false,
+                },
+                from_spec: MediaUrn::from_string("media:pdf").unwrap(),
+                to_spec: MediaUrn::from_string("media:txt;textable").unwrap(),
+            }],
+            source_spec: MediaUrn::from_string("media:pdf").unwrap(),
+            target_spec: MediaUrn::from_string("media:txt;textable").unwrap(),
+            total_steps: 1,
+            cap_step_count: 1,
+            description: "ghost strand".to_string(),
+        };
+
+        let err = strand.knit(&registry).unwrap_err();
+        assert!(matches!(err, MachineAbstractionError::UnknownCap { .. }));
     }
 }

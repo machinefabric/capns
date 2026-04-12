@@ -269,4 +269,4 @@ Comparable providers may not be dispatchable. Always check `is_dispatchable` fir
 | Preference | Exact (0) > Refinement (+) > Fallback (-) |
 | Tie-break | First registered (default) |
 
-Ranking is policy, not semantics. The dispatch predicate defines validity; ranking determines selection among valid options.
+Ranking is policy, not semantics. The dispatch predicate defines validity; ranking determines selection among valid options. Once a sequence of caps has been resolved into a workflow, that workflow is encoded as a graph and serialized via [07-MACHINE-NOTATION](./07-MACHINE-NOTATION.md).

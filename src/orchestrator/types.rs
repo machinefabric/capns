@@ -152,23 +152,9 @@ fn mermaid_escape(s: &str) -> String {
 // Cap Registry Trait
 // =============================================================================
 
-/// Trait for Cap registry abstraction
-///
-/// This allows dependency injection and testing without network access
-#[async_trait::async_trait]
-pub trait CapRegistryTrait: Send + Sync {
-    /// Look up a cap by URN
-    async fn lookup(&self, urn: &str) -> Result<Cap, ParseOrchestrationError>;
-}
-
-/// Implementation for capdag::CapRegistry
-#[async_trait::async_trait]
-impl CapRegistryTrait for crate::CapRegistry {
-    async fn lookup(&self, urn: &str) -> Result<Cap, ParseOrchestrationError> {
-        self.get_cap(urn)
-            .await
-            .map_err(|_e| ParseOrchestrationError::CapNotFound {
-                cap_urn: urn.to_string(),
-            })
-    }
-}
+// `CapRegistryTrait` is gone. The orchestrator parser used it
+// only to indirect over the concrete `CapRegistry` for testing,
+// but under the new resolver regime `Machine::from_string`
+// itself takes `&CapRegistry` to compute source-to-arg
+// matching. Tests use `CapRegistry::new_for_test()` +
+// `add_caps_to_cache(...)` instead of a hand-built mock.

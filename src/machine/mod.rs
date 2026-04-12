@@ -1,46 +1,48 @@
-//! Machine notation — compact, round-trippable DAG path identifiers
+//! Machine notation — anchor-realized DAG of capability strands.
 //!
-//! Machine notation replaces the DOT file format for describing capability
-//! transformation paths. It provides:
+//! A `Machine` is the canonical, anchor-realized form of one
+//! or more capability strands. Each strand inside a machine is
+//! a `MachineStrand` — a maximal connected sub-graph of resolved
+//! cap edges with explicit input and output anchors.
 //!
-//! - A typed graph model (`Machine`, `MachineEdge`) with semantic equivalence
-//! - A compact textual format for serialization
-//! - Conversion from resolved paths (`Strand`)
+//! See [`07-MACHINE-NOTATION`](../../docs/07-MACHINE-NOTATION.md)
+//! for the full specification.
+//!
+//! ## Layers
+//!
+//! - `Strand` (planner) — linear cap-step sequence, no anchors
+//! - `Machine` (this module) — anchor-realized graph
+//! - `MachineRun` — concrete execution against actual inputs
 //!
 //! ## Format
 //!
-//! Two equally valid statement forms — bracketed and line-based:
-//!
-//! ```text
-//! extract cap:in="media:pdf";op=extract_text;out="media:txt;textable"
-//! embed cap:in="media:textable";op=generate_embeddings;out="media:embedding-vector;record;textable"
-//! doc -> extract -> text
-//! text -> embed -> vectors
-//! ```
-//!
-//! Bracketed form wraps each statement in `[...]` and can be freely mixed:
+//! Machine notation has two equally valid surface forms:
 //!
 //! ```text
 //! [extract cap:in="media:pdf";op=extract_text;out="media:txt;textable"]
+//! [embed cap:in="media:textable";op=generate_embeddings;out="media:embedding-vector;record;textable"]
 //! [doc -> extract -> text]
+//! [text -> embed -> vectors]
 //! ```
 //!
-//! There are two kinds of statement:
-//!
-//! - **Headers**: `alias cap:...` — define a capability with an alias
-//! - **Wirings**: `src -> alias -> dst` — connect nodes through capabilities
-//!
-//! Fan-in groups: `(a, b) -> alias -> dst` — multiple sources feed one cap.
-//! Loop edges: `src -> LOOP alias -> dst` — ForEach iteration semantics.
+//! and the line-based form (one statement per line, no
+//! brackets). Both can be freely mixed in the same input.
 
 pub mod error;
 pub mod graph;
 pub mod notation_ast;
 pub mod parser;
+pub mod resolve;
 pub mod serializer;
 
-pub use error::{MachineAbstractionError, MachineSyntaxError};
-pub use graph::{Machine, MachineEdge, MachineRun, MachineRunStatus};
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
+pub use error::{MachineAbstractionError, MachineParseError, MachineSyntaxError};
+pub use graph::{
+    EdgeAssignmentBinding, Machine, MachineEdge, MachineRun, MachineRunStatus, MachineStrand,
+    NodeId,
+};
 pub use notation_ast::{
     parse_notation_ast, get_completion_context, emit_semantic_tokens,
     build_editor_model, byte_offset_to_position,
@@ -48,5 +50,5 @@ pub use notation_ast::{
     NotationGraphElementInfo, NotationGraphElementKind, NotationPosition, NotationSpan,
     ParsedHeader, ParsedStatement, ParsedWiring, SemanticTokenInfo, SemanticTokenType,
 };
-pub use parser::parse_machine;
+pub use parser::{parse_machine, parse_machine_with_node_names, StrandNodeNames};
 pub use serializer::NotationFormat;

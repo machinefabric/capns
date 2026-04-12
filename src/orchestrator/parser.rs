@@ -1,13 +1,20 @@
-//! Machine notation parsing and Cap URN resolution for orchestration
+//! Machine notation parsing and Cap URN resolution for orchestration.
 //!
-//! Parses machine notation and resolves cap URNs via a registry, validates
-//! the graph, and produces a validated, executable DAG IR.
+//! The orchestrator parses machine notation through
+//! `parse_machine_with_node_names`, then walks the resolved
+//! `Machine`'s strands to build a `ResolvedGraph` keyed on the
+//! user's original node names. The resolved Machine carries
+//! the source-to-cap-arg assignment (computed by the resolver's
+//! Hungarian matching) and the canonical edge order; the
+//! orchestrator's job here is to translate those into the
+//! edge-centric `ResolvedGraph` shape that the executor consumes.
 
-use super::types::{CapRegistryTrait, ParseOrchestrationError, ResolvedEdge, ResolvedGraph};
-use super::validation::validate_dag;
+use super::types::{ParseOrchestrationError, ResolvedEdge, ResolvedGraph};
+use crate::cap::registry::CapRegistry;
+use crate::machine::{parse_machine_with_node_names, MachineParseError, NodeId, StrandNodeNames};
 use crate::{InputStructure, MediaUrn};
-use crate::machine::graph::Machine;
 use std::collections::HashMap;
+
 
 /// Check if two media URNs are on the same specialization chain.
 ///
@@ -56,134 +63,139 @@ fn check_structure_compatibility(
 /// doc -> extract -> text
 /// ```
 ///
-/// Each cap URN is resolved via the registry. Node media URNs are derived
-/// from the cap's in=/out= specs. Media type consistency and structure
-/// compatibility (record vs opaque) are validated at each node.
+/// Notation parsing goes through `Machine::from_string` (via
+/// `parse_machine_with_node_names`), which performs the
+/// resolver's source-to-cap-arg matching, cycle detection, and
+/// canonical edge ordering. The orchestrator then walks the
+/// resolved strands and translates each cap binding into a
+/// `ResolvedEdge`, keying nodes on the user's original node
+/// names (preserved by the parser via the per-strand
+/// `StrandNodeNames` map).
 ///
 /// # Errors
 ///
 /// Returns `ParseOrchestrationError` for any validation failure.
 pub async fn parse_machine_to_cap_dag(
     notation: &str,
-    registry: &dyn CapRegistryTrait,
+    registry: &CapRegistry,
 ) -> Result<ResolvedGraph, ParseOrchestrationError> {
-    // Step 1: Parse machine notation into a Machine.
-    // This validates syntax, resolves aliases, checks media type consistency,
-    // and derives media URNs from cap in/out specs.
-    let machine = Machine::from_string(notation)
-        .map_err(|e| ParseOrchestrationError::MachineSyntaxParseFailed(format!("{}", e)))?;
+    // Phase 1: Parse + resolve. The resolver does the
+    // syntactic parse, the source-to-cap-arg matching, the
+    // cycle detection, and the canonical edge ordering. It
+    // also rejects unknown caps. The orchestrator's
+    // contributions are: the user node-name keying, the
+    // per-binding `ResolvedEdge` shape the executor consumes,
+    // and the structure-compatibility check (record vs
+    // opaque).
+    let (machine, strand_node_names) = parse_machine_with_node_names(notation, registry)
+        .map_err(translate_machine_parse_error)?;
 
-    // Step 2: Extract node names from the machine notation.
-    // Machine discards node names (they're serialization concerns), but
-    // the executor uses them as data-flow keys.
-    let wiring_info = extract_wiring_info(notation)?;
-
-    // Validate that wiring count matches edge count. These must align because
-    // the machine parser builds edges in wiring statement order.
-    if wiring_info.len() != machine.edges().len() {
-        return Err(ParseOrchestrationError::MachineSyntaxParseFailed(format!(
-            "internal error: {} wirings but {} edges — machine parser edge ordering invariant violated",
-            wiring_info.len(),
-            machine.edges().len()
-        )));
-    }
-
-    // Step 3: For each edge in the machine graph, resolve the cap via registry
-    // and build ResolvedEdge entries. Validate media type and structure
-    // compatibility at every node.
+    // Phase 2: For each strand, build a reverse `NodeId →
+    // user node name` map so we can produce `ResolvedEdge`s
+    // keyed on names. Then walk the strand's edges and emit
+    // one `ResolvedEdge` per binding (cap arg).
     let mut node_media: HashMap<String, MediaUrn> = HashMap::new();
-    let mut resolved_edges = Vec::new();
+    let mut resolved_edges: Vec<ResolvedEdge> = Vec::new();
 
-    for (edge_idx, edge) in machine.edges().iter().enumerate() {
-        let cap_urn_str = edge.cap_urn.to_string();
-        let cap = registry.lookup(&cap_urn_str).await?;
+    for (strand, name_to_id) in machine.strands().iter().zip(strand_node_names.iter()) {
+        let id_to_name = invert_node_names(name_to_id);
 
-        let cap_in_media = edge.cap_urn.in_media_urn()
-            .map_err(|e| ParseOrchestrationError::MediaUrnParseError(format!("{:?}", e)))?;
-        let cap_out_media = edge.cap_urn.out_media_urn()
-            .map_err(|e| ParseOrchestrationError::MediaUrnParseError(format!("{:?}", e)))?;
+        for edge in strand.edges() {
+            let cap_urn_str = edge.cap_urn.to_string();
+            let cap = registry.get_cached_cap(&cap_urn_str).ok_or_else(|| {
+                // The resolver already verified the cap is in
+                // the cache; if it isn't reachable here we have
+                // a registry race or a programming error.
+                ParseOrchestrationError::CapNotFound {
+                    cap_urn: cap_urn_str.clone(),
+                }
+            })?;
 
-        let wiring = &wiring_info[edge_idx];
+            // The cap's declared output URN (`cap.urn.out_spec()`)
+            // is the data-type URN of what flows out of this cap
+            // on the wire. The target node's URN in the resolved
+            // strand is computed by the parser from the same
+            // cap.out spec, so they're consistent.
+            let cap_out_media = edge.cap_urn.out_media_urn().map_err(|e| {
+                ParseOrchestrationError::MediaUrnParseError(format!("{:?}", e))
+            })?;
 
-        // Build resolved edges — one per source (fan-in produces multiple edges
-        // pointing to the same target, matching the executor's expectations)
-        for (i, src_name) in wiring.source_names.iter().enumerate() {
-            let edge_in_media = if i == 0 {
-                // Primary source: use cap's in= spec
-                cap_in_media.clone()
-            } else {
-                // Secondary source (fan-in): resolve from existing assignment
-                // or from the cap's args list (e.g., model-spec inputs).
-                let existing = node_media.get(src_name);
-                let is_wildcard = existing.map_or(false, |m| m.to_string() == "media:");
-                if let Some(media) = existing.filter(|_| !is_wildcard) {
-                    media.clone()
-                } else {
-                    // Resolve from cap.args — secondary sources map to args
-                    // beyond the primary in= spec (arg index i-1 for source i).
-                    let arg_idx = i - 1;
-                    let arg_media = cap.args.get(arg_idx).and_then(|arg| {
-                        MediaUrn::from_string(&arg.media_urn).ok()
-                    });
-                    match arg_media {
-                        Some(media) => media,
-                        None => {
-                            return Err(ParseOrchestrationError::MachineSyntaxParseFailed(format!(
-                                "fan-in secondary source '{}' (index {}) has no media type and \
-                                 cap '{}' has no matching arg at index {}",
-                                src_name, i, cap_urn_str, arg_idx
-                            )));
-                        }
+            let target_name = lookup_node_name(&id_to_name, edge.target)?;
+
+            // Each binding becomes one ResolvedEdge. The
+            // executor expects fan-in caps to surface as
+            // multiple parallel edges into the same target.
+            //
+            // The binding's `cap_arg_media_urn` is the cap's
+            // **slot identity** (the arg's outer `media_urn`,
+            // e.g. `media:file-path;textable`). At the
+            // wire-level the executor labels each input stream
+            // with the source's data-type URN — what was
+            // declared as the arg's stdin source URN, which
+            // equals the source node's resolved URN. We use
+            // `strand.node_urn(binding.source)` for both the
+            // orchestrator's `node_media` map (the user's view
+            // of "what type of data flows here") AND the
+            // `ResolvedEdge.in_media` field (the wire URN the
+            // executor will tag the stream with).
+            for binding in &edge.assignment {
+                let source_name = lookup_node_name(&id_to_name, binding.source)?;
+                let source_node_urn = strand.node_urn(binding.source).clone();
+
+                // Source node media compatibility check.
+                if let Some(existing) = node_media.get(&source_name) {
+                    if !media_urns_compatible(existing, &source_node_urn)? {
+                        return Err(ParseOrchestrationError::NodeMediaConflict {
+                            node: source_name.clone(),
+                            existing: existing.to_string(),
+                            required_by_cap: source_node_urn.to_string(),
+                        });
                     }
+                    check_structure_compatibility(existing, &source_node_urn, &source_name)?;
+                } else {
+                    node_media.insert(source_name.clone(), source_node_urn.clone());
                 }
-            };
 
-            // Validate source node media compatibility
-            if let Some(existing) = node_media.get(src_name) {
-                if !media_urns_compatible(existing, &edge_in_media)? {
-                    return Err(ParseOrchestrationError::NodeMediaConflict {
-                        node: src_name.clone(),
-                        existing: existing.to_string(),
-                        required_by_cap: edge_in_media.to_string(),
-                    });
+                // Target node media compatibility check.
+                if let Some(existing) = node_media.get(&target_name) {
+                    if !media_urns_compatible(existing, &cap_out_media)? {
+                        return Err(ParseOrchestrationError::NodeMediaConflict {
+                            node: target_name.clone(),
+                            existing: existing.to_string(),
+                            required_by_cap: cap_out_media.to_string(),
+                        });
+                    }
+                    check_structure_compatibility(&cap_out_media, existing, &target_name)?;
+                } else {
+                    node_media.insert(target_name.clone(), cap_out_media.clone());
                 }
-                check_structure_compatibility(existing, &edge_in_media, src_name)?;
-            } else {
-                node_media.insert(src_name.clone(), edge_in_media.clone());
+
+                resolved_edges.push(ResolvedEdge {
+                    from: source_name,
+                    to: target_name.clone(),
+                    cap_urn: cap_urn_str.clone(),
+                    cap: cap.clone(),
+                    in_media: source_node_urn.to_string(),
+                    out_media: cap_out_media.to_string(),
+                });
             }
-
-            // Validate target node media compatibility
-            if let Some(existing) = node_media.get(&wiring.target_name) {
-                if !media_urns_compatible(existing, &cap_out_media)? {
-                    return Err(ParseOrchestrationError::NodeMediaConflict {
-                        node: wiring.target_name.clone(),
-                        existing: existing.to_string(),
-                        required_by_cap: cap_out_media.to_string(),
-                    });
-                }
-                check_structure_compatibility(&cap_out_media, existing, &wiring.target_name)?;
-            } else {
-                node_media.insert(wiring.target_name.clone(), cap_out_media.clone());
-            }
-
-            resolved_edges.push(ResolvedEdge {
-                from: src_name.clone(),
-                to: wiring.target_name.clone(),
-                cap_urn: cap_urn_str.clone(),
-                cap: cap.clone(),
-                in_media: edge_in_media.to_string(),
-                out_media: cap_out_media.to_string(),
-            });
         }
     }
 
-    // Step 4: DAG validation (cycle detection via topological sort)
+    // Cycle detection happens inside the resolver per-strand
+    // (Kahn's algorithm over the resolved data-flow NodeId
+    // graph). Since the parser pre-interns by user node name,
+    // a cycle in the user's name graph is identical to a
+    // cycle in the NodeId graph — and since two strands by
+    // definition share NO node names (interpretation A:
+    // strands are connected components of the user's wiring
+    // graph), there is no cross-strand cycle to worry about
+    // either. The orchestrator therefore does not run a
+    // second cycle pass.
     let node_media_strings: HashMap<String, String> = node_media
         .iter()
         .map(|(k, v)| (k.clone(), v.to_string()))
         .collect();
-
-    validate_dag(&node_media_strings, &resolved_edges)?;
 
     Ok(ResolvedGraph {
         nodes: node_media_strings,
@@ -192,105 +204,83 @@ pub async fn parse_machine_to_cap_dag(
     })
 }
 
-/// Information about a single wiring statement's node names.
-struct WiringInfo {
-    source_names: Vec<String>,
-    target_name: String,
+/// Translate a `MachineParseError` from the resolver into the
+/// orchestrator's error type. The resolver's cap / cycle /
+/// matching failures map onto the orchestrator's existing
+/// public error variants so callers see one consistent error
+/// surface for "this notation can't be turned into a DAG."
+fn translate_machine_parse_error(err: MachineParseError) -> ParseOrchestrationError {
+    use crate::machine::MachineAbstractionError;
+    match err {
+        MachineParseError::Resolution(MachineAbstractionError::UnknownCap { cap_urn }) => {
+            ParseOrchestrationError::CapNotFound { cap_urn }
+        }
+        MachineParseError::Resolution(MachineAbstractionError::CyclicMachineStrand {
+            strand_index,
+        }) => ParseOrchestrationError::NotADag {
+            cycle_nodes: vec![format!("strand {}", strand_index)],
+        },
+        other => ParseOrchestrationError::MachineSyntaxParseFailed(format!("{}", other)),
+    }
 }
 
-/// Extract wiring node names from machine notation via the pest parser.
-///
-/// The Machine model intentionally discards alias/node names (they're
-/// serialization concerns). But the executor uses node names as data-flow
-/// keys. This function extracts them from the wiring statements in order.
-fn extract_wiring_info(notation: &str) -> Result<Vec<WiringInfo>, ParseOrchestrationError> {
-    use pest::Parser;
-    use crate::machine::parser::{MachineParser, Rule};
-
-    let pairs = MachineParser::parse(Rule::program, notation.trim())
-        .map_err(|e| ParseOrchestrationError::MachineSyntaxParseFailed(format!("{}", e)))?;
-
-    let mut wirings: Vec<WiringInfo> = Vec::new();
-
-    let program = pairs.into_iter().next().unwrap();
-
-    for pair in program.into_inner() {
-        if pair.as_rule() != Rule::stmt {
-            continue;
-        }
-
-        let inner = pair.into_inner().next().unwrap();
-        let content = inner.into_inner().next().unwrap();
-
-        if content.as_rule() != Rule::wiring {
-            continue; // Skip headers — we only need wiring node names
-        }
-
-        let mut inner_pairs = content.into_inner();
-
-        // Parse source (single alias or group)
-        let source_pair = inner_pairs.next().unwrap();
-        let source_names = match source_pair.as_rule() {
-            Rule::source => {
-                let source_inner = source_pair.into_inner().next().unwrap();
-                match source_inner.as_rule() {
-                    Rule::group => {
-                        source_inner.into_inner()
-                            .filter(|p| p.as_rule() == Rule::alias)
-                            .map(|p| p.as_str().to_string())
-                            .collect()
-                    }
-                    Rule::alias => {
-                        vec![source_inner.as_str().to_string()]
-                    }
-                    other => panic!("BUG: source contains unexpected rule {:?}", other),
-                }
-            }
-            other => panic!("BUG: expected source rule, got {:?}", other),
-        };
-
-        // Skip arrow
-        inner_pairs.next();
-
-        // Skip loop_cap
-        inner_pairs.next();
-
-        // Skip arrow
-        inner_pairs.next();
-
-        // Target alias
-        let target_name = inner_pairs.next().unwrap().as_str().to_string();
-
-        wirings.push(WiringInfo {
-            source_names,
-            target_name,
-        });
+/// Invert a per-strand `name → NodeId` map into `NodeId → name`.
+/// The forward map is built by the parser when allocating
+/// `NodeId`s; the inverse is built once per strand here so we
+/// can label each binding with its user-written node name.
+fn invert_node_names(name_to_id: &StrandNodeNames) -> HashMap<NodeId, String> {
+    let mut out = HashMap::with_capacity(name_to_id.len());
+    for (name, id) in name_to_id {
+        out.insert(*id, name.clone());
     }
+    out
+}
 
-    Ok(wirings)
+fn lookup_node_name(
+    id_to_name: &HashMap<NodeId, String>,
+    id: NodeId,
+) -> Result<String, ParseOrchestrationError> {
+    id_to_name
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| ParseOrchestrationError::MachineSyntaxParseFailed(format!(
+            "internal error: NodeId {} has no user-written node name",
+            id
+        )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cap, CapUrn};
+    use crate::cap::definition::{ArgSource, Cap, CapArg, CapOutput};
+    use crate::cap::registry::CapRegistry;
+    use crate::urn::cap_urn::CapUrn;
     use std::collections::HashMap;
 
-    // Mock registry for testing
-    struct MockRegistry {
-        caps: HashMap<String, Cap>,
-    }
-
-    impl MockRegistry {
-        fn new() -> Self {
-            Self {
-                caps: HashMap::new(),
-            }
-        }
-
-        fn add_cap(&mut self, urn: &str) {
-            let cap_urn = CapUrn::from_string(urn).unwrap();
-            let cap = Cap {
+    /// Build a `CapRegistry::new_for_test()` populated with the
+    /// supplied `(cap_urn, args, out_media_urn)` triples. Each
+    /// arg gets a stdin source so the resolver's source-to-arg
+    /// matching can find it. The first arg is the primary
+    /// (data-flow) input; additional args become fan-in slots.
+    fn build_test_registry(caps: &[(&str, &[&str], &str)]) -> CapRegistry {
+        let registry = CapRegistry::new_for_test();
+        let mut cap_values = Vec::new();
+        for (cap_urn_str, args, out_media_urn) in caps {
+            let cap_urn = CapUrn::from_string(cap_urn_str)
+                .unwrap_or_else(|e| panic!("invalid test cap URN {}: {:?}", cap_urn_str, e));
+            let arg_values: Vec<CapArg> = args
+                .iter()
+                .map(|m| {
+                    CapArg::new(
+                        m.to_string(),
+                        true,
+                        vec![ArgSource::Stdin {
+                            stdin: m.to_string(),
+                        }],
+                    )
+                })
+                .collect();
+            cap_values.push(Cap {
                 urn: cap_urn,
                 title: "Test Cap".to_string(),
                 cap_description: None,
@@ -298,36 +288,17 @@ mod tests {
                 metadata: HashMap::new(),
                 command: "test".to_string(),
                 media_specs: vec![],
-                args: vec![],
-                output: None,
+                args: arg_values,
+                output: Some(CapOutput::new(
+                    out_media_urn.to_string(),
+                    "Test output".to_string(),
+                )),
                 metadata_json: None,
                 registered_by: None,
-            };
-            self.caps.insert(urn.to_string(), cap);
+            });
         }
-    }
-
-    #[async_trait::async_trait]
-    impl CapRegistryTrait for MockRegistry {
-        async fn lookup(&self, urn: &str) -> Result<Cap, ParseOrchestrationError> {
-            let normalized = CapUrn::from_string(urn)
-                .map_err(|e| ParseOrchestrationError::CapUrnParseError(format!("{:?}", e)))?
-                .to_string();
-
-            self.caps
-                .iter()
-                .find(|(k, _)| {
-                    if let Ok(k_norm) = CapUrn::from_string(k) {
-                        k_norm.to_string() == normalized
-                    } else {
-                        false
-                    }
-                })
-                .map(|(_, v)| v.clone())
-                .ok_or_else(|| ParseOrchestrationError::CapNotFound {
-                    cap_urn: urn.to_string(),
-                })
-        }
+        registry.add_caps_to_cache(cap_values);
+        registry
     }
 
     // =========================================================================
@@ -336,8 +307,11 @@ mod tests {
 
     #[tokio::test]
     async fn parse_simple_machine() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:pdf";op=extract;out="media:txt;textable""#);
+        let registry = build_test_registry(&[(
+            r#"cap:in="media:pdf";op=extract;out="media:txt;textable""#,
+            &["media:pdf"],
+            "media:txt;textable",
+        )]);
 
         let notation = concat!(
             r#"[extract cap:in="media:pdf";op=extract;out="media:txt;textable"]"#,
@@ -365,9 +339,18 @@ mod tests {
 
     #[tokio::test]
     async fn parse_two_step_chain() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:pdf";op=extract;out="media:txt;textable""#);
-        registry.add_cap(r#"cap:in="media:txt;textable";op=embed;out="media:embedding-vector;record;textable""#);
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:pdf";op=extract;out="media:txt;textable""#,
+                &["media:pdf"],
+                "media:txt;textable",
+            ),
+            (
+                r#"cap:in="media:txt;textable";op=embed;out="media:embedding-vector;record;textable""#,
+                &["media:txt;textable"],
+                "media:embedding-vector;record;textable",
+            ),
+        ]);
 
         let notation = concat!(
             r#"[extract cap:in="media:pdf";op=extract;out="media:txt;textable"]"#,
@@ -396,10 +379,23 @@ mod tests {
 
     #[tokio::test]
     async fn parse_fan_out() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:pdf";op=extract_metadata;out="media:file-metadata;record;textable""#);
-        registry.add_cap(r#"cap:in="media:pdf";op=extract_outline;out="media:document-outline;record;textable""#);
-        registry.add_cap(r#"cap:in="media:pdf";op=generate_thumbnail;out="media:image;png;thumbnail""#);
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:pdf";op=extract_metadata;out="media:file-metadata;record;textable""#,
+                &["media:pdf"],
+                "media:file-metadata;record;textable",
+            ),
+            (
+                r#"cap:in="media:pdf";op=extract_outline;out="media:document-outline;record;textable""#,
+                &["media:pdf"],
+                "media:document-outline;record;textable",
+            ),
+            (
+                r#"cap:in="media:pdf";op=generate_thumbnail;out="media:image;png;thumbnail""#,
+                &["media:pdf"],
+                "media:image;png;thumbnail",
+            ),
+        ]);
 
         let notation = concat!(
             r#"[meta cap:in="media:pdf";op=extract_metadata;out="media:file-metadata;record;textable"]"#,
@@ -424,10 +420,27 @@ mod tests {
 
     #[tokio::test]
     async fn parse_fan_in() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:pdf";op=generate_thumbnail;out="media:image;png;thumbnail""#);
-        registry.add_cap(r#"cap:in="media:model-spec;textable";op=download;out="media:model-spec;textable""#);
-        registry.add_cap(r#"cap:in="media:image;png";op=describe_image;out="media:image-description;textable""#);
+        // The describe cap has TWO input args: image;png (the
+        // primary, declared in= spec) and model-spec;textable
+        // (a secondary fan-in input). The resolver's matching
+        // assigns each source URN to the right arg slot.
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:pdf";op=generate_thumbnail;out="media:image;png;thumbnail""#,
+                &["media:pdf"],
+                "media:image;png;thumbnail",
+            ),
+            (
+                r#"cap:in="media:model-spec;textable";op=download;out="media:model-spec;textable""#,
+                &["media:model-spec;textable"],
+                "media:model-spec;textable",
+            ),
+            (
+                r#"cap:in="media:image;png";op=describe_image;out="media:image-description;textable""#,
+                &["media:image;png", "media:model-spec;textable"],
+                "media:image-description;textable",
+            ),
+        ]);
 
         let notation = concat!(
             r#"[thumb cap:in="media:pdf";op=generate_thumbnail;out="media:image;png;thumbnail"]"#,
@@ -443,7 +456,7 @@ mod tests {
 
         let graph = result.unwrap();
         // Fan-in produces 2 resolved edges for the describe cap (one per source)
-        // plus 2 edges for thumb and model_dl = 4 total
+        // plus 2 edges for thumb and model_dl = 4 total.
         assert_eq!(graph.edges.len(), 4);
     }
 
@@ -453,8 +466,11 @@ mod tests {
 
     #[tokio::test]
     async fn parse_loop_wiring() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:disbound-page;textable";op=page_to_text;out="media:txt;textable""#);
+        let registry = build_test_registry(&[(
+            r#"cap:in="media:disbound-page;textable";op=page_to_text;out="media:txt;textable""#,
+            &["media:disbound-page;textable"],
+            "media:txt;textable",
+        )]);
 
         let notation = concat!(
             r#"[p2t cap:in="media:disbound-page;textable";op=page_to_text;out="media:txt;textable"]"#,
@@ -475,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn cap_not_found_in_registry() {
-        let registry = MockRegistry::new();
+        let registry = build_test_registry(&[]);
         let notation = concat!(
             r#"[ex cap:in="media:unknown";op=test;out="media:unknown"]"#,
             "[A -> ex -> B]"
@@ -492,7 +508,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_machine_notation() {
-        let registry = MockRegistry::new();
+        let registry = build_test_registry(&[]);
         let result = parse_machine_to_cap_dag("not valid", &registry).await;
         assert!(matches!(result, Err(ParseOrchestrationError::MachineSyntaxParseFailed(_))),
             "Expected MachineSyntaxParseFailed, got {:?}", result);
@@ -504,10 +520,15 @@ mod tests {
 
     #[tokio::test]
     async fn cycle_detection() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:txt;textable";op=process;out="media:txt;textable""#);
+        let registry = build_test_registry(&[(
+            r#"cap:in="media:txt;textable";op=process;out="media:txt;textable""#,
+            &["media:txt;textable"],
+            "media:txt;textable",
+        )]);
 
-        // A -> B -> C -> A creates a cycle
+        // A -> B -> C -> A creates a cycle (three wirings
+        // sharing nodes form one connected component → one
+        // strand → resolver detects the cycle).
         let notation = concat!(
             r#"[proc cap:in="media:txt;textable";op=process;out="media:txt;textable"]"#,
             "[A -> proc -> B]",
@@ -526,14 +547,23 @@ mod tests {
 
     #[tokio::test]
     async fn incompatible_media_types_at_shared_node() {
-        let mut registry = MockRegistry::new();
-        // Cap A outputs media:pdf
-        registry.add_cap(r#"cap:in="media:void";op=produce_pdf;out="media:pdf""#);
-        // Cap B inputs media:audio;wav — completely incompatible with pdf
-        registry.add_cap(r#"cap:in="media:audio;wav";op=transcribe;out="media:txt;textable""#);
+        // Cap A outputs media:pdf; cap B inputs media:audio;wav.
+        // These are completely incompatible at the shared node B,
+        // and the parser's lexical assign-or-check-node step
+        // catches it via `is_comparable`.
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:void";op=produce_pdf;out="media:pdf""#,
+                &["media:void"],
+                "media:pdf",
+            ),
+            (
+                r#"cap:in="media:audio;wav";op=transcribe;out="media:txt;textable""#,
+                &["media:audio;wav"],
+                "media:txt;textable",
+            ),
+        ]);
 
-        // B is the shared node: cap A says it should be media:pdf,
-        // cap B says it should be media:audio;wav. These are incompatible.
         let notation = concat!(
             r#"[produce cap:in="media:void";op=produce_pdf;out="media:pdf"]"#,
             r#"[transcribe cap:in="media:audio;wav";op=transcribe;out="media:txt;textable"]"#,
@@ -542,7 +572,6 @@ mod tests {
         );
 
         let result = parse_machine_to_cap_dag(notation, &registry).await;
-        // Machine notation catches media conflicts during parsing, before orchestrator validation
         assert!(matches!(result, Err(ParseOrchestrationError::MachineSyntaxParseFailed(_))),
             "Expected MachineSyntaxParseFailed for pdf vs audio at shared node, got {:?}", result);
     }
@@ -553,11 +582,24 @@ mod tests {
 
     #[tokio::test]
     async fn compatible_media_urns_at_shared_node() {
-        let mut registry = MockRegistry::new();
-        // Cap A outputs media:image;png (less specific)
-        registry.add_cap(r#"cap:in="media:pdf";op=thumbnail;out="media:image;png""#);
-        // Cap B inputs media:image;png;bytes (more specific, but on same chain)
-        registry.add_cap(r#"cap:in="media:image;png;bytes";op=embed_image;out="media:embedding-vector;record;textable""#);
+        // Cap A outputs media:image;png; cap B inputs
+        // media:image;png;bytes. The parser's lexical
+        // is_comparable accepts the chain (bytes is more
+        // specific). The resolver's matching then assigns the
+        // image;png;bytes source URN (held at the shared node)
+        // to cap B's image;png;bytes arg slot.
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:pdf";op=thumbnail;out="media:image;png""#,
+                &["media:pdf"],
+                "media:image;png",
+            ),
+            (
+                r#"cap:in="media:image;png;bytes";op=embed_image;out="media:embedding-vector;record;textable""#,
+                &["media:image;png;bytes"],
+                "media:embedding-vector;record;textable",
+            ),
+        ]);
 
         let notation = concat!(
             r#"[thumb cap:in="media:pdf";op=thumbnail;out="media:image;png"]"#,
@@ -578,11 +620,26 @@ mod tests {
 
     #[tokio::test]
     async fn structure_mismatch_record_to_opaque() {
-        let mut registry = MockRegistry::new();
-        // Cap A outputs record
-        registry.add_cap(r#"cap:in="media:void";op=produce;out="media:json;record;textable""#);
-        // Cap B inputs opaque (no record tag)
-        registry.add_cap(r#"cap:in="media:json;textable";op=process;out="media:txt;textable""#);
+        // Cap A outputs record (media:json;record;textable),
+        // cap B inputs opaque (media:json;textable, no record).
+        // The parser's lexical is_comparable check passes
+        // because both URNs are on the same `textable` chain
+        // (one with `record`, one without — `record` is the
+        // additional tag). The orchestrator's
+        // structure-compatibility check is what catches the
+        // mismatch.
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:void";op=produce;out="media:json;record;textable""#,
+                &["media:void"],
+                "media:json;record;textable",
+            ),
+            (
+                r#"cap:in="media:json;textable";op=process;out="media:txt;textable""#,
+                &["media:json;textable"],
+                "media:txt;textable",
+            ),
+        ]);
 
         let notation = concat!(
             r#"[produce cap:in="media:void";op=produce;out="media:json;record;textable"]"#,
@@ -602,9 +659,18 @@ mod tests {
 
     #[tokio::test]
     async fn structure_match_both_record() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:void";op=produce;out="media:json;record;textable""#);
-        registry.add_cap(r#"cap:in="media:json;record;textable";op=transform;out="media:result;record;textable""#);
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:void";op=produce;out="media:json;record;textable""#,
+                &["media:void"],
+                "media:json;record;textable",
+            ),
+            (
+                r#"cap:in="media:json;record;textable";op=transform;out="media:result;record;textable""#,
+                &["media:json;record;textable"],
+                "media:result;record;textable",
+            ),
+        ]);
 
         let notation = concat!(
             r#"[produce cap:in="media:void";op=produce;out="media:json;record;textable"]"#,
@@ -624,9 +690,18 @@ mod tests {
 
     #[tokio::test]
     async fn structure_match_both_opaque() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:void";op=produce;out="media:json;textable""#);
-        registry.add_cap(r#"cap:in="media:json;textable";op=format;out="media:txt;textable""#);
+        let registry = build_test_registry(&[
+            (
+                r#"cap:in="media:void";op=produce;out="media:json;textable""#,
+                &["media:void"],
+                "media:json;textable",
+            ),
+            (
+                r#"cap:in="media:json;textable";op=format;out="media:txt;textable""#,
+                &["media:json;textable"],
+                "media:txt;textable",
+            ),
+        ]);
 
         let notation = concat!(
             r#"[produce cap:in="media:void";op=produce;out="media:json;textable"]"#,
@@ -646,8 +721,11 @@ mod tests {
 
     #[tokio::test]
     async fn parse_multiline_machine() {
-        let mut registry = MockRegistry::new();
-        registry.add_cap(r#"cap:in="media:pdf";op=extract;out="media:txt;textable""#);
+        let registry = build_test_registry(&[(
+            r#"cap:in="media:pdf";op=extract;out="media:txt;textable""#,
+            &["media:pdf"],
+            "media:txt;textable",
+        )]);
 
         let notation = r#"
 [extract cap:in="media:pdf";op=extract;out="media:txt;textable"]

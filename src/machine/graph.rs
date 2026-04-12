@@ -1,129 +1,520 @@
-//! Machine graph — typed DAG representation for machine notation
+//! Machine graph — anchor-realized representation of one or more strands.
 //!
-//! A `Machine` is the semantic model behind machine notation. It represents
-//! a directed acyclic graph of capability edges, where each edge transforms
-//! one or more source media types into a target media type via a capability.
+//! A `Machine` is the canonical, anchor-realized form of a set
+//! of capability strands. It is the layer between a planner
+//! `Strand` (linear cap-step sequence, no anchor commitment)
+//! and a `MachineRun` (concrete execution against actual
+//! input data).
+//!
+//! ## Layers
+//!
+//! | Layer | Type | Anchor commitment? | Cap-arg assignment? | Inputs from? |
+//! |-------|------|--------------------|---------------------|--------------|
+//! | Planner | `Strand` | no | no | media URN patterns |
+//! | Anchored | `Machine` (this module) | yes | yes (resolved) | anchor URNs |
+//! | Concrete | `MachineRun` | yes | yes | actual input files |
+//!
+//! ## Structure
+//!
+//! ```text
+//! Machine
+//!  └── strands: Vec<MachineStrand>     // ordered, declaration-order matters
+//!       ├── nodes: Vec<MediaUrn>        // data positions in this strand
+//!       ├── edges: Vec<MachineEdge>     // canonical-order resolved cap steps
+//!       │    └── assignment: Vec<EdgeAssignmentBinding>
+//!       │         └── (cap_arg_media_urn, source: NodeId)
+//!       ├── input_anchor_ids: Vec<NodeId>   // root nodes (no producer)
+//!       └── output_anchor_ids: Vec<NodeId>  // leaf nodes (no consumer)
+//! ```
+//!
+//! Each `MachineStrand` is a maximal connected component of
+//! the machine's wiring graph: two edges share a strand iff
+//! they share at least one node identity. Crossings (shared
+//! data positions used by multiple edges) are internal to a
+//! single strand. Strands within a `Machine` are disjoint at
+//! the node-identity level.
 //!
 //! ## Equivalence
 //!
-//! Two `Machine`s are equivalent if they have the same set of edges,
-//! compared using `MediaUrn::is_equivalent()` for media types and
-//! `CapUrn` BTreeMap equality for capabilities. Alias names and statement
-//! ordering are serialization concerns only — they do not affect equivalence.
+//! `Machine::is_equivalent` is **strict, positional**:
 //!
-//! This follows the same pattern as `TaggedUrn` where `BTreeMap` ensures
-//! canonical ordering and `is_equivalent()` compares semantics, not characters.
+//! - Same number of `MachineStrand`s in the `strands` vec
+//! - For every i, `self.strands[i].is_equivalent(&other.strands[i])`
+//!
+//! Strand declaration order matters because the executor walks
+//! the strands in that order at runtime. Two `Machine`s with the
+//! same strands in different order are not equivalent.
+//!
+//! `MachineStrand::is_equivalent` walks both strands in their
+//! canonical edge order, comparing edges position-by-position.
+//! Each edge's `assignment` vec is pre-sorted by cap arg media
+//! URN, so the comparison is over a canonical form. The walk
+//! also builds a bijection between `NodeId`s in self and other;
+//! any inconsistency fails the comparison.
+//!
+//! Anchors (`input_anchors` and `output_anchors`) are sorted
+//! multisets of `MediaUrn` (sorted by structural `MediaUrn`
+//! `Ord`); they are compared positionally on the sorted form,
+//! which is multiset equality.
+//!
+//! This is the only equivalence relation on `Machine`. There is
+//! no looser variant. If a "drop-in replaceable but
+//! order-flexible" relation is ever needed it will get its own
+//! descriptive name and will not be called `is_equivalent`.
 
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::planner::{Strand, StrandStep, StrandStepType};
+use crate::cap::registry::CapRegistry;
+use crate::planner::Strand;
 use crate::urn::cap_urn::CapUrn;
 use crate::urn::media_urn::MediaUrn;
 
-/// A single edge in the machine graph.
+use super::error::MachineAbstractionError;
+use super::resolve;
+
+/// A node identity within a single `MachineStrand`.
 ///
-/// Each edge represents a capability that transforms one or more source
-/// media types into a target media type. The `is_loop` flag indicates
-/// ForEach semantics (the capability is applied to each item in a list).
+/// `NodeId` is an index into the strand's `nodes` vec. It is
+/// dense, starts at 0, and is stable for the lifetime of the
+/// `MachineStrand`. Node IDs are scoped to a single strand —
+/// two strands in the same `Machine` use disjoint `NodeId`
+/// spaces (and the serializer assigns them disjoint global node
+/// names).
+pub type NodeId = u32;
+
+/// One slot in a resolved `MachineEdge`'s source-to-cap-arg
+/// assignment.
+///
+/// Each binding records WHICH cap argument (`cap_arg_media_urn`)
+/// is fed by WHICH data-position in the strand (`source`). The
+/// `cap_arg_media_urn` is the cap argument's identity per the
+/// cap definition (RULE1 in `10-VALIDATION-RULES` requires
+/// uniqueness of `media_urn` across a cap's args, so this field
+/// is sufficient to identify the slot).
+///
+/// `MachineEdge::assignment` holds these bindings sorted by
+/// `cap_arg_media_urn` via `MediaUrn`'s structural `Ord`,
+/// producing a canonical form for equivalence comparison.
+#[derive(Debug, Clone)]
+pub struct EdgeAssignmentBinding {
+    pub cap_arg_media_urn: MediaUrn,
+    pub source: NodeId,
+}
+
+impl EdgeAssignmentBinding {
+    fn is_equivalent_with(
+        &self,
+        other: &EdgeAssignmentBinding,
+        node_map: &mut NodeBijection,
+        self_strand: &MachineStrand,
+        other_strand: &MachineStrand,
+    ) -> bool {
+        if !self
+            .cap_arg_media_urn
+            .is_equivalent(&other.cap_arg_media_urn)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        node_map.bind(
+            self.source,
+            other.source,
+            self_strand,
+            other_strand,
+        )
+    }
+}
+
+/// One resolved cap-step inside a `MachineStrand`.
+///
+/// Each edge represents one application of a capability. The
+/// `assignment` field carries the explicit source-to-cap-arg
+/// mapping computed by the resolver: pairs of (cap arg media
+/// URN, the strand node ID that feeds it). The pairs are sorted
+/// by `cap_arg_media_urn` so two semantically-equivalent edges
+/// produce identical assignment vecs.
 #[derive(Debug, Clone)]
 pub struct MachineEdge {
-    /// Input media URN(s) — from connected cap's in-spec.
-    /// Multiple sources represent fan-in (e.g., text + model-spec → embeddings).
-    pub sources: Vec<MediaUrn>,
-    /// The capability URN (edge label)
     pub cap_urn: CapUrn,
-    /// Output media URN — from cap's out-spec
-    pub target: MediaUrn,
-    /// Whether this edge has ForEach semantics (iterate over list items)
+    pub assignment: Vec<EdgeAssignmentBinding>,
+    pub target: NodeId,
     pub is_loop: bool,
 }
 
 impl MachineEdge {
-    /// Check if two edges are semantically equivalent.
-    ///
-    /// Equivalence is defined as:
-    /// - Same number of sources, and each source in self has an equivalent source in other
-    /// - Equivalent cap URNs (via CapUrn::is_equivalent which uses BTreeMap equality)
-    /// - Equivalent target media URNs (via MediaUrn::is_equivalent)
-    /// - Same is_loop flag
-    ///
-    /// Source order does not matter — fan-in sources are compared as sets.
-    pub fn is_equivalent(&self, other: &MachineEdge) -> bool {
+    fn is_equivalent_with(
+        &self,
+        other: &MachineEdge,
+        node_map: &mut NodeBijection,
+        self_strand: &MachineStrand,
+        other_strand: &MachineStrand,
+    ) -> bool {
         if self.is_loop != other.is_loop {
             return false;
         }
-
         if !self.cap_urn.is_equivalent(&other.cap_urn) {
             return false;
         }
-
-        // Target equivalence — fail hard on parse errors since these URNs
-        // were already validated during construction
-        match self.target.is_equivalent(&other.target) {
-            Ok(eq) => {
-                if !eq {
-                    return false;
-                }
-            }
-            Err(_) => return false,
-        }
-
-        // Source set equivalence — order-independent comparison
-        if self.sources.len() != other.sources.len() {
+        if self.assignment.len() != other.assignment.len() {
             return false;
         }
-
-        // For each source in self, find a matching source in other.
-        // Track which indices in `other` have been matched to avoid double-counting.
-        let mut matched = vec![false; other.sources.len()];
-        for self_src in &self.sources {
-            let found = other.sources.iter().enumerate().any(|(j, other_src)| {
-                if matched[j] {
-                    return false;
-                }
-                match self_src.is_equivalent(other_src) {
-                    Ok(true) => {
-                        matched[j] = true;
-                        true
-                    }
-                    _ => false,
-                }
-            });
-            if !found {
+        // The assignment vecs are pre-sorted by cap arg media
+        // URN at construction time, so positional comparison is
+        // canonical.
+        for (self_b, other_b) in self.assignment.iter().zip(other.assignment.iter()) {
+            if !self_b.is_equivalent_with(other_b, node_map, self_strand, other_strand) {
                 return false;
             }
         }
-
+        if !node_map.bind(self.target, other.target, self_strand, other_strand) {
+            return false;
+        }
         true
     }
 }
 
-impl PartialEq for MachineEdge {
+impl fmt::Display for MachineEdge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let assignments: Vec<String> = self
+            .assignment
+            .iter()
+            .map(|b| format!("{}<-#{}", b.cap_arg_media_urn, b.source))
+            .collect();
+        let loop_prefix = if self.is_loop { "LOOP " } else { "" };
+        write!(
+            f,
+            "{}{} ({}) -> #{}",
+            loop_prefix,
+            self.cap_urn,
+            assignments.join(", "),
+            self.target
+        )
+    }
+}
+
+/// One connected component of resolved cap edges with explicit
+/// anchor commitments.
+///
+/// A `MachineStrand` is a maximal connected sub-graph: every
+/// edge in it shares at least one `NodeId` (transitively) with
+/// every other edge. Within a strand, "crossings" are simply
+/// shared internal nodes — they do not represent inter-strand
+/// joining.
+///
+/// Built once via `resolve::resolve_strand` (planner path) or
+/// `resolve::resolve_wiring_set` (parser path). After
+/// construction the strand is immutable.
+#[derive(Debug, Clone)]
+pub struct MachineStrand {
+    /// Distinct data positions in this strand. Indexed by
+    /// `NodeId`. Each entry is the `MediaUrn` of that data
+    /// position — the canonical type at this point in the
+    /// flow.
+    nodes: Vec<MediaUrn>,
+    /// Resolved cap-step edges in canonical topological order.
+    /// Each edge references nodes by `NodeId` from `nodes`.
+    edges: Vec<MachineEdge>,
+    /// `NodeId`s of root nodes (nodes that no edge in this
+    /// strand produces as its target). Sorted by canonical
+    /// `MediaUrn` order, ties broken by `NodeId`.
+    input_anchor_ids: Vec<NodeId>,
+    /// `NodeId`s of leaf nodes (nodes that no edge in this
+    /// strand consumes via any assignment binding). Sorted by
+    /// canonical `MediaUrn` order, ties broken by `NodeId`.
+    output_anchor_ids: Vec<NodeId>,
+}
+
+impl MachineStrand {
+    /// Construct a `MachineStrand` from already-resolved fields.
+    /// Used by `resolve::resolve_wiring_set` after it has built
+    /// the canonical node and edge vecs.
+    pub(crate) fn from_resolved(
+        nodes: Vec<MediaUrn>,
+        edges: Vec<MachineEdge>,
+        input_anchor_ids: Vec<NodeId>,
+        output_anchor_ids: Vec<NodeId>,
+    ) -> Self {
+        Self {
+            nodes,
+            edges,
+            input_anchor_ids,
+            output_anchor_ids,
+        }
+    }
+
+    /// All distinct data positions in this strand, indexed by `NodeId`.
+    pub fn nodes(&self) -> &[MediaUrn] {
+        &self.nodes
+    }
+
+    /// The cap-step edges of this strand, in canonical
+    /// topological order.
+    pub fn edges(&self) -> &[MachineEdge] {
+        &self.edges
+    }
+
+    /// `NodeId`s of the strand's input anchor nodes.
+    pub fn input_anchor_ids(&self) -> &[NodeId] {
+        &self.input_anchor_ids
+    }
+
+    /// `NodeId`s of the strand's output anchor nodes.
+    pub fn output_anchor_ids(&self) -> &[NodeId] {
+        &self.output_anchor_ids
+    }
+
+    /// Look up a node's `MediaUrn` by `NodeId`. Panics if the
+    /// id is out of range — that's a structural bug, never a
+    /// runtime condition for a well-formed strand.
+    pub fn node_urn(&self, id: NodeId) -> &MediaUrn {
+        &self.nodes[id as usize]
+    }
+
+    /// Sorted multiset of input anchor URNs.
+    pub fn input_anchors(&self) -> Vec<MediaUrn> {
+        self.input_anchor_ids
+            .iter()
+            .map(|id| self.nodes[*id as usize].clone())
+            .collect()
+    }
+
+    /// Sorted multiset of output anchor URNs.
+    pub fn output_anchors(&self) -> Vec<MediaUrn> {
+        self.output_anchor_ids
+            .iter()
+            .map(|id| self.nodes[*id as usize].clone())
+            .collect()
+    }
+
+    /// Strict equivalence with another `MachineStrand`.
+    ///
+    /// Walks both strands in canonical edge order, building a
+    /// bijection between `NodeId`s on the fly. Any anchor or
+    /// edge mismatch (cap URN, assignment, target node, or
+    /// `is_loop`) fails the comparison. Inconsistent node
+    /// bijection (the same `NodeId` in self mapped to two
+    /// different `NodeId`s in other) also fails.
+    pub fn is_equivalent(&self, other: &Self) -> bool {
+        if self.nodes.len() != other.nodes.len() {
+            return false;
+        }
+        if self.edges.len() != other.edges.len() {
+            return false;
+        }
+        if self.input_anchor_ids.len() != other.input_anchor_ids.len() {
+            return false;
+        }
+        if self.output_anchor_ids.len() != other.output_anchor_ids.len() {
+            return false;
+        }
+
+        let mut node_map = NodeBijection::new(self.nodes.len(), other.nodes.len());
+
+        // Anchor URNs are sorted multisets — same length,
+        // pair-wise equivalence on the sorted form.
+        for (self_id, other_id) in self
+            .input_anchor_ids
+            .iter()
+            .zip(other.input_anchor_ids.iter())
+        {
+            if !node_map.bind(*self_id, *other_id, self, other) {
+                return false;
+            }
+        }
+        for (self_id, other_id) in self
+            .output_anchor_ids
+            .iter()
+            .zip(other.output_anchor_ids.iter())
+        {
+            if !node_map.bind(*self_id, *other_id, self, other) {
+                return false;
+            }
+        }
+
+        for (self_edge, other_edge) in self.edges.iter().zip(other.edges.iter()) {
+            if !self_edge.is_equivalent_with(other_edge, &mut node_map, self, other) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl PartialEq for MachineStrand {
     fn eq(&self, other: &Self) -> bool {
         self.is_equivalent(other)
     }
 }
 
-impl Eq for MachineEdge {}
+impl Eq for MachineStrand {}
 
-/// A machine graph — the semantic model behind machine notation.
+/// Helper that maps `NodeId`s in `self` to `NodeId`s in `other`
+/// during a strand-equivalence walk. Each `bind` call either
+/// records a new mapping or confirms an existing one; if the
+/// same self-id is mapped to two different other-ids (or vice
+/// versa), `bind` returns `false` and the strands are not
+/// equivalent.
+struct NodeBijection {
+    self_to_other: Vec<Option<NodeId>>,
+    other_to_self: Vec<Option<NodeId>>,
+}
+
+impl NodeBijection {
+    fn new(self_len: usize, other_len: usize) -> Self {
+        Self {
+            self_to_other: vec![None; self_len],
+            other_to_self: vec![None; other_len],
+        }
+    }
+
+    fn bind(
+        &mut self,
+        self_id: NodeId,
+        other_id: NodeId,
+        self_strand: &MachineStrand,
+        other_strand: &MachineStrand,
+    ) -> bool {
+        let self_idx = self_id as usize;
+        let other_idx = other_id as usize;
+
+        // The two NodeIds must point to URNs that are
+        // structurally equivalent — even before checking the
+        // bijection. Otherwise nodes that the bijection maps
+        // to each other would carry different types.
+        if !self_strand.nodes[self_idx]
+            .is_equivalent(&other_strand.nodes[other_idx])
+            .unwrap_or(false)
+        {
+            return false;
+        }
+
+        match self.self_to_other[self_idx] {
+            Some(existing) if existing == other_id => {}
+            Some(_) => return false,
+            None => self.self_to_other[self_idx] = Some(other_id),
+        }
+        match self.other_to_self[other_idx] {
+            Some(existing) if existing == self_id => {}
+            Some(_) => return false,
+            None => self.other_to_self[other_idx] = Some(self_id),
+        }
+        true
+    }
+}
+
+/// An ordered collection of resolved `MachineStrand`s.
 ///
-/// The graph is a collection of directed edges where each edge is a capability
-/// that transforms source media types into a target media type. The graph
-/// structure captures the full transformation pipeline.
-///
-/// ## Equivalence
-///
-/// Two graphs are equivalent if they have the same set of edges, regardless
-/// of ordering. Alias names used in the textual notation are not part of
-/// the graph model.
+/// Strand declaration order matters: the executor walks the
+/// strands in this order at runtime, and `is_equivalent`
+/// compares strand-by-strand positionally.
 #[derive(Debug, Clone)]
 pub struct Machine {
-    /// Edges in the graph, ordered for deterministic serialization.
-    /// Comparison is order-independent (set semantics).
-    edges: Vec<MachineEdge>,
-    abstract_strand: Strand,
+    strands: Vec<MachineStrand>,
+}
+
+impl Machine {
+    /// Construct a `Machine` from already-resolved strands.
+    /// Used by the resolver after it has built and ordered the
+    /// strand list.
+    pub(crate) fn from_resolved_strands(strands: Vec<MachineStrand>) -> Self {
+        Self { strands }
+    }
+
+    /// Build a `Machine` containing exactly one `MachineStrand`
+    /// from a planner-produced `Strand`.
+    ///
+    /// Each `Cap` step in the planner strand becomes one resolved
+    /// `MachineEdge`; `ForEach` sets `is_loop` on the next cap
+    /// edge; `Collect` is elided. The cap registry is consulted
+    /// to look up each cap's `args` list, which the resolver
+    /// uses to compute the source-to-arg assignment via
+    /// minimum-cost bipartite matching.
+    pub fn from_strand(
+        strand: &Strand,
+        registry: &CapRegistry,
+    ) -> Result<Self, MachineAbstractionError> {
+        let resolved = resolve::resolve_strand(strand, registry, 0)?;
+        Ok(Self::from_resolved_strands(vec![resolved]))
+    }
+
+    /// Build a `Machine` containing N `MachineStrand`s, one per
+    /// input strand, in the given order.
+    ///
+    /// Each strand is resolved independently. **No cross-strand
+    /// joining is attempted** — even if two strands have
+    /// type-compatible URNs internally, this constructor produces
+    /// two disjoint `MachineStrand`s. Crossings only arise from
+    /// notation, where the user explicitly shares node names
+    /// across wirings.
+    pub fn from_strands(
+        strands: &[Strand],
+        registry: &CapRegistry,
+    ) -> Result<Self, MachineAbstractionError> {
+        if strands.is_empty() {
+            return Err(MachineAbstractionError::NoCapabilitySteps);
+        }
+        let mut resolved_strands = Vec::with_capacity(strands.len());
+        for (idx, strand) in strands.iter().enumerate() {
+            resolved_strands.push(resolve::resolve_strand(strand, registry, idx)?);
+        }
+        Ok(Self::from_resolved_strands(resolved_strands))
+    }
+
+    /// All resolved strands in this machine, in declaration order.
+    pub fn strands(&self) -> &[MachineStrand] {
+        &self.strands
+    }
+
+    /// Number of strands in this machine.
+    pub fn strand_count(&self) -> usize {
+        self.strands.len()
+    }
+
+    /// Whether this machine has no strands at all.
+    pub fn is_empty(&self) -> bool {
+        self.strands.is_empty()
+    }
+
+    /// Strict, positional equivalence with another `Machine`.
+    ///
+    /// Two `Machine`s are equivalent iff they have the same
+    /// number of strands and `self.strands[i].is_equivalent(
+    /// &other.strands[i])` for every i. Strand order matters.
+    pub fn is_equivalent(&self, other: &Self) -> bool {
+        if self.strands.len() != other.strands.len() {
+            return false;
+        }
+        for (self_strand, other_strand) in self.strands.iter().zip(other.strands.iter()) {
+            if !self_strand.is_equivalent(other_strand) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl PartialEq for Machine {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_equivalent(other)
+    }
+}
+
+impl Eq for Machine {}
+
+impl fmt::Display for Machine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.strands.is_empty() {
+            return write!(f, "Machine(empty)");
+        }
+        let edge_count: usize = self.strands.iter().map(|s| s.edges.len()).sum();
+        write!(
+            f,
+            "Machine({} strands, {} edges)",
+            self.strands.len(),
+            edge_count
+        )
+    }
 }
 
 /// A single execution attempt of a [`Machine`].
@@ -145,6 +536,7 @@ pub enum MachineRunStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 fn unix_now() -> i64 {
@@ -154,205 +546,21 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
-impl Machine {
-    /// Create a new machine graph from a vector of edges.
-    pub fn new(edges: Vec<MachineEdge>) -> Self {
-        let abstract_strand = Self::build_abstract_strand(&edges);
-        Self { edges, abstract_strand }
-    }
-
-    pub(crate) fn with_abstract_strand(edges: Vec<MachineEdge>, abstract_strand: Strand) -> Self {
-        Self { edges, abstract_strand }
-    }
-
-    /// Create an empty machine graph.
-    pub fn empty() -> Self {
-        Self {
-            edges: Vec::new(),
-            abstract_strand: Strand {
-                steps: Vec::new(),
-                source_spec: MediaUrn::from_string("media:").expect("wildcard media URN"),
-                target_spec: MediaUrn::from_string("media:").expect("wildcard media URN"),
-                total_steps: 0,
-                cap_step_count: 0,
-                description: String::new(),
-            },
-        }
-    }
-
-    /// Get the edges of this graph.
-    pub fn edges(&self) -> &[MachineEdge] {
-        &self.edges
-    }
-
-    /// Get a mutable reference to the edges (for building during parsing).
-    pub fn edges_mut(&mut self) -> &mut Vec<MachineEdge> {
-        &mut self.edges
-    }
-
-    pub fn abstract_strand(&self) -> &Strand {
-        &self.abstract_strand
-    }
-
-    /// Number of edges in the graph.
-    pub fn edge_count(&self) -> usize {
-        self.edges.len()
-    }
-
-    /// Check if the graph has no edges.
-    pub fn is_empty(&self) -> bool {
-        self.edges.is_empty()
-    }
-
-    fn build_abstract_strand(edges: &[MachineEdge]) -> Strand {
-        let wildcard = || MediaUrn::from_string("media:").expect("wildcard media URN");
-
-        // Step titles inside a machine-derived strand have no
-        // authoritative source — the `Machine` carries only
-        // `CapUrn`s, not the `Cap` definitions that own the
-        // human-readable titles. The title field is filled
-        // with the cap URN's canonical form as a fallback
-        // debug display. No cap URN tag (including `op`) is
-        // privileged here; only `in` / `out` have functional
-        // meaning in a cap URN, and the rest is arbitrary.
-        let steps: Vec<StrandStep> = edges.iter().map(|edge| {
-            let title = edge.cap_urn.to_string();
-
-            StrandStep {
-                step_type: StrandStepType::Cap {
-                    cap_urn: edge.cap_urn.clone(),
-                    title,
-                    specificity: edge.cap_urn.specificity(),
-                    input_is_sequence: false,
-                    output_is_sequence: edge.is_loop,
-                },
-                from_spec: edge
-                    .sources
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(wildcard),
-                to_spec: edge.target.clone(),
-            }
-        }).collect();
-
-        Strand {
-            source_spec: edges
-                .first()
-                .and_then(|edge| edge.sources.first())
-                .cloned()
-                .unwrap_or_else(wildcard),
-            target_spec: edges
-                .last()
-                .map(|edge| edge.target.clone())
-                .unwrap_or_else(wildcard),
-            total_steps: steps.len() as i32,
-            cap_step_count: steps.len() as i32,
-            description: if steps.is_empty() {
-                String::new()
-            } else {
-                format!("{} step machine", steps.len())
-            },
-            steps,
-        }
-    }
-
-    /// Check if two machine graphs are semantically equivalent.
-    ///
-    /// Two graphs are equivalent if they have the same set of edges
-    /// (compared using `MachineEdge::is_equivalent`). Edge ordering
-    /// does not matter.
-    pub fn is_equivalent(&self, other: &Machine) -> bool {
-        if self.edges.len() != other.edges.len() {
-            return false;
-        }
-
-        // For each edge in self, find a matching edge in other.
-        let mut matched = vec![false; other.edges.len()];
-        for self_edge in &self.edges {
-            let found = other.edges.iter().enumerate().any(|(j, other_edge)| {
-                if matched[j] {
-                    return false;
-                }
-                if self_edge.is_equivalent(other_edge) {
-                    matched[j] = true;
-                    true
-                } else {
-                    false
-                }
-            });
-            if !found {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Collect all unique source media URNs across all edges that are not
-    /// also produced as targets by any other edge. These are the "root"
-    /// inputs to the graph.
-    pub fn root_sources(&self) -> Vec<&MediaUrn> {
-        let mut roots = Vec::new();
-        for edge in &self.edges {
-            for src in &edge.sources {
-                // Check if any edge produces this source as a target
-                let is_produced = self.edges.iter().any(|e| {
-                    e.target.is_equivalent(src).unwrap_or(false)
-                });
-                if !is_produced {
-                    // Avoid duplicates (by equivalence)
-                    let already_added = roots.iter().any(|r: &&MediaUrn| {
-                        r.is_equivalent(src).unwrap_or(false)
-                    });
-                    if !already_added {
-                        roots.push(src);
-                    }
-                }
-            }
-        }
-        roots
-    }
-
-    /// Collect all unique target media URNs that are not consumed as sources
-    /// by any other edge. These are the "leaf" outputs of the graph.
-    pub fn leaf_targets(&self) -> Vec<&MediaUrn> {
-        let mut leaves = Vec::new();
-        for edge in &self.edges {
-            let is_consumed = self.edges.iter().any(|e| {
-                e.sources.iter().any(|s| {
-                    s.is_equivalent(&edge.target).unwrap_or(false)
-                })
-            });
-            if !is_consumed {
-                let already_added = leaves.iter().any(|l: &&MediaUrn| {
-                    l.is_equivalent(&edge.target).unwrap_or(false)
-                });
-                if !already_added {
-                    leaves.push(&edge.target);
-                }
-            }
-        }
-        leaves
-    }
-}
-
 impl MachineRun {
     /// Construct a new `MachineRun` bound to a machine and its
     /// resolved strand. The machine's canonical notation is
     /// computed and stored as the run's stable identifier.
     ///
     /// Fails hard with `MachineAbstractionError` if the machine
-    /// has no edges or the machine's data-flow cannot be
-    /// serialized. A machine with no edges is not a valid run
-    /// target — reject it with `NoCapabilitySteps`.
+    /// has no strands or its data-flow cannot be serialized.
     pub fn new(
         id: String,
         machine: &Machine,
         resolved_strand: Strand,
-    ) -> Result<Self, crate::machine::error::MachineAbstractionError> {
+    ) -> Result<Self, MachineAbstractionError> {
         let machine_notation = machine.to_machine_notation()?;
         if machine_notation.is_empty() {
-            return Err(crate::machine::error::MachineAbstractionError::NoCapabilitySteps);
+            return Err(MachineAbstractionError::NoCapabilitySteps);
         }
         Ok(Self {
             id,
@@ -382,447 +590,160 @@ impl MachineRun {
         self.completed_at_unix = Some(unix_now());
         self.error_message = Some(error_message);
     }
-}
 
-impl PartialEq for Machine {
-    fn eq(&self, other: &Self) -> bool {
-        self.is_equivalent(other)
+    pub fn cancel(&mut self) {
+        self.status = MachineRunStatus::Cancelled;
+        self.completed_at_unix = Some(unix_now());
     }
 }
 
-impl Eq for Machine {}
+// =============================================================================
+// Tests
+// =============================================================================
 
-impl fmt::Display for Machine {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.edges.is_empty() {
-            return write!(f, "Machine(empty)");
-        }
-        write!(f, "Machine({} edges)", self.edges.len())
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::{Machine, MachineAbstractionError, MachineRun, MachineRunStatus};
+    use crate::machine::test_fixtures::{
+        build_cap, cap_step, registry_with, strand_from_steps,
+    };
 
-impl fmt::Display for MachineEdge {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let sources: Vec<String> = self.sources.iter().map(|s| s.to_string()).collect();
-        let loop_prefix = if self.is_loop { "LOOP " } else { "" };
-        write!(
-            f,
-            "({}) -{}{}-> {}",
-            sources.join(", "),
-            loop_prefix,
-            self.cap_urn,
-            self.target
+    fn extract_cap_def() -> crate::cap::definition::Cap {
+        build_cap(
+            "cap:in=media:pdf;op=extract;out=media:txt;textable",
+            "extract",
+            &["media:pdf"],
+            "media:txt;textable",
         )
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::planner::{StrandStep, StrandStepType};
+    fn embed_cap_def() -> crate::cap::definition::Cap {
+        build_cap(
+            "cap:in=media:textable;op=embed;out=media:vec;record",
+            "embed",
+            &["media:textable"],
+            "media:vec;record",
+        )
+    }
+
+    fn pdf_to_txt_strand() -> crate::planner::Strand {
+        strand_from_steps(
+            vec![cap_step(
+                "cap:in=media:pdf;op=extract;out=media:txt;textable",
+                "extract",
+                "media:pdf",
+                "media:txt;textable",
+            )],
+            "pdf to txt",
+        )
+    }
+
+    fn txt_to_vec_strand() -> crate::planner::Strand {
+        strand_from_steps(
+            vec![cap_step(
+                "cap:in=media:textable;op=embed;out=media:vec;record",
+                "embed",
+                "media:txt;textable",
+                "media:vec;record",
+            )],
+            "txt to vec",
+        )
+    }
 
     #[test]
-    fn machine_run_uses_abstract_machine_notation() {
-        let strand = Strand {
-            steps: vec![
-                StrandStep {
-                    step_type: StrandStepType::Cap {
-                        cap_urn: CapUrn::from_string(
-                            r#"cap:in=media:pdf;op=disbind;out="media:list;page;textable""#,
-                        )
-                        .unwrap(),
-                        title: "Disbind PDF Into Pages".to_string(),
-                        specificity: 4,
-                        input_is_sequence: false,
-                        output_is_sequence: true,
-                    },
-                    from_spec: MediaUrn::from_string("media:pdf").unwrap(),
-                    to_spec: MediaUrn::from_string("media:page;textable").unwrap(),
-                },
-                StrandStep {
-                    step_type: StrandStepType::ForEach {
-                        media_spec: MediaUrn::from_string("media:page;textable").unwrap(),
-                    },
-                    from_spec: MediaUrn::from_string("media:page;textable").unwrap(),
-                    to_spec: MediaUrn::from_string("media:page;textable").unwrap(),
-                },
-            ],
-            source_spec: MediaUrn::from_string("media:pdf").unwrap(),
-            target_spec: MediaUrn::from_string("media:page;textable").unwrap(),
-            total_steps: 2,
-            cap_step_count: 1,
-            description: "PDF to text pages".to_string(),
-        };
+    fn from_strand_produces_single_strand_machine() {
+        let registry = registry_with(vec![extract_cap_def()]);
+        let m = Machine::from_strand(&pdf_to_txt_strand(), &registry).unwrap();
+        assert_eq!(m.strand_count(), 1);
+        assert_eq!(m.strands()[0].edges().len(), 1);
+    }
 
-        let machine = strand.knit().expect("strand knits into a valid machine");
-        let expected_notation = machine
-            .to_machine_notation()
-            .expect("machine serializes to notation");
-        let expected_target = strand.target_spec.clone();
-        let run = MachineRun::new("run-1".to_string(), &machine, strand)
-            .expect("machine run is constructible");
+    #[test]
+    fn from_strands_keeps_strands_disjoint() {
+        // Two strands, each with one cap. Even though both
+        // touch `media:txt;textable` (one as input, one as
+        // output), `from_strands` does NOT join them — that's
+        // the contract: programmatic construction never
+        // creates crossings.
+        let registry = registry_with(vec![extract_cap_def(), embed_cap_def()]);
+        let m = Machine::from_strands(
+            &[pdf_to_txt_strand(), txt_to_vec_strand()],
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(
+            m.strand_count(),
+            2,
+            "from_strands must keep input strands as disjoint MachineStrands"
+        );
+        // Each strand should have its own one-edge DAG.
+        assert_eq!(m.strands()[0].edges().len(), 1);
+        assert_eq!(m.strands()[1].edges().len(), 1);
+        // Strand order matches input order.
+        assert!(m.strands()[0].edges()[0]
+            .cap_urn
+            .to_string()
+            .contains("op=extract"));
+        assert!(m.strands()[1].edges()[0]
+            .cap_urn
+            .to_string()
+            .contains("op=embed"));
+    }
 
-        assert_eq!(run.machine_notation, expected_notation);
+    #[test]
+    fn from_strands_empty_input_fails_hard() {
+        let registry = registry_with(vec![]);
+        let err = Machine::from_strands(&[], &registry).unwrap_err();
+        assert!(matches!(err, MachineAbstractionError::NoCapabilitySteps));
+    }
+
+    #[test]
+    fn machine_is_equivalent_is_strict_positional() {
+        // Same two strands in two different orders are NOT
+        // strictly equivalent — strand declaration order is
+        // part of the machine's identity.
+        let registry = registry_with(vec![extract_cap_def(), embed_cap_def()]);
+        let forward =
+            Machine::from_strands(&[pdf_to_txt_strand(), txt_to_vec_strand()], &registry)
+                .unwrap();
+        let reversed =
+            Machine::from_strands(&[txt_to_vec_strand(), pdf_to_txt_strand()], &registry)
+                .unwrap();
         assert!(
-            run.resolved_strand
-                .target_spec
-                .is_equivalent(&expected_target)
-                .expect("target URN equivalence check"),
-            "strand target must round-trip through MachineRun unchanged"
+            !forward.is_equivalent(&reversed),
+            "swapping strand order must break strict equivalence"
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn media(s: &str) -> MediaUrn {
-        MediaUrn::from_string(s).unwrap()
-    }
-
-    fn cap(s: &str) -> CapUrn {
-        CapUrn::from_string(s).unwrap()
-    }
-
-    fn edge(sources: &[&str], cap_str: &str, target: &str, is_loop: bool) -> MachineEdge {
-        MachineEdge {
-            sources: sources.iter().map(|s| media(s)).collect(),
-            cap_urn: cap(cap_str),
-            target: media(target),
-            is_loop,
-        }
-    }
-
-    // =========================================================================
-    // MachineEdge equivalence
-    // =========================================================================
-
-    #[test]
-    fn edge_equivalence_same_urns() {
-        let e1 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        );
-        let e2 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        );
-        assert!(e1.is_equivalent(&e2));
-        assert_eq!(e1, e2);
+        // But each machine is equivalent to itself.
+        assert!(forward.is_equivalent(&forward));
+        assert!(reversed.is_equivalent(&reversed));
     }
 
     #[test]
-    fn edge_equivalence_different_cap_urns() {
-        let e1 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        );
-        let e2 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=summarize;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        );
-        assert!(!e1.is_equivalent(&e2));
-        assert_ne!(e1, e2);
+    fn machine_strand_is_equivalent_walks_node_bijection() {
+        // Two `MachineStrand`s built from the same strand twice
+        // are equivalent. The NodeBijection is built on the
+        // fly during the walk and confirms that every NodeId
+        // pair carries equivalent URNs.
+        let registry = registry_with(vec![extract_cap_def()]);
+        let m1 = Machine::from_strand(&pdf_to_txt_strand(), &registry).unwrap();
+        let m2 = Machine::from_strand(&pdf_to_txt_strand(), &registry).unwrap();
+        assert!(m1.strands()[0].is_equivalent(&m2.strands()[0]));
     }
 
     #[test]
-    fn edge_equivalence_different_targets() {
-        let e1 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        );
-        let e2 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:json;record;textable",
-            false,
-        );
-        assert!(!e1.is_equivalent(&e2));
-    }
-
-    #[test]
-    fn edge_equivalence_different_loop_flag() {
-        let e1 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        );
-        let e2 = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            true,
-        );
-        assert!(!e1.is_equivalent(&e2));
-    }
-
-    #[test]
-    fn edge_equivalence_source_order_independent() {
-        let e1 = edge(
-            &["media:txt;textable", "media:model-spec;textable"],
-            "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-            "media:embedding-vector;record;textable",
-            false,
-        );
-        let e2 = edge(
-            &["media:model-spec;textable", "media:txt;textable"],
-            "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-            "media:embedding-vector;record;textable",
-            false,
-        );
-        assert!(e1.is_equivalent(&e2));
-    }
-
-    #[test]
-    fn edge_equivalence_different_source_count() {
-        let e1 = edge(
-            &["media:txt;textable"],
-            "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-            "media:embedding-vector;record;textable",
-            false,
-        );
-        let e2 = edge(
-            &["media:txt;textable", "media:model-spec;textable"],
-            "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-            "media:embedding-vector;record;textable",
-            false,
-        );
-        assert!(!e1.is_equivalent(&e2));
-    }
-
-    // =========================================================================
-    // Machine equivalence
-    // =========================================================================
-
-    #[test]
-    fn graph_equivalence_same_edges() {
-        let g1 = Machine::new(vec![
-            edge(
-                &["media:pdf"],
-                "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-                "media:txt;textable",
-                false,
-            ),
-            edge(
-                &["media:txt;textable"],
-                "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-                "media:embedding-vector;record;textable",
-                false,
-            ),
-        ]);
-        let g2 = Machine::new(vec![
-            edge(
-                &["media:pdf"],
-                "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-                "media:txt;textable",
-                false,
-            ),
-            edge(
-                &["media:txt;textable"],
-                "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-                "media:embedding-vector;record;textable",
-                false,
-            ),
-        ]);
-        assert!(g1.is_equivalent(&g2));
-        assert_eq!(g1, g2);
-    }
-
-    #[test]
-    fn graph_equivalence_reordered_edges() {
-        let g1 = Machine::new(vec![
-            edge(
-                &["media:pdf"],
-                "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-                "media:txt;textable",
-                false,
-            ),
-            edge(
-                &["media:txt;textable"],
-                "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-                "media:embedding-vector;record;textable",
-                false,
-            ),
-        ]);
-        // Same edges, reversed order
-        let g2 = Machine::new(vec![
-            edge(
-                &["media:txt;textable"],
-                "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-                "media:embedding-vector;record;textable",
-                false,
-            ),
-            edge(
-                &["media:pdf"],
-                "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-                "media:txt;textable",
-                false,
-            ),
-        ]);
-        assert!(g1.is_equivalent(&g2));
-        assert_eq!(g1, g2);
-    }
-
-    #[test]
-    fn graph_not_equivalent_different_edge_count() {
-        let g1 = Machine::new(vec![edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        )]);
-        let g2 = Machine::new(vec![
-            edge(
-                &["media:pdf"],
-                "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-                "media:txt;textable",
-                false,
-            ),
-            edge(
-                &["media:txt;textable"],
-                "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-                "media:embedding-vector;record;textable",
-                false,
-            ),
-        ]);
-        assert!(!g1.is_equivalent(&g2));
-        assert_ne!(g1, g2);
-    }
-
-    #[test]
-    fn graph_not_equivalent_different_cap() {
-        let g1 = Machine::new(vec![edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        )]);
-        let g2 = Machine::new(vec![edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=summarize;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        )]);
-        assert!(!g1.is_equivalent(&g2));
-    }
-
-    #[test]
-    fn graph_empty() {
-        let g = Machine::empty();
-        assert!(g.is_empty());
-        assert_eq!(g.edge_count(), 0);
-    }
-
-    #[test]
-    fn graph_empty_equivalence() {
-        let g1 = Machine::empty();
-        let g2 = Machine::empty();
-        assert!(g1.is_equivalent(&g2));
-        assert_eq!(g1, g2);
-    }
-
-    // =========================================================================
-    // Root sources and leaf targets
-    // =========================================================================
-
-    #[test]
-    fn root_sources_linear_chain() {
-        let g = Machine::new(vec![
-            edge(
-                &["media:pdf"],
-                "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-                "media:txt;textable",
-                false,
-            ),
-            edge(
-                &["media:txt;textable"],
-                "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-                "media:embedding-vector;record;textable",
-                false,
-            ),
-        ]);
-        let roots = g.root_sources();
-        assert_eq!(roots.len(), 1);
-        assert!(roots[0].is_equivalent(&media("media:pdf")).unwrap());
-    }
-
-    #[test]
-    fn leaf_targets_linear_chain() {
-        let g = Machine::new(vec![
-            edge(
-                &["media:pdf"],
-                "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-                "media:txt;textable",
-                false,
-            ),
-            edge(
-                &["media:txt;textable"],
-                "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-                "media:embedding-vector;record;textable",
-                false,
-            ),
-        ]);
-        let leaves = g.leaf_targets();
-        assert_eq!(leaves.len(), 1);
-        assert!(leaves[0]
-            .is_equivalent(&media("media:embedding-vector;record;textable"))
-            .unwrap());
-    }
-
-    #[test]
-    fn root_sources_fan_in() {
-        // Two sources feed into one cap
-        let g = Machine::new(vec![edge(
-            &["media:txt;textable", "media:model-spec;textable"],
-            "cap:in=\"media:txt;textable\";op=embed;out=\"media:embedding-vector;record;textable\"",
-            "media:embedding-vector;record;textable",
-            false,
-        )]);
-        let roots = g.root_sources();
-        assert_eq!(roots.len(), 2);
-    }
-
-    #[test]
-    fn display_edge() {
-        let e = edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        );
-        let display = format!("{}", e);
-        assert!(display.contains("media:pdf"));
-        assert!(display.contains("media:textable;txt")); // canonical form
-    }
-
-    #[test]
-    fn display_graph() {
-        let g = Machine::new(vec![edge(
-            &["media:pdf"],
-            "cap:in=\"media:pdf\";op=extract;out=\"media:txt;textable\"",
-            "media:txt;textable",
-            false,
-        )]);
-        let display = format!("{}", g);
-        assert_eq!(display, "Machine(1 edges)");
-    }
-
-    #[test]
-    fn display_empty_graph() {
-        let g = Machine::empty();
-        let display = format!("{}", g);
-        assert_eq!(display, "Machine(empty)");
+    fn machine_run_new_stores_canonical_notation() {
+        let registry = registry_with(vec![extract_cap_def()]);
+        let strand = pdf_to_txt_strand();
+        let machine = Machine::from_strand(&strand, &registry).unwrap();
+        let canonical = machine.to_machine_notation().unwrap();
+        let run = MachineRun::new(
+            "run-id-1".to_string(),
+            &machine,
+            strand.clone(),
+        )
+        .unwrap();
+        assert_eq!(run.id, "run-id-1");
+        assert_eq!(run.machine_notation, canonical);
+        assert_eq!(run.status, MachineRunStatus::Pending);
     }
 }

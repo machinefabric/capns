@@ -126,11 +126,15 @@ pub use planner::{
 };
 
 // Machine notation — typed DAG path identifiers
-pub use machine::{Machine, MachineEdge, MachineRun, MachineRunStatus, MachineSyntaxError, NotationFormat, parse_machine};
+pub use machine::{
+    Machine, MachineAbstractionError, MachineEdge, MachineParseError, MachineRun,
+    MachineRunStatus, MachineSyntaxError, MachineStrand, NotationFormat,
+    parse_machine, parse_machine_with_node_names, StrandNodeNames,
+};
 
 // Orchestrator — machine notation parsing and DAG execution
 pub use orchestrator::{
-    ParseOrchestrationError, ResolvedEdge, ResolvedGraph, CapRegistryTrait,
+    ParseOrchestrationError, ResolvedEdge, ResolvedGraph,
     parse_machine_to_cap_dag, plan_to_resolved_graph, execute_dag, NodeData, ExecutionError,
     EdgeGroup, PluginManager, ExecutionContext, CapProgressFn, ProgressMapper, map_progress,
     split_cbor_array, assemble_cbor_array, split_cbor_sequence, assemble_cbor_sequence, CborUtilError,

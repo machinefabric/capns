@@ -339,4 +339,4 @@ The identity morphism. Required in all capsets.
 | Direction defaults | Missing or `*` → `media:` |
 | Canonical form | Always includes `in` and `out` |
 
-Cap URNs extend Tagged URNs with three-dimensional structure. The dispatch relation (next document) defines how these dimensions interact for routing.
+Cap URNs extend Tagged URNs with three-dimensional structure. The dispatch relation (next document) defines how these dimensions interact for routing. Once dispatch is in place, multiple Cap URNs can be wired into a data-flow graph and serialized via [07-MACHINE-NOTATION](./07-MACHINE-NOTATION.md).
