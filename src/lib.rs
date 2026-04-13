@@ -96,6 +96,9 @@ pub use bifaci::host_runtime::AsyncHostError;
 // Cartridge process monitoring
 pub use bifaci::host_runtime::{CartridgeProcessInfo, CartridgeProcessHandle, HostCommand};
 
+// Cartridge install metadata
+pub use bifaci::cartridge_json::{CartridgeJson, CartridgeJsonError, CartridgeInstallSource, hash_cartridge_directory};
+
 // Relay exports
 pub use bifaci::relay::{RelaySlave, RelayMaster};
 pub use bifaci::relay_switch::{InstalledCartridgeIdentity, RelaySwitch, RelaySwitchError, MasterHealthStatus};

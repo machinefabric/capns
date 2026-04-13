@@ -15,6 +15,7 @@ pub mod relay;
 pub mod relay_switch;
 pub mod in_process_host;
 pub mod cartridge_repo;
+pub mod cartridge_json;
 
 #[cfg(test)]
 mod integration_tests;

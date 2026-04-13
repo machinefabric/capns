@@ -264,8 +264,13 @@ enum CartridgeEvent {
 
 /// A managed cartridge binary.
 struct ManagedCartridge {
-    /// Path to cartridge binary (empty for attached/pre-connected cartridges).
+    /// Path to the cartridge entry point binary (empty for attached/pre-connected cartridges).
+    /// For directory cartridges this is the resolved entry point from cartridge.json.
     path: PathBuf,
+    /// Version directory for directory-based cartridges.
+    /// When set, identity hashing uses the full directory tree.
+    /// When None, this is a legacy probe-based registration (providers path).
+    cartridge_dir: Option<PathBuf>,
     /// Child process handle (None for attached cartridges).
     process: Option<tokio::process::Child>,
     /// Channel to write frames to this cartridge's stdin.
@@ -310,10 +315,59 @@ struct ManagedCartridge {
 }
 
 impl ManagedCartridge {
-    fn new_registered(path: PathBuf, known_caps: Vec<String>) -> Self {
-        let installed_identity = installed_cartridge_identity_from_path(&path);
+    /// Create a registered cartridge from a binary path (probe-based discovery).
+    /// Identity is computed from the binary's name and content hash.
+    fn new_registered_binary(path: PathBuf, known_caps: Vec<String>) -> Self {
+        let installed_identity = installed_cartridge_identity_from_binary(&path);
         Self {
             path,
+            cartridge_dir: None,
+            process: None,
+            writer_tx: None,
+            manifest: Vec::new(),
+            limits: Limits::default(),
+            caps: Vec::new(),
+            known_caps,
+            installed_identity,
+            running: false,
+            reader_handle: None,
+            writer_handle: None,
+            hello_failed: false,
+            pending_heartbeats: HashMap::new(),
+            stderr_handle: None,
+            last_death_message: None,
+            shutdown_reason: None,
+            memory_footprint_mb: 0,
+            memory_rss_mb: 0,
+        }
+    }
+
+    /// Create a registered cartridge from a version directory containing cartridge.json.
+    /// Identity is computed from the directory tree hash.
+    fn new_registered_dir(
+        entry_point: PathBuf,
+        cartridge_dir: PathBuf,
+        id: String,
+        version: String,
+        known_caps: Vec<String>,
+    ) -> Self {
+        let sha256 = crate::bifaci::cartridge_json::hash_cartridge_directory(&cartridge_dir)
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    dir = %cartridge_dir.display(),
+                    error = %e,
+                    "Failed to hash cartridge directory — identity will be unavailable"
+                );
+                String::new()
+            });
+        let installed_identity = if sha256.is_empty() {
+            None
+        } else {
+            Some(InstalledCartridgeIdentity { id, version, sha256 })
+        };
+        Self {
+            path: entry_point,
+            cartridge_dir: Some(cartridge_dir),
             process: None,
             writer_tx: None,
             manifest: Vec::new(),
@@ -340,6 +394,7 @@ impl ManagedCartridge {
 
         Self {
             path: PathBuf::new(),
+            cartridge_dir: None,
             process: None,
             writer_tx: None,
             manifest,
@@ -379,7 +434,9 @@ fn parse_installed_cartridge_name(name: &str) -> Option<(String, String)> {
     None
 }
 
-fn installed_cartridge_identity_from_path(path: &Path) -> Option<InstalledCartridgeIdentity> {
+/// Compute identity for a standalone binary cartridge (probe-based discovery path).
+/// Parses id and version from the binary filename, hashes the binary content.
+fn installed_cartridge_identity_from_binary(path: &Path) -> Option<InstalledCartridgeIdentity> {
     let name = path.file_stem()?.to_str()?;
     let (id, version) = parse_installed_cartridge_name(name)?;
     let bytes = std::fs::read(path).ok()?;
@@ -463,15 +520,40 @@ impl CartridgeHostRuntime {
         }
     }
 
-    /// Register a cartridge binary for on-demand spawning.
+    /// Register a cartridge binary for on-demand spawning (probe-based discovery).
     ///
     /// The cartridge is not spawned until a REQ arrives for one of its known caps.
     /// The `known_caps` are provisional — they allow routing before HELLO.
     /// After spawn + HELLO, the real caps from the manifest replace them.
     pub fn register_cartridge(&mut self, path: &Path, known_caps: &[String]) {
         let cartridge_idx = self.cartridges.len();
-        self.cartridges.push(ManagedCartridge::new_registered(
+        self.cartridges.push(ManagedCartridge::new_registered_binary(
             path.to_path_buf(),
+            known_caps.to_vec(),
+        ));
+        for cap in known_caps {
+            self.cap_table.push((cap.clone(), cartridge_idx));
+        }
+    }
+
+    /// Register a directory-based cartridge for on-demand spawning.
+    ///
+    /// The `version_dir` must contain a valid `cartridge.json` with an entry point.
+    /// Identity is computed from the directory tree hash.
+    pub fn register_cartridge_dir(
+        &mut self,
+        entry_point: &Path,
+        version_dir: &Path,
+        id: &str,
+        version: &str,
+        known_caps: &[String],
+    ) {
+        let cartridge_idx = self.cartridges.len();
+        self.cartridges.push(ManagedCartridge::new_registered_dir(
+            entry_point.to_path_buf(),
+            version_dir.to_path_buf(),
+            id.to_string(),
+            version.to_string(),
             known_caps.to_vec(),
         ));
         for cap in known_caps {

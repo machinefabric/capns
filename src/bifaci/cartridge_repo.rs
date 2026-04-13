@@ -59,8 +59,6 @@ pub struct CartridgeVersionInfo {
     pub changelog: Vec<String>,
     pub platform: String,
     pub package: CartridgePackageInfo,
-    #[serde(default)]
-    pub binary: Option<CartridgePackageInfo>,
 }
 
 /// A cartridge entry from the registry
@@ -99,12 +97,6 @@ pub struct CartridgeInfo {
     pub package_sha256: String,
     #[serde(default)]
     pub package_size: u64,
-    #[serde(default, deserialize_with = "null_as_empty_string")]
-    pub binary_name: String,
-    #[serde(default, deserialize_with = "null_as_empty_string")]
-    pub binary_sha256: String,
-    #[serde(default)]
-    pub binary_size: u64,
     /// Changelog entries keyed by version
     #[serde(default)]
     pub changelog: HashMap<String, Vec<String>>,
@@ -131,10 +123,9 @@ pub struct CartridgeVersionData {
     pub min_app_version: String,
     pub platform: String,
     pub package: CartridgeDistributionInfo,
-    pub binary: CartridgeDistributionInfo,
 }
 
-/// Distribution file info (package or binary)
+/// Distribution file info (package)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CartridgeDistributionInfo {
     pub name: String,
@@ -182,7 +173,7 @@ pub struct CartridgeSuggestion {
     pub cap_urn: String,
     pub cap_title: String,
     pub latest_version: String,
-    pub binary_sha256: String,
+    pub package_sha256: String,
     pub repo_url: String,
     pub page_url: String,
 }
@@ -215,9 +206,9 @@ impl CartridgeInfo {
         !self.team_id.is_empty() && !self.signed_at.is_empty()
     }
 
-    /// Check if binary download info is available
-    pub fn has_binary(&self) -> bool {
-        !self.binary_name.is_empty() && !self.binary_sha256.is_empty()
+    /// Check if package download info is available
+    pub fn has_package(&self) -> bool {
+        !self.package_name.is_empty() && !self.package_sha256.is_empty()
     }
 }
 
@@ -337,7 +328,7 @@ impl CartridgeRepo {
                                 cap_urn: cap_urn.to_string(),
                                 cap_title: cap_info.title.clone(),
                                 latest_version: cartridge.version.clone(),
-                                binary_sha256: cartridge.binary_sha256.clone(),
+                                package_sha256: cartridge.package_sha256.clone(),
                                 repo_url: cache.repo_url.clone(),
                                 page_url,
                             });
@@ -460,12 +451,6 @@ impl CartridgeRepoServer {
                 id, version
             )));
         }
-        if version_data.binary.name.is_empty() {
-            return Err(CartridgeRepoError::ParseError(format!(
-                "Cartridge {} v{}: missing required field 'binary.name'",
-                id, version
-            )));
-        }
         Ok(())
     }
 
@@ -543,14 +528,11 @@ impl CartridgeRepoServer {
                 categories: entry.categories.clone(),
                 tags: entry.tags.clone(),
                 caps: entry.caps.clone(),
-                // Distribution fields - ALL REQUIRED
+                // Distribution fields
                 platform: version_data.platform.clone(),
                 package_name: version_data.package.name.clone(),
                 package_sha256: version_data.package.sha256.clone(),
                 package_size: version_data.package.size,
-                binary_name: version_data.binary.name.clone(),
-                binary_sha256: version_data.binary.sha256.clone(),
-                binary_size: version_data.binary.size,
                 changelog: Self::build_changelog_map(&entry.versions),
                 available_versions,
             });
@@ -690,7 +672,7 @@ mod tests {
         assert_eq!(registry.cartridges[0].caps[1].description, "Analyze images");
     }
 
-    // TEST637: Verify full CartridgeInfo deserialization with signature and binary fields
+    // TEST637: Verify full CartridgeInfo deserialization with signature and package fields
     #[test]
     fn test637_deserialize_full_cartridge_with_signature() {
         let json = r#"{
@@ -717,9 +699,6 @@ mod tests {
             "packageName": "pdfcartridge-0.81.5325.pkg",
             "packageSha256": "9b68724eb9220ecf01e8ed4f5f80c594fbac2239bc5bf675005ec882ecc5eba0",
             "packageSize": 5187485,
-            "binaryName": "pdfcartridge-0.81.5325-darwin-arm64",
-            "binarySha256": "908187ec35632758f1a00452ff4755ba01020ea288619098b6998d5d33851d19",
-            "binarySize": 12980288,
             "availableVersions": ["0.81.5325"]
         }"#;
 
@@ -727,12 +706,8 @@ mod tests {
         assert_eq!(cartridge.id, "pdfcartridge");
         assert_eq!(cartridge.team_id, "P336JK947M");
         assert_eq!(cartridge.signed_at, "2026-02-07T16:40:28Z");
-        assert_eq!(cartridge.binary_name, "pdfcartridge-0.81.5325-darwin-arm64");
-        assert_eq!(cartridge.binary_sha256, "908187ec35632758f1a00452ff4755ba01020ea288619098b6998d5d33851d19");
-        assert_eq!(cartridge.binary_size, 12980288);
         assert!(!cartridge.team_id.is_empty(), "Cartridge must have team_id for signature verification");
         assert!(!cartridge.signed_at.is_empty(), "Cartridge must have signed_at timestamp");
-        assert!(!cartridge.binary_sha256.is_empty(), "Cartridge must have SHA256 hash");
     }
 
     // TEST320-335: CartridgeRepoServer and CartridgeRepoClient tests
@@ -758,9 +733,6 @@ mod tests {
             package_name: "test-1.0.0.pkg".to_string(),
             package_sha256: "abc123".to_string(),
             package_size: 1000,
-            binary_name: "test-1.0.0-darwin-arm64".to_string(),
-            binary_sha256: "def456".to_string(),
-            binary_size: 2000,
             changelog: HashMap::new(),
             available_versions: vec!["1.0.0".to_string()],
         };
@@ -791,9 +763,6 @@ mod tests {
             package_name: String::new(),
             package_sha256: String::new(),
             package_size: 0,
-            binary_name: String::new(),
-            binary_sha256: String::new(),
-            binary_size: 0,
             changelog: HashMap::new(),
             available_versions: vec![],
         };
@@ -809,8 +778,8 @@ mod tests {
     }
 
     #[test]
-    fn test322_cartridge_info_has_binary() {
-        // TEST322: Verify has_binary() method
+    fn test322_cartridge_info_has_package() {
+        // TEST322: Verify has_package() method
         let mut cartridge = CartridgeInfo {
             id: "testcartridge".to_string(),
             name: "Test".to_string(),
@@ -826,24 +795,21 @@ mod tests {
             tags: vec![],
             caps: vec![],
             platform: String::new(),
-            package_name: String::new(),
-            package_sha256: String::new(),
+            package_name: "test-1.0.0.pkg".to_string(),
+            package_sha256: "abc123".to_string(),
             package_size: 0,
-            binary_name: "test-1.0.0".to_string(),
-            binary_sha256: "abc123".to_string(),
-            binary_size: 0,
             changelog: HashMap::new(),
             available_versions: vec![],
         };
 
-        assert!(cartridge.has_binary());
+        assert!(cartridge.has_package());
 
-        cartridge.binary_name = String::new();
-        assert!(!cartridge.has_binary());
+        cartridge.package_name = String::new();
+        assert!(!cartridge.has_package());
 
-        cartridge.binary_name = "test-1.0.0".to_string();
-        cartridge.binary_sha256 = String::new();
-        assert!(!cartridge.has_binary());
+        cartridge.package_name = "test-1.0.0.pkg".to_string();
+        cartridge.package_sha256 = String::new();
+        assert!(!cartridge.has_package());
     }
 
     #[test]
@@ -886,11 +852,6 @@ mod tests {
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: CartridgeDistributionInfo {
-                name: "test-1.0.0-darwin-arm64".to_string(),
-                sha256: "def456".to_string(),
-                size: 2000,
-            },
         });
 
         cartridges_map.insert("testcartridge".to_string(), CartridgeRegistryEntry {
@@ -922,7 +883,6 @@ mod tests {
         assert_eq!(cartridges_array[0].id, "testcartridge");
         assert_eq!(cartridges_array[0].name, "Test Cartridge");
         assert_eq!(cartridges_array[0].version, "1.0.0");
-        assert_eq!(cartridges_array[0].binary_name, "test-1.0.0-darwin-arm64");
     }
 
     #[test]
@@ -940,11 +900,6 @@ mod tests {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
-            },
-            binary: CartridgeDistributionInfo {
-                name: "test-1.0.0-darwin-arm64".to_string(),
-                sha256: "def456".to_string(),
-                size: 2000,
             },
         });
 
@@ -989,11 +944,6 @@ mod tests {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
-            },
-            binary: CartridgeDistributionInfo {
-                name: "test-1.0.0-darwin-arm64".to_string(),
-                sha256: "def456".to_string(),
-                size: 2000,
             },
         });
 
@@ -1042,11 +992,6 @@ mod tests {
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: CartridgeDistributionInfo {
-                name: "pdf-1.0.0-darwin-arm64".to_string(),
-                sha256: "def456".to_string(),
-                size: 2000,
-            },
         });
 
         cartridges_map.insert("pdfcartridge".to_string(), CartridgeRegistryEntry {
@@ -1094,11 +1039,6 @@ mod tests {
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: CartridgeDistributionInfo {
-                name: "test-1.0.0-darwin-arm64".to_string(),
-                sha256: "def456".to_string(),
-                size: 2000,
-            },
         });
 
         cartridges_map.insert("doccartridge".to_string(), CartridgeRegistryEntry {
@@ -1145,11 +1085,6 @@ mod tests {
                 name: "test-1.0.0.pkg".to_string(),
                 sha256: "abc123".to_string(),
                 size: 1000,
-            },
-            binary: CartridgeDistributionInfo {
-                name: "test-1.0.0-darwin-arm64".to_string(),
-                sha256: "def456".to_string(),
-                size: 2000,
             },
         });
 
@@ -1213,9 +1148,6 @@ mod tests {
                     package_name: String::new(),
                     package_sha256: String::new(),
                     package_size: 0,
-                    binary_name: "test-binary".to_string(),
-                    binary_sha256: "abc123".to_string(),
-                    binary_size: 0,
                     changelog: HashMap::new(),
                     available_versions: vec![],
                 }
@@ -1263,9 +1195,6 @@ mod tests {
                     package_name: String::new(),
                     package_sha256: String::new(),
                     package_size: 0,
-                    binary_name: String::new(),
-                    binary_sha256: String::new(),
-                    binary_size: 0,
                     changelog: HashMap::new(),
                     available_versions: vec![],
                 }
@@ -1307,9 +1236,6 @@ mod tests {
                     package_name: String::new(),
                     package_sha256: String::new(),
                     package_size: 0,
-                    binary_name: String::new(),
-                    binary_sha256: String::new(),
-                    binary_size: 0,
                     changelog: HashMap::new(),
                     available_versions: vec![],
                 }
@@ -1360,9 +1286,6 @@ mod tests {
                     package_name: String::new(),
                     package_sha256: String::new(),
                     package_size: 0,
-                    binary_name: String::new(),
-                    binary_sha256: String::new(),
-                    binary_size: 0,
                     changelog: HashMap::new(),
                     available_versions: vec![],
                 },
@@ -1388,9 +1311,6 @@ mod tests {
                     package_name: String::new(),
                     package_sha256: String::new(),
                     package_size: 0,
-                    binary_name: String::new(),
-                    binary_sha256: String::new(),
-                    binary_size: 0,
                     changelog: HashMap::new(),
                     available_versions: vec![],
                 }
@@ -1442,11 +1362,6 @@ mod tests {
                 sha256: "abc123".to_string(),
                 size: 1000,
             },
-            binary: CartridgeDistributionInfo {
-                name: "test-1.0.0-darwin-arm64".to_string(),
-                sha256: "def456".to_string(),
-                size: 2000,
-            },
         });
 
         let cap_urn = "cap:in=\"media:test\";op=test;out=\"media:result\"";
@@ -1484,13 +1399,8 @@ mod tests {
         assert_eq!(cartridge.id, "testcartridge");
         assert_eq!(cartridge.name, "Test Cartridge");
         assert!(cartridge.is_signed());
-        assert!(cartridge.has_binary());
+        assert!(cartridge.has_package());
         assert_eq!(cartridge.caps.len(), 1);
         assert_eq!(cartridge.caps[0].urn, cap_urn);
-
-        // Simulate client consuming this response
-        // (Client would deserialize the JSON and cache it)
-        assert_eq!(cartridge.binary_name, "test-1.0.0-darwin-arm64");
-        assert_eq!(cartridge.binary_sha256, "def456");
     }
 }
