@@ -2081,9 +2081,9 @@ mod tests {
                 "error must mention missing checksum: {}", err);
     }
 
-    // TEST907: CBOR decode REJECTS STREAM_END frame missing chunk_count field
+    // TEST1124: CBOR decode REJECTS STREAM_END frame missing chunk_count field
     #[test]
-    fn test907_cbor_rejects_stream_end_without_chunk_count() {
+    fn test1124_cbor_rejects_stream_end_without_chunk_count() {
         use crate::bifaci::io::{encode_frame, decode_frame};
 
         let req_id = MessageId::new_uuid();

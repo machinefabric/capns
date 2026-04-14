@@ -154,9 +154,9 @@ mod tests {
         (reader, writer)
     }
 
-    // TEST896: Full path: engine REQ → runtime → cartridge → response back through relay
+    // TEST1122: Full path: engine REQ → runtime → cartridge → response back through relay
     #[tokio::test]
-    async fn test896_full_path_engine_req_to_cartridge_response() {
+    async fn test1122_full_path_engine_req_to_cartridge_response() {
         use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
         let manifest = r#"{"name":"EchoCartridge","version":"1.0","description":"Echo test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Test","command":"test","args":[]}]}"#;
@@ -263,9 +263,9 @@ mod tests {
         cartridge_handle.await.unwrap();
     }
 
-    // TEST897: Cartridge ERR frame flows back to engine through relay
+    // TEST1123: Cartridge ERR frame flows back to engine through relay
     #[tokio::test]
-    async fn test897_cartridge_error_flows_to_engine() {
+    async fn test1123_cartridge_error_flows_to_engine() {
         use crate::bifaci::host_runtime::CartridgeHostRuntime;
 
         let manifest = r#"{"name":"ErrCartridge","version":"1.0","description":"Error test cartridge","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=fail;out=\"media:void\"","title":"Test","command":"test","args":[]}]}"#;

@@ -232,7 +232,7 @@ fn create_test_cap_registry() -> Arc<CapRegistry> {
 
 // TEST001: Parse simple machine notation graph with test-edge1
 #[tokio::test]
-async fn test935_parse_simple_testcartridge_graph() {
+async fn test919_parse_simple_testcartridge_graph() {
     let registry = create_test_cap_registry();
 
     let route = r#"
@@ -256,7 +256,7 @@ async fn test935_parse_simple_testcartridge_graph() {
 
 // TEST002: Execute single-edge DAG (test-edge1)
 #[tokio::test]
-async fn test936_execute_single_edge_dag() {
+async fn test889_execute_single_edge_dag() {
     let registry = create_test_cap_registry();
     let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -299,7 +299,7 @@ async fn test936_execute_single_edge_dag() {
 
 // TEST003: Execute two-edge chain (test-edge1 -> test-edge2)
 #[tokio::test]
-async fn test937_execute_edge1_to_edge2_chain() {
+async fn test888_execute_edge1_to_edge2_chain() {
     let registry = create_test_cap_registry();
     let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -340,7 +340,7 @@ async fn test937_execute_edge1_to_edge2_chain() {
 
 // TEST004: Execute with file-path input
 #[tokio::test]
-async fn test938_execute_with_file_input() {
+async fn test887_execute_with_file_input() {
     let registry = create_test_cap_registry();
     let (temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -381,7 +381,7 @@ async fn test938_execute_with_file_input() {
 
 // TEST005: Execute large payload (test-large cap)
 #[tokio::test]
-async fn test939_execute_large_payload() {
+async fn test952_execute_large_payload() {
     let registry = create_test_cap_registry();
     let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -423,7 +423,7 @@ async fn test939_execute_large_payload() {
 
 // TEST006: Multi-input DAG (fan-in pattern)
 #[tokio::test]
-async fn test940_fan_in_pattern() {
+async fn test951_fan_in_pattern() {
     let registry = create_test_cap_registry();
     let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -469,7 +469,7 @@ async fn test940_fan_in_pattern() {
 
 // TEST007: Validate that cycles are rejected
 #[tokio::test]
-async fn test941_reject_cycles() {
+async fn test950_reject_cycles() {
     let registry = create_test_cap_registry();
 
     // Create a self-loop using identity cap
@@ -491,7 +491,7 @@ async fn test941_reject_cycles() {
 
 // TEST008: Empty machine notation (no edges)
 #[tokio::test]
-async fn test942_empty_graph() {
+async fn test949_empty_graph() {
     let registry = create_test_cap_registry();
 
     let route = "";
@@ -509,7 +509,7 @@ async fn test942_empty_graph() {
 
 // TEST009: Invalid cap URN in machine notation
 #[tokio::test]
-async fn test943_invalid_cap_urn() {
+async fn test948_invalid_cap_urn() {
     let registry = create_test_cap_registry();
 
     let route = concat!(
@@ -523,7 +523,7 @@ async fn test943_invalid_cap_urn() {
 
 // TEST010: Cap not found in registry
 #[tokio::test]
-async fn test944_cap_not_found() {
+async fn test947_cap_not_found() {
     let registry = create_test_cap_registry();
 
     let route = r#"
@@ -550,7 +550,7 @@ async fn test944_cap_not_found() {
 // node1 -> node2 -> node3 -> node6 -> node7
 // "hello" -> "[PREPEND]hello" -> "[PREPEND]hello[APPEND]" -> "[PREPEND]HELLO[APPEND]" -> "]DNEPPA[OLLEH]DNEPERP["
 #[tokio::test]
-async fn test945_four_machine() {
+async fn test946_four_machine() {
     let registry = create_test_cap_registry();
     let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -599,7 +599,7 @@ async fn test945_four_machine() {
 // node1 -> node2 -> node3 -> node6 -> node7 -> node8
 // adds <<...>> wrapping around the reversed string
 #[tokio::test]
-async fn test946_five_machine() {
+async fn test945_five_machine() {
     let registry = create_test_cap_registry();
     let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -648,7 +648,7 @@ async fn test946_five_machine() {
 // Full cycle: node1 -> node2 -> node3 -> node6 -> node7 -> node8 -> node1
 // Completes the round trip: unwrap markers + lowercase
 #[tokio::test]
-async fn test947_six_machine() {
+async fn test944_six_machine() {
     let registry = create_test_cap_registry();
     let (_temp, cartridge_dir, dev_binaries) = setup_test_env();
 
@@ -720,15 +720,15 @@ async fn test947_six_machine() {
 }
 
 // =============================================================================
-// Phase 3: Peer Invoke Testing (TEST403)
+// Phase 3: Peer Invoke Testing (TEST394)
 // =============================================================================
 
-// TEST403: Test peer invoke round-trip (testcartridge calls itself)
+// TEST394: Test peer invoke round-trip (testcartridge calls itself)
 // Disabled: LocalCartridgeRouter feature not implemented - uses non-existent modules
 #[cfg(feature = "__disabled_local_cartridge_router")]
 #[tokio::test]
 #[ignore]
-async fn test403_peer_invoke_roundtrip() {
+async fn test394_peer_invoke_roundtrip() {
     use capdag::{CartridgeHost, CapArgumentValue};
     use capdag::local_cartridge_router::LocalCartridgeRouter;
     use tokio::process::Command;
@@ -761,13 +761,13 @@ async fn test403_peer_invoke_roundtrip() {
     let manifest: capdag::CapManifest = serde_json::from_slice(manifest_bytes)
         .expect("Failed to parse manifest");
 
-    eprintln!("[TEST403] Discovered {} caps from testcartridge", manifest.caps.len());
+    eprintln!("[TEST394] Discovered {} caps from testcartridge", manifest.caps.len());
 
     // Register all caps with the router (pointing to this same host)
     let host_arc = Arc::new(host);
     for cap in &manifest.caps {
         let cap_urn = cap.urn.to_string();
-        eprintln!("[TEST403] Registering cap: {}", cap_urn);
+        eprintln!("[TEST394] Registering cap: {}", cap_urn);
         router.register_cartridge(&cap_urn, Arc::clone(&host_arc)).await;
     }
 
@@ -778,7 +778,7 @@ async fn test403_peer_invoke_roundtrip() {
         CapArgumentValue::new("media:node1;textable", input_data),
     ];
 
-    eprintln!("[TEST403] Calling test-peer with input: CHAIN");
+    eprintln!("[TEST394] Calling test-peer with input: CHAIN");
 
     let mut response = host_arc
         .request_with_arguments(test_peer_urn, &arguments)
@@ -790,7 +790,7 @@ async fn test403_peer_invoke_roundtrip() {
     while let Some(chunk_result) = response.recv().await {
         match chunk_result {
             Ok(chunk) => {
-                eprintln!("[TEST403] Received chunk: {} bytes", chunk.payload.len());
+                eprintln!("[TEST394] Received chunk: {} bytes", chunk.payload.len());
                 result_data.extend_from_slice(&chunk.payload);
             }
             Err(e) => {
@@ -802,17 +802,17 @@ async fn test403_peer_invoke_roundtrip() {
     // Shutdown host (try_unwrap to get ownership)
     match Arc::try_unwrap(host_arc) {
         Ok(host) => host.shutdown().await,
-        Err(_) => eprintln!("[TEST403] Warning: Could not unwrap host Arc, skipping shutdown"),
+        Err(_) => eprintln!("[TEST394] Warning: Could not unwrap host Arc, skipping shutdown"),
     }
 
     // Debug: print raw bytes
-    eprintln!("[TEST403] Raw response bytes: {:?}", &result_data[..std::cmp::min(result_data.len(), 30)]);
+    eprintln!("[TEST394] Raw response bytes: {:?}", &result_data[..std::cmp::min(result_data.len(), 30)]);
 
     // Decode CBOR response
     let cbor_value: ciborium::Value = ciborium::from_reader(&result_data[..])
         .expect("Failed to decode CBOR response");
 
-    eprintln!("[TEST403] Decoded CBOR value: {:?}", cbor_value);
+    eprintln!("[TEST394] Decoded CBOR value: {:?}", cbor_value);
 
     // Extract bytes from CBOR value
     let result_bytes = match cbor_value {
@@ -823,7 +823,7 @@ async fn test403_peer_invoke_roundtrip() {
     let result_str = String::from_utf8(result_bytes)
         .expect("Invalid UTF-8 in result");
 
-    eprintln!("[TEST403] Final result: {}", result_str);
+    eprintln!("[TEST394] Final result: {}", result_str);
 
     // Expected flow:
     // 1. test-peer receives "CHAIN"

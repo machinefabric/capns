@@ -5936,9 +5936,9 @@ mod tests {
         std::fs::remove_file(test_file).ok();
     }
 
-    // TEST895: CBOR Array of file-paths in CBOR mode (validates new Array support)
+    // TEST1121: CBOR Array of file-paths in CBOR mode (validates new Array support)
     #[test]
-    fn test895_cbor_array_file_paths_in_cbor_mode() {
+    fn test1121_cbor_array_file_paths_in_cbor_mode() {
         let temp_dir = std::env::temp_dir().join("test361");
         std::fs::create_dir_all(&temp_dir).unwrap();
 

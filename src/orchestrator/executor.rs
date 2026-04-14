@@ -1441,9 +1441,9 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    // TEST908: map_progress clamps child to [0.0, 1.0] and maps to [base, base+weight]
+    // TEST1125: map_progress clamps child to [0.0, 1.0] and maps to [base, base+weight]
     #[test]
-    fn test908_map_progress_basic_mapping() {
+    fn test1125_map_progress_basic_mapping() {
         // Identity mapping: base=0, weight=1
         assert_eq!(map_progress(0.0, 0.0, 1.0), 0.0);
         assert_eq!(map_progress(0.5, 0.0, 1.0), 0.5);
@@ -1459,9 +1459,9 @@ mod tests {
         assert_eq!(map_progress(1.5, 0.2, 0.6), 0.8);  // clamp to 1 → base+weight
     }
 
-    // TEST909: map_progress is deterministic — same inputs always produce same output
+    // TEST1126: map_progress is deterministic — same inputs always produce same output
     #[test]
-    fn test909_map_progress_deterministic() {
+    fn test1126_map_progress_deterministic() {
         for i in 0..100 {
             let p = i as f32 / 100.0;
             let a = map_progress(p, 0.1, 0.8);

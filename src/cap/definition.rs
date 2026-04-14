@@ -1300,7 +1300,7 @@ mod tests {
         assert!(output3.get_metadata().is_none());
     }
 
-    // TEST920: Documentation field round-trips through JSON serialize/deserialize.
+    // TEST1127: Documentation field round-trips through JSON serialize/deserialize.
     //
     // The documentation field carries an arbitrary markdown body authored
     // in the source TOML via the triple-quoted literal string syntax. The
@@ -1310,7 +1310,7 @@ mod tests {
     // capgraph side and the Rust serializer on this side must agree on
     // escaping; this test fails hard if they don't.
     #[test]
-    fn test920_cap_documentation_round_trip_with_markdown_body() {
+    fn test1127_cap_documentation_round_trip_with_markdown_body() {
         let urn = CapUrn::from_string(&test_urn("op=documented")).unwrap();
         let mut cap = Cap::new(urn, "Documented Cap".to_string(), "documented".to_string());
 
@@ -1338,14 +1338,14 @@ mod tests {
         assert_eq!(cloned, deserialized);
     }
 
-    // TEST921: When documentation is None, the serializer must skip the
+    // TEST1128: When documentation is None, the serializer must skip the
     // field entirely. This matches the behaviour of the JS toJSON, the
     // ObjC toDictionary, and the schema's "if present" semantics — there
     // is no null sentinel, only absence. A bug here would silently start
     // emitting `"documentation":null` and break consumers that distinguish
     // between absent and explicit null.
     #[test]
-    fn test921_cap_documentation_omitted_when_none() {
+    fn test1128_cap_documentation_omitted_when_none() {
         let urn = CapUrn::from_string(&test_urn("op=undocumented")).unwrap();
         let cap = Cap::new(urn, "Undocumented Cap".to_string(), "undocumented".to_string());
         assert!(cap.get_documentation().is_none());
@@ -1362,13 +1362,13 @@ mod tests {
         assert!(deserialized.get_documentation().is_none());
     }
 
-    // TEST922: A JSON document produced by capgraph (the canonical source)
+    // TEST1129: A JSON document produced by capgraph (the canonical source)
     // with a `documentation` field must deserialize into a Cap with the
     // body intact. Models the actual on-disk shape — not a synthetic
     // round-trip — to catch a mismatch between the JSON schema and the
     // Rust struct field naming.
     #[test]
-    fn test922_cap_documentation_parses_from_capgraph_json() {
+    fn test1129_cap_documentation_parses_from_capgraph_json() {
         // Build JSON via serde_json::json! so we don't have to fight raw
         // string escaping rules — the URN value contains both backslashes
         // and embedded double quotes.
@@ -1385,12 +1385,12 @@ mod tests {
         assert_eq!(cap.cap_description.as_deref(), Some("short"));
     }
 
-    // TEST923: documentation set/clear lifecycle parallels cap_description.
+    // TEST1130: documentation set/clear lifecycle parallels cap_description.
     // Catches a regression where the setter or clearer is wired to the wrong
     // field — for example, set_documentation accidentally writing to
     // cap_description.
     #[test]
-    fn test923_cap_documentation_set_and_clear_lifecycle() {
+    fn test1130_cap_documentation_set_and_clear_lifecycle() {
         let urn = CapUrn::from_string(&test_urn("op=lifecycle")).unwrap();
         let mut cap = Cap::with_description(
             urn,

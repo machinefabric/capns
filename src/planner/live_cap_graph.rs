@@ -1706,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn test790_strand_round_trips_through_serde_without_losing_step_types() {
+    fn test1110_strand_round_trips_through_serde_without_losing_step_types() {
         let strand = Strand {
             steps: vec![
                 StrandStep {
@@ -1762,13 +1762,13 @@ mod tests {
         assert!(matches!(recovered.steps[1].step_type, StrandStepType::ForEach { .. }));
     }
 
-    // TEST792: ForEach works for user-provided list sources not in the graph.
+    // TEST1111: ForEach works for user-provided list sources not in the graph.
     // This is the original bug — media:list;textable;txt is a user import source,
     // not a cap output. Previously, no ForEach edge existed for it because
     // insert_cardinality_transitions() only pre-computed edges for cap outputs.
     // With dynamic synthesis, ForEach is available for ANY list source.
     #[test]
-    fn test792_foreach_for_user_provided_list_source() {
+    fn test1111_foreach_for_user_provided_list_source() {
         let mut graph = LiveCapGraph::new();
 
         // Cap: textable → decision (accepts singular textable)
@@ -1815,10 +1815,10 @@ mod tests {
         }
     }
 
-    // TEST793: Collect is not synthesized during path finding.
+    // TEST1112: Collect is not synthesized during path finding.
     // Reaching a list target type requires the cap itself to output a list type.
     #[test]
-    fn test793_no_collect_in_path_finding() {
+    fn test1112_no_collect_in_path_finding() {
         let mut graph = LiveCapGraph::new();
 
         let summarize = make_test_cap(
@@ -1838,9 +1838,9 @@ mod tests {
         assert!(paths.is_empty(), "Should NOT find path to list type without a cap that produces it");
     }
 
-    // TEST794: Multi-cap path without Collect — Collect is not synthesized
+    // TEST1113: Multi-cap path without Collect — Collect is not synthesized
     #[test]
-    fn test794_multi_cap_path_no_collect() {
+    fn test1113_multi_cap_path_no_collect() {
         let mut graph = LiveCapGraph::new();
 
         let disbind = make_test_cap(
@@ -1866,9 +1866,9 @@ mod tests {
         assert_eq!(paths[0].cap_step_count, 2, "Should have 2 cap steps");
     }
 
-    // TEST795: Graph stores only Cap edges after sync
+    // TEST1114: Graph stores only Cap edges after sync
     #[test]
-    fn test795_graph_stores_only_cap_edges() {
+    fn test1114_graph_stores_only_cap_edges() {
         let mut graph = LiveCapGraph::new();
 
         let caps = vec![
@@ -1890,9 +1890,9 @@ mod tests {
         }
     }
 
-    // TEST796: ForEach is synthesized when is_sequence=true AND caps can consume items
+    // TEST1115: ForEach is synthesized when is_sequence=true AND caps can consume items
     #[test]
-    fn test796_dynamic_foreach_with_is_sequence() {
+    fn test1115_dynamic_foreach_with_is_sequence() {
         let mut graph = LiveCapGraph::new();
 
         // Need a cap that accepts the source type for ForEach to be synthesized
@@ -1911,9 +1911,9 @@ mod tests {
         assert!(fe.to_spec.is_equivalent(&source).unwrap(), "ForEach to_spec should be the same URN");
     }
 
-    // TEST797: Collect is never synthesized during path finding
+    // TEST1116: Collect is never synthesized during path finding
     #[test]
-    fn test797_collect_never_synthesized() {
+    fn test1116_collect_never_synthesized() {
         let graph = LiveCapGraph::new();
 
         let source = MediaUrn::from_string("media:page;textable").unwrap();
@@ -1928,9 +1928,9 @@ mod tests {
         assert!(collect_seq.is_none(), "Should NOT synthesize Collect for sequence");
     }
 
-    // TEST798: ForEach is NOT synthesized when is_sequence=false
+    // TEST1117: ForEach is NOT synthesized when is_sequence=false
     #[test]
-    fn test798_no_foreach_when_not_sequence() {
+    fn test1117_no_foreach_when_not_sequence() {
         let mut graph = LiveCapGraph::new();
 
         // Even with caps that could consume, ForEach requires is_sequence=true
@@ -1944,9 +1944,9 @@ mod tests {
         assert!(foreach_edge.is_none(), "Should NOT synthesize ForEach when is_sequence=false");
     }
 
-    // TEST799: ForEach not synthesized without cap consumers even with is_sequence=true
+    // TEST1118: ForEach not synthesized without cap consumers even with is_sequence=true
     #[test]
-    fn test799_no_foreach_without_cap_consumers() {
+    fn test1118_no_foreach_without_cap_consumers() {
         let graph = LiveCapGraph::new();
 
         let source = MediaUrn::from_string("media:textable").unwrap();
@@ -1957,10 +1957,10 @@ mod tests {
         assert!(foreach_edge.is_none(), "Should NOT synthesize ForEach without cap consumers");
     }
 
-    // TEST800: Strand::knit returns a single-strand Machine via the new
+    // TEST1119: Strand::knit returns a single-strand Machine via the new
     // resolver. Smoke test the registry-threaded API end-to-end.
     #[test]
-    fn test800_strand_knit_with_registry_returns_single_strand_machine() {
+    fn test1119_strand_knit_with_registry_returns_single_strand_machine() {
         use crate::cap::registry::CapRegistry;
 
         let cap = make_test_cap_with_arg(
@@ -2006,12 +2006,12 @@ mod tests {
         assert_eq!(direct, via_machine);
     }
 
-    // TEST801: Strand::knit fails hard when the cap is not in
+    // TEST1120: Strand::knit fails hard when the cap is not in
     // the registry — the planner produces strands referencing
     // caps that must be present in the cap registry's cache for
     // resolution to succeed.
     #[test]
-    fn test801_strand_knit_unknown_cap_fails_hard() {
+    fn test1120_strand_knit_unknown_cap_fails_hard() {
         use crate::cap::registry::CapRegistry;
         use crate::machine::MachineAbstractionError;
 

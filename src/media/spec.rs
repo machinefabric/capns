@@ -1202,14 +1202,14 @@ mod tests {
         assert_eq!(resolved.extensions.len(), 2);
     }
 
-    // TEST924: Documentation propagates from MediaSpecDef through resolve_media_urn
+    // TEST1131: Documentation propagates from MediaSpecDef through resolve_media_urn
     // into ResolvedMediaSpec.
     //
     // This is the resolution path used by every consumer that asks the
     // registry for a media spec — info panels, the cap navigator, the UI
     // — so a regression here makes the new field invisible everywhere.
     #[tokio::test]
-    async fn test924_media_documentation_propagates_through_resolve() {
+    async fn test1131_media_documentation_propagates_through_resolve() {
         let registry = test_registry().await;
         let body = "## Markdown body\n\nWith `code` and a [link](https://example.com).";
         let media_specs = create_media_specs(vec![
@@ -1239,10 +1239,10 @@ mod tests {
         assert_eq!(resolved.description.as_deref(), Some("short desc"));
     }
 
-    // TEST925: MediaSpecDef serializes documentation only when present and
-    // round-trips losslessly. Mirrors TEST920/921 for the cap side.
+    // TEST1132: MediaSpecDef serializes documentation only when present and
+    // round-trips losslessly. Mirrors TEST1127/1128 for the cap side.
     #[test]
-    fn test925_media_spec_def_documentation_round_trip() {
+    fn test1132_media_spec_def_documentation_round_trip() {
         let body = "Body with newline\nand backslash \\";
         let with_doc = MediaSpecDef {
             urn: "media:rt-test".to_string(),
@@ -1281,12 +1281,12 @@ mod tests {
         );
     }
 
-    // TEST926: MediaSpecDef set/clear lifecycle for documentation. Catches a
+    // TEST1133: MediaSpecDef set/clear lifecycle for documentation. Catches a
     // regression where the setter or clearer accidentally writes to or reads
     // from `description` (the short field) instead of `documentation` (the
     // long markdown body).
     #[test]
-    fn test926_media_spec_def_documentation_lifecycle() {
+    fn test1133_media_spec_def_documentation_lifecycle() {
         let mut spec = MediaSpecDef {
             urn: "media:doc-test".to_string(),
             media_type: "text/plain".to_string(),
