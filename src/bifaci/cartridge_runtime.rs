@@ -2189,7 +2189,7 @@ fn spawn_handler(
     pending_peer_requests: &Arc<Mutex<HashMap<MessageId, PendingPeerRequest>>>,
     manifest: &Option<CapManifest>,
     max_chunk: usize,
-    handler_done_tx: &tokio::sync::mpsc::UnboundedSender<()>,
+    handler_done_tx: &tokio::sync::mpsc::UnboundedSender<MessageId>,
 ) -> JoinHandle<()> {
     let output_tx_clone = output_tx.clone();
     let pending_clone = Arc::clone(pending_peer_requests);
@@ -2232,19 +2232,20 @@ fn spawn_handler(
         match result {
             Ok(()) => {
                 tracing::info!("[CartridgeRuntime] handler completed OK: cap='{}' rid={:?}", cap_urn, request_id);
-                let mut end_frame = Frame::end_ok(request_id, None);
+                let mut end_frame = Frame::end_ok(request_id.clone(), None);
                 end_frame.routing_id = routing_id;
                 let _ = sender.send(&end_frame);
             }
             Err(e) => {
                 tracing::error!("[CartridgeRuntime] handler FAILED: cap='{}' rid={:?} error={}", cap_urn, request_id, e);
-                let mut err_frame = Frame::err(request_id, "HANDLER_ERROR", &e.to_string());
+                let mut err_frame = Frame::err(request_id.clone(), "HANDLER_ERROR", &e.to_string());
                 err_frame.routing_id = routing_id;
                 let _ = sender.send(&err_frame);
             }
         }
-        // Notify the main loop that a handler slot is free.
-        let _ = done_tx.send(());
+        // Notify the main loop which handler finished so it can
+        // check cancelled state and send deferred ERR if needed.
+        let _ = done_tx.send(request_id);
     })
 }
 
@@ -3209,9 +3210,9 @@ impl CartridgeRuntime {
         // Number of currently running handlers (decremented when JoinHandles finish).
         let mut running_handler_count: usize = 0;
 
-        // Notification channel: handlers send () when they finish so the main loop
-        // wakes up from frame_reader.read() and drains the queue.
-        let (handler_done_tx, mut handler_done_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // Notification channel: handlers send their RID when they finish so the main
+        // loop can check cancelled state and send deferred ERR CANCELLED if needed.
+        let (handler_done_tx, mut handler_done_rx) = tokio::sync::mpsc::unbounded_channel::<MessageId>();
 
         // Spawn a reader task that feeds frames into a channel.
         // This decouples stdin reading from the main select loop so that
@@ -3237,24 +3238,10 @@ impl CartridgeRuntime {
         });
 
         // Main loop: select between incoming frames and handler completion signals.
-        // When a handler finishes it sends () on handler_done_tx, waking the loop
-        // so it can reap finished handlers and drain the queue immediately —
-        // without waiting for the next frame from stdin.
+        // When a handler finishes it sends its RID on handler_done_tx, waking the
+        // loop so it can check cancelled state, send deferred ERR if needed, and
+        // drain the queue immediately — without waiting for the next frame from stdin.
         loop {
-            // Reap finished handlers and drain the queue into freed slots.
-            let prev_count = active_handlers.len();
-            let finished_rids: Vec<MessageId> = active_handlers.iter()
-                .filter(|(_, h)| h.is_finished())
-                .map(|(rid, _)| rid.clone())
-                .collect();
-            for rid in &finished_rids {
-                active_handlers.remove(rid);
-                handler_routing_ids.remove(rid);
-                cancelled_requests.remove(rid);
-            }
-            let finished = prev_count - active_handlers.len();
-            running_handler_count = running_handler_count.saturating_sub(finished);
-
             // Drain queue: spawn handlers for queued requests that now have capacity.
             let cap = self.capacity.get();
             while !request_queue.is_empty() && (cap == 0 || running_handler_count < cap) {
@@ -3298,8 +3285,21 @@ impl CartridgeRuntime {
             // Select: either a frame arrives from stdin or a handler finishes.
             let frame = tokio::select! {
                 biased;
-                // Handler done — loop back to reap and drain.
-                _ = handler_done_rx.recv() => continue,
+                // Handler done — reap by RID, send deferred ERR if cancelled.
+                Some(rid) = handler_done_rx.recv() => {
+                    active_handlers.remove(&rid);
+                    running_handler_count = running_handler_count.saturating_sub(1);
+                    if cancelled_requests.remove(&rid) {
+                        let routing_id = handler_routing_ids.remove(&rid).flatten();
+                        let mut err = Frame::err(rid, "CANCELLED", "Request cancelled");
+                        err.routing_id = routing_id;
+                        let _ = output_tx.send(err);
+                        tracing::info!("[CartridgeRuntime] Cancelled handler finished, sent deferred ERR");
+                    } else {
+                        handler_routing_ids.remove(&rid);
+                    }
+                    continue
+                },
                 // Frame from reader task.
                 result = frame_rx.recv() => {
                     match result {
@@ -3473,18 +3473,19 @@ impl CartridgeRuntime {
                         continue;
                     }
 
-                    // Case 2: Request has an active handler — abort it
-                    if let Some(handle) = active_handlers.remove(&target_rid) {
+                    // Case 2: Request has an active handler — cooperative cancel.
+                    // force_kill is handled at the host level (kills the process);
+                    // the cartridge runtime only ever sees cooperative cancels.
+                    // Close the input channel so the handler's demux sees disconnect
+                    // and the handler exits naturally. ERR CANCELLED is deferred
+                    // until handlerDone(RID) arrives — this guarantees the handler's
+                    // stream lifecycle completes (no orphaned streams) and produces
+                    // identical wire behavior regardless of implementation language.
+                    if active_handlers.contains_key(&target_rid) {
                         cancelled_requests.insert(target_rid.clone());
-
-                        // Close the input channel so the handler's demux sees disconnect
                         active_requests.remove(&target_rid);
 
-                        // Abort the handler task
-                        handle.abort();
-                        running_handler_count = running_handler_count.saturating_sub(1);
-
-                        // Cancel all peer calls originating from this request
+                        // Cancel peer calls originating from this request
                         let peer_rids_to_cancel: Vec<(MessageId, Option<MessageId>)> = {
                             let peer = pending_peer_requests.lock().unwrap();
                             peer.iter()
@@ -3496,7 +3497,6 @@ impl CartridgeRuntime {
                             let cancel = Frame::cancel(peer_rid.clone(), frame.force_kill.unwrap_or(false));
                             let _ = output_tx.send(cancel);
                         }
-                        // Remove cancelled peer requests
                         {
                             let mut peer = pending_peer_requests.lock().unwrap();
                             for (peer_rid, _) in &peer_rids_to_cancel {
@@ -3504,12 +3504,7 @@ impl CartridgeRuntime {
                             }
                         }
 
-                        // Send ERR "CANCELLED"
-                        let routing_id = handler_routing_ids.remove(&target_rid).flatten();
-                        let mut err = Frame::err(target_rid.clone(), "CANCELLED", "Request cancelled");
-                        err.routing_id = routing_id;
-                        let _ = output_tx.send(err);
-                        tracing::info!("[CartridgeRuntime] Cancelled in-flight request rid={:?}", target_rid);
+                        tracing::info!("[CartridgeRuntime] Cancelled in-flight request (cooperative): rid={:?}", target_rid);
                         continue;
                     }
 
