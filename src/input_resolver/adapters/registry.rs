@@ -66,6 +66,14 @@ pub struct MediaAdapterRegistry {
     media_registry: Arc<MediaUrnRegistry>,
 }
 
+impl std::fmt::Debug for MediaAdapterRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MediaAdapterRegistry")
+            .field("adapter_count", &self.registered_adapters.len())
+            .finish()
+    }
+}
+
 impl MediaAdapterRegistry {
     /// Create a new empty registry with the given MediaUrnRegistry.
     /// No adapters are registered by default — cartridges register them

@@ -936,26 +936,28 @@ impl LiveCapGraph {
                 let cap_step_count = current_path.iter().filter(|s| s.is_cap()).count() as i32;
 
                 // A valid machine requires at least one capability step.
-                if cap_step_count == 0 {
-                    return;
+                if cap_step_count > 0 {
+                    let description = current_path
+                        .iter()
+                        .map(|s| s.title())
+                        .collect::<Vec<_>>()
+                        .join(" → ");
+
+                    all_paths.push(Strand {
+                        steps: current_path.clone(),
+                        source_spec: source.clone(),
+                        target_spec: target.clone(),
+                        total_steps: current_path.len() as i32,
+                        cap_step_count,
+                        description,
+                    });
                 }
-
-                let description = current_path
-                    .iter()
-                    .map(|s| s.title())
-                    .collect::<Vec<_>>()
-                    .join(" → ");
-
-                all_paths.push(Strand {
-                    steps: current_path.clone(),
-                    source_spec: source.clone(),
-                    target_spec: target.clone(),
-                    total_steps: current_path.len() as i32,
-                    cap_step_count,
-                    description,
-                });
             }
-            return;
+            // For round-trip paths (source==target), don't return early —
+            // continue exploring edges to find longer paths through this node.
+            if !source.is_equivalent(target).unwrap_or(false) {
+                return;
+            }
         }
 
         if current_path.len() >= depth_limit {
@@ -963,7 +965,13 @@ impl LiveCapGraph {
         }
 
         let visit_key = (current.clone(), is_sequence);
-        visited.insert(visit_key.clone());
+        // For round-trip paths (source==target), don't mark target-equivalent nodes
+        // as visited. This allows the DFS to return to the target through different
+        // intermediate paths. Cycle prevention is handled by depth_limit.
+        let is_roundtrip = source.is_equivalent(target).unwrap_or(false);
+        if !(is_roundtrip && current.is_equivalent(target).unwrap_or(false)) {
+            visited.insert(visit_key.clone());
+        }
 
         for (edge, next_is_seq) in self.get_outgoing_edges(current, is_sequence) {
             let next_visit_key = (edge.to_spec.clone(), next_is_seq);
