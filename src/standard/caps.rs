@@ -69,6 +69,13 @@ pub const CAP_IDENTITY: &str = "cap:";
 /// The capdag lib provides a default implementation; cartridges may override.
 pub const CAP_DISCARD: &str = "cap:in=media:;out=media:void";
 
+/// Adapter selection capability — content inspection for file type detection.
+/// Standard, NOT mandatory. Every cartridge gets a default implementation that
+/// returns empty END (no match). Cartridges that inspect file content override
+/// this with a handler that returns `{"media_urns": [...]}`.
+pub const CAP_ADAPTER_SELECTION: &str =
+    "cap:in=\"media:\";out=\"media:adapter-selection;json;record\"";
+
 /// Parse and return the canonical identity `CapUrn` from `CAP_IDENTITY`.
 pub fn identity_urn() -> CapUrn {
     CapUrn::from_string(CAP_IDENTITY)
@@ -79,6 +86,12 @@ pub fn identity_urn() -> CapUrn {
 pub fn discard_urn() -> CapUrn {
     CapUrn::from_string(CAP_DISCARD)
         .unwrap_or_else(|e| panic!("BUG: CAP_DISCARD constant is invalid: {}", e))
+}
+
+/// Parse and return the canonical adapter selection `CapUrn` from `CAP_ADAPTER_SELECTION`.
+pub fn adapter_selection_urn() -> CapUrn {
+    CapUrn::from_string(CAP_ADAPTER_SELECTION)
+        .unwrap_or_else(|e| panic!("BUG: CAP_ADAPTER_SELECTION constant is invalid: {}", e))
 }
 
 /// Construct the canonical Identity `Cap` definition.
@@ -141,6 +154,43 @@ pub fn discard_cap() -> Cap {
     cap.set_output(crate::cap::definition::CapOutput::new(
         MEDIA_VOID,
         "Void (no output)",
+    ));
+    cap
+}
+
+/// Construct the canonical Adapter Selection `Cap` definition.
+///
+/// The adapter selection cap declares a wildcard input arg
+/// (`media:`) so it can accept any file content for inspection.
+/// The output is `media:adapter-selection;json;record` — a JSON
+/// object with `media_urns` listing the media URNs the adapter
+/// is confident match the inspected file content.
+///
+/// The default implementation (AdapterSelectionOp) returns an
+/// empty END frame, meaning "I don't handle this file type".
+/// Cartridges that inspect file content override this handler.
+pub fn adapter_selection_cap() -> Cap {
+    use crate::urn::media_urn::MEDIA_ADAPTER_SELECTION;
+
+    let urn = adapter_selection_urn();
+
+    let mut cap = Cap::with_description(
+        urn,
+        "Adapter Selection".to_string(),
+        "adapter-selection".to_string(),
+        "Content inspection adapter. Inspects file content and returns media URNs matching the detected file type. Default returns empty END (no match).".to_string(),
+    );
+
+    cap.args.push(crate::cap::definition::CapArg::new(
+        "media:",
+        true,
+        vec![crate::cap::definition::ArgSource::Stdin {
+            stdin: "media:".to_string(),
+        }],
+    ));
+    cap.set_output(crate::cap::definition::CapOutput::new(
+        MEDIA_ADAPTER_SELECTION,
+        "JSON object with media_urns array identifying the detected file type",
     ));
     cap
 }
@@ -976,6 +1026,7 @@ mod tests {
         );
     }
 
+    // TEST310: llm_generate_text_urn() produces a valid cap URN with textable in/out specs
     #[test]
     fn test310_llm_generate_text_urn_shape() {
         use crate::urn::media_urn::MediaUrn;
@@ -1186,6 +1237,71 @@ mod tests {
             "out_spec '{}' should conform to '{}'",
             urn.out_spec(),
             MEDIA_YAML_VALUE
+        );
+    }
+
+    // =========================================================================
+    // Adapter Selection Cap Tests
+    // =========================================================================
+
+    // TEST1272: CAP_ADAPTER_SELECTION constant parses as a valid CapUrn
+    #[test]
+    fn test1272_adapter_cap_constant_parses() {
+        let urn = CapUrn::from_string(CAP_ADAPTER_SELECTION);
+        assert!(
+            urn.is_ok(),
+            "CAP_ADAPTER_SELECTION must be a valid cap URN: {:?}",
+            urn.err()
+        );
+    }
+
+    // TEST1273: adapter_selection_urn() returns a valid CapUrn with correct in/out specs
+    #[test]
+    fn test1273_adapter_selection_urn_builder() {
+        let urn = adapter_selection_urn();
+        // in_spec should be bare "media:" (accepts any)
+        assert_eq!(urn.in_spec(), "media:");
+        // out_spec should be the adapter selection media URN
+        let out = urn.out_spec();
+        let out_urn = crate::MediaUrn::from_string(out).unwrap();
+        let expected_out =
+            crate::MediaUrn::from_string(crate::urn::media_urn::MEDIA_ADAPTER_SELECTION).unwrap();
+        assert!(
+            out_urn.conforms_to(&expected_out).unwrap(),
+            "out_spec '{}' should conform to adapter-selection URN",
+            out
+        );
+    }
+
+    // TEST1274: adapter_selection_cap() builds a valid Cap with correct args and output
+    #[test]
+    fn test1274_adapter_selection_cap_builder() {
+        let cap = adapter_selection_cap();
+        assert_eq!(cap.title, "Adapter Selection");
+        assert_eq!(cap.command, "adapter-selection");
+
+        // Must have exactly one arg (wildcard media: input)
+        assert_eq!(cap.args.len(), 1, "Adapter selection cap must have one arg");
+        assert_eq!(cap.args[0].media_urn, "media:");
+        assert!(cap.args[0].required, "The input arg must be required");
+
+        // Must have output
+        let output = cap.output.as_ref().expect("Adapter selection cap must have output");
+        assert_eq!(
+            output.media_urn,
+            crate::urn::media_urn::MEDIA_ADAPTER_SELECTION
+        );
+    }
+
+    // TEST1275: CAP_ADAPTER_SELECTION is dispatchable by identity (identity accepts everything)
+    #[test]
+    fn test1275_adapter_selection_dispatchable_by_identity() {
+        let identity = identity_urn();
+        let adapter = adapter_selection_urn();
+        // Identity cap should be dispatchable for any request
+        assert!(
+            identity.is_dispatchable(&adapter),
+            "Identity must be dispatchable for adapter selection requests"
         );
     }
 }

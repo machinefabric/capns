@@ -1,74 +1,78 @@
-//! MediaAdapterRegistry — collection of content inspection adapters
+//! MediaAdapterRegistry — tracks cartridge-provided content inspection adapters
 //!
-//! The registry integrates with MediaUrnRegistry for extension-to-URN mapping.
-//! Adapters provide content inspection to select the most appropriate URN
-//! from the registry's candidates for a given file.
+//! The registry records which cartridges have registered adapter URNs for content
+//! inspection, detects ambiguity at registration time (rejecting entire cap groups),
+//! and maps file extensions to the cartridges that can inspect them.
 
-use std::path::Path;
+use std::fmt;
 use std::sync::Arc;
 
-use crate::input_resolver::adapter::{
-    select_by_structure, AdapterResult, AdapterSelection, MediaAdapter,
-};
-use crate::input_resolver::ContentStructure;
 use crate::media::registry::MediaUrnRegistry;
 use crate::urn::media_urn::MediaUrn;
 
-use super::data::*;
-use super::text::*;
-
-/// A registered adapter with its parsed pattern URN
-struct RegisteredAdapter {
-    pattern: MediaUrn,
-    adapter: Arc<dyn MediaAdapter>,
+/// Error returned when cap group registration fails due to adapter ambiguity
+#[derive(Debug, Clone)]
+pub struct AdapterRegistrationError {
+    /// The cap group that was rejected
+    pub group_name: String,
+    /// The adapter URN from the new group that caused the conflict
+    pub new_adapter_urn: String,
+    /// The existing adapter URN it conflicts with
+    pub existing_adapter_urn: String,
+    /// The cap group that owns the existing adapter
+    pub existing_group_name: String,
+    /// The cartridge that owns the existing adapter
+    pub existing_cartridge_id: String,
 }
 
-/// Registry of media content inspection adapters
+impl fmt::Display for AdapterRegistrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Cap group '{}' rejected: adapter URN '{}' conflicts with '{}' \
+             (registered by group '{}' in cartridge '{}'). \
+             One conforms to the other, creating ambiguity.",
+            self.group_name,
+            self.new_adapter_urn,
+            self.existing_adapter_urn,
+            self.existing_group_name,
+            self.existing_cartridge_id,
+        )
+    }
+}
+
+impl std::error::Error for AdapterRegistrationError {}
+
+/// A registered adapter URN with its owning group and cartridge
+struct RegisteredAdapter {
+    media_urn: MediaUrn,
+    /// The raw URN string (for error messages and lookups)
+    urn_string: String,
+    group_name: String,
+    cartridge_id: String,
+}
+
+/// Registry of cartridge-provided content inspection adapters
 ///
-/// This registry works with MediaUrnRegistry:
-/// 1. MediaUrnRegistry provides extension -> candidate URN mapping (from specs)
-/// 2. Adapters declare a pattern URN — candidates that conform to it are offered
-/// 3. Adapters inspect content and select the best candidate
+/// This registry:
+/// 1. Tracks which cartridges have registered adapter URNs
+/// 2. Detects ambiguity at registration time (rejects entire cap groups)
+/// 3. Maps file extensions to cartridges that can inspect them
 pub struct MediaAdapterRegistry {
-    /// Adapters with their parsed pattern URNs
-    adapters: Vec<RegisteredAdapter>,
+    /// Registered adapter URNs from cartridge cap groups
+    registered_adapters: Vec<RegisteredAdapter>,
 
     /// Reference to the media URN registry for extension lookups
     media_registry: Arc<MediaUrnRegistry>,
 }
 
 impl MediaAdapterRegistry {
-    /// Create a new registry with the given MediaUrnRegistry
+    /// Create a new empty registry with the given MediaUrnRegistry.
+    /// No adapters are registered by default — cartridges register them
+    /// via `register_cap_group()`.
     pub fn new(media_registry: Arc<MediaUrnRegistry>) -> Self {
-        let mut adapters = Vec::new();
-
-        // Register content inspection adapters
-        let adapter_defs: Vec<Arc<dyn MediaAdapter>> = vec![
-            Arc::new(JsonAdapter),
-            Arc::new(NdjsonAdapter),
-            Arc::new(CsvAdapter),
-            Arc::new(TsvAdapter),
-            Arc::new(PsvAdapter),
-            Arc::new(YamlAdapter),
-            Arc::new(XmlAdapter),
-            Arc::new(TomlAdapter),
-            Arc::new(PlainTextAdapter),
-        ];
-
-        for adapter in adapter_defs {
-            let pattern = MediaUrn::from_string(adapter.pattern_urn()).unwrap_or_else(|e| {
-                panic!(
-                    "Adapter '{}' has invalid pattern URN '{}': {}",
-                    adapter.name(),
-                    adapter.pattern_urn(),
-                    e
-                )
-            });
-            adapters.push(RegisteredAdapter { pattern, adapter });
-        }
-
         MediaAdapterRegistry {
-            adapters,
+            registered_adapters: Vec::new(),
             media_registry,
         }
     }
@@ -78,161 +82,152 @@ impl MediaAdapterRegistry {
         &self.media_registry
     }
 
-    /// Check if any content-inspecting adapter handles the given URN string.
-    /// Returns true if the URN conforms to any registered adapter's pattern
-    /// AND that adapter requires content inspection.
-    pub fn has_content_adapter_for(&self, urn_str: &str) -> bool {
-        let urn = match MediaUrn::from_string(urn_str) {
-            Ok(u) => u,
-            Err(_) => return false,
-        };
-        self.adapters.iter().any(|reg| {
-            reg.adapter.requires_content_inspection()
-                && urn.conforms_to(&reg.pattern).unwrap_or(false)
-        })
+    /// Register a cap group's adapter URNs.
+    ///
+    /// Checks each new adapter URN against ALL existing registered URNs.
+    /// If any pair has a `conforms_to` relationship in either direction,
+    /// the entire group is rejected — none of its adapters get registered.
+    ///
+    /// On success, all adapter URNs from the group are added atomically.
+    pub fn register_cap_group(
+        &mut self,
+        group_name: &str,
+        adapter_urn_strs: &[String],
+        cartridge_id: &str,
+    ) -> Result<(), AdapterRegistrationError> {
+        // Parse all new adapter URNs first — fail hard on invalid URNs
+        let new_adapters: Vec<(MediaUrn, &String)> = adapter_urn_strs
+            .iter()
+            .map(|s| {
+                let urn = MediaUrn::from_string(s).unwrap_or_else(|e| {
+                    panic!(
+                        "Cap group '{}' has invalid adapter URN '{}': {}",
+                        group_name, s, e
+                    )
+                });
+                (urn, s)
+            })
+            .collect();
+
+        // Check each new adapter against all existing registered adapters
+        for (new_urn, new_str) in &new_adapters {
+            for existing in &self.registered_adapters {
+                let new_conforms_to_existing = new_urn
+                    .conforms_to(&existing.media_urn)
+                    .unwrap_or(false);
+                let existing_conforms_to_new = existing
+                    .media_urn
+                    .conforms_to(new_urn)
+                    .unwrap_or(false);
+
+                if new_conforms_to_existing || existing_conforms_to_new {
+                    return Err(AdapterRegistrationError {
+                        group_name: group_name.to_string(),
+                        new_adapter_urn: (*new_str).clone(),
+                        existing_adapter_urn: existing.urn_string.clone(),
+                        existing_group_name: existing.group_name.clone(),
+                        existing_cartridge_id: existing.cartridge_id.clone(),
+                    });
+                }
+            }
+        }
+
+        // Also check new adapters against each other within the same group
+        for i in 0..new_adapters.len() {
+            for j in (i + 1)..new_adapters.len() {
+                let (a_urn, a_str) = &new_adapters[i];
+                let (b_urn, b_str) = &new_adapters[j];
+
+                let a_conforms_to_b = a_urn.conforms_to(b_urn).unwrap_or(false);
+                let b_conforms_to_a = b_urn.conforms_to(a_urn).unwrap_or(false);
+
+                if a_conforms_to_b || b_conforms_to_a {
+                    return Err(AdapterRegistrationError {
+                        group_name: group_name.to_string(),
+                        new_adapter_urn: (*a_str).clone(),
+                        existing_adapter_urn: (*b_str).clone(),
+                        existing_group_name: group_name.to_string(),
+                        existing_cartridge_id: cartridge_id.to_string(),
+                    });
+                }
+            }
+        }
+
+        // No conflicts — register atomically
+        for (urn, urn_str) in new_adapters {
+            self.registered_adapters.push(RegisteredAdapter {
+                media_urn: urn,
+                urn_string: urn_str.clone(),
+                group_name: group_name.to_string(),
+                cartridge_id: cartridge_id.to_string(),
+            });
+        }
+
+        Ok(())
     }
 
-    /// Detect media type for a file
+    /// Find adapters that can handle candidate URNs for a given file extension.
     ///
-    /// Resolution flow:
-    /// 1. Extract extension from path
-    /// 2. Query MediaUrnRegistry for candidate URN(s) via extension
-    /// 3. Parse candidate URN strings into MediaUrn objects
-    /// 4. For each adapter whose pattern is accepted by any candidate,
-    ///    ask the adapter to select the best candidate via content inspection
-    /// 5. If exactly one adapter selects → return its result
-    /// 6. If no adapter selects → return the least-specific candidate with
-    ///    default structure derived from its marker tags
-    /// 7. If multiple adapters select (tie) → fail hard
-    pub fn detect(&self, path: &Path, content: &[u8]) -> AdapterResult {
-        // Step 1: Get extension
-        let ext = match path.extension().and_then(|e| e.to_str()) {
-            Some(e) => e.to_lowercase(),
-            None => {
-                return AdapterResult {
-                    media_urn: "media:".to_string(),
-                    content_structure: ContentStructure::ScalarOpaque,
-                };
-            }
-        };
-
-        // Step 2: Query registry for candidate URN strings
-        let candidate_strings = match self.media_registry.media_urns_for_extension(&ext) {
+    /// 1. Queries MediaUrnRegistry for candidate URNs via extension
+    /// 2. For each candidate, finds registered adapters where the candidate
+    ///    `conforms_to` the registered adapter URN
+    /// 3. Returns `(cartridge_id, adapter_media_urn)` pairs
+    pub fn find_adapters_for_extension(&self, ext: &str) -> Vec<(String, MediaUrn)> {
+        let candidate_strings = match self.media_registry.media_urns_for_extension(ext) {
             Ok(urns) if !urns.is_empty() => urns,
-            _ => {
-                return AdapterResult {
-                    media_urn: "media:".to_string(),
-                    content_structure: ContentStructure::ScalarOpaque,
-                };
-            }
+            _ => return Vec::new(),
         };
 
-        // Step 3: Parse candidate URN strings into MediaUrn objects
         let candidates: Vec<MediaUrn> = candidate_strings
             .iter()
             .filter_map(|s| MediaUrn::from_string(s).ok())
             .collect();
 
-        if candidates.is_empty() {
-            return AdapterResult {
-                media_urn: "media:".to_string(),
-                content_structure: ContentStructure::ScalarOpaque,
-            };
-        }
+        let mut results: Vec<(String, MediaUrn)> = Vec::new();
+        let mut seen_cartridges: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
-        // Step 4: For each adapter, find conforming candidates and ask for selection
-        let mut selections: Vec<(String, AdapterResult)> = Vec::new();
-
-        for reg in &self.adapters {
-            // Find candidates that conform to this adapter's pattern
-            let conforming: Vec<(usize, &MediaUrn)> = candidates
+        for registered in &self.registered_adapters {
+            // Check if any candidate conforms to this registered adapter's URN
+            let matches = candidates
                 .iter()
-                .enumerate()
-                .filter(|(_, c)| c.conforms_to(&reg.pattern).unwrap_or(false))
-                .collect();
+                .any(|c| c.conforms_to(&registered.media_urn).unwrap_or(false));
 
-            if conforming.is_empty() {
-                continue;
-            }
-
-            if reg.adapter.requires_content_inspection() {
-                // Build a slice of conforming candidate refs for the adapter
-                let conforming_refs: Vec<&MediaUrn> = conforming.iter().map(|(_, c)| *c).collect();
-                if let Some(selection) =
-                    reg.adapter
-                        .select_candidate(&conforming_refs, path, content)
-                {
-                    let selected_urn = &conforming[selection.candidate_index].1;
-                    selections.push((
-                        reg.adapter.name().to_string(),
-                        AdapterResult {
-                            media_urn: selected_urn.to_string(),
-                            content_structure: selection.content_structure,
-                        },
-                    ));
-                }
-            } else {
-                // Non-inspecting adapter: pick the most specific conforming candidate
-                let (best_idx, _) = conforming
-                    .iter()
-                    .enumerate()
-                    .max_by_key(|(_, (_, c))| c.specificity())
-                    .unwrap(); // conforming is non-empty
-                let selected = conforming[best_idx].1;
-                let structure = structure_from_marker_tags(selected);
-                selections.push((
-                    reg.adapter.name().to_string(),
-                    AdapterResult {
-                        media_urn: selected.to_string(),
-                        content_structure: structure,
-                    },
+            if matches && seen_cartridges.insert(registered.cartridge_id.clone()) {
+                results.push((
+                    registered.cartridge_id.clone(),
+                    registered.media_urn.clone(),
                 ));
             }
         }
 
-        // Step 5-7: Select result
-        match selections.len() {
-            0 => {
-                // No adapter matched — use least-specific candidate with default structure
-                let least_specific = candidates.iter().min_by_key(|c| c.specificity()).unwrap(); // candidates is non-empty
-                let structure = structure_from_marker_tags(least_specific);
-                AdapterResult {
-                    media_urn: least_specific.to_string(),
-                    content_structure: structure,
-                }
-            }
-            1 => selections.into_iter().next().unwrap().1,
-            _ => {
-                // Multiple adapters selected — fail hard
-                let adapter_names: Vec<&str> = selections.iter().map(|(n, _)| n.as_str()).collect();
-                panic!(
-                    "Ambiguous adapter selection for '{}': adapters {:?} all claim to handle this file. \
-                     The media spec registry must be disambiguated.",
-                    path.display(),
-                    adapter_names
-                );
-            }
-        }
+        results
     }
-}
 
-/// Determine content structure from a MediaUrn's marker tags
-fn structure_from_marker_tags(urn: &MediaUrn) -> ContentStructure {
-    let has_list = urn.has_marker_tag("list");
-    let has_record = urn.has_marker_tag("record");
+    /// Quick check for UI queries — returns true if any registered adapter
+    /// handles candidate URNs for this extension.
+    pub fn has_adapter_for_extension(&self, ext: &str) -> bool {
+        let candidate_strings = match self.media_registry.media_urns_for_extension(ext) {
+            Ok(urns) if !urns.is_empty() => urns,
+            _ => return false,
+        };
 
-    match (has_list, has_record) {
-        (true, true) => ContentStructure::ListRecord,
-        (true, false) => ContentStructure::ListOpaque,
-        (false, true) => ContentStructure::ScalarRecord,
-        (false, false) => ContentStructure::ScalarOpaque,
+        let candidates: Vec<MediaUrn> = candidate_strings
+            .iter()
+            .filter_map(|s| MediaUrn::from_string(s).ok())
+            .collect();
+
+        self.registered_adapters.iter().any(|registered| {
+            candidates
+                .iter()
+                .any(|c| c.conforms_to(&registered.media_urn).unwrap_or(false))
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn create_test_registry() -> (Arc<MediaUrnRegistry>, TempDir) {
@@ -242,56 +237,127 @@ mod tests {
         (Arc::new(registry), temp_dir)
     }
 
-    // TEST983: JSON object detection via MediaAdapterRegistry produces ScalarRecord
+    // TEST1276: Registration of a cap group with non-conflicting adapters succeeds
     #[test]
-    fn test983_json_detection_via_adapter_registry() {
+    fn test1276_register_non_conflicting() {
         let (media_registry, _temp) = create_test_registry();
-        let adapter_registry = MediaAdapterRegistry::new(media_registry);
+        let mut registry = MediaAdapterRegistry::new(media_registry);
 
-        let path = PathBuf::from("test.json");
-        let content = br#"{"key": "value"}"#;
-        let result = adapter_registry.detect(&path, content);
-
-        assert_eq!(result.content_structure, ContentStructure::ScalarRecord);
+        let result = registry.register_cap_group(
+            "text-formats",
+            &[
+                "media:json".to_string(),
+                "media:yaml".to_string(),
+            ],
+            "txtcartridge",
+        );
+        assert!(result.is_ok(), "Non-conflicting adapters must register: {:?}", result.err());
+        assert_eq!(registry.registered_adapters.len(), 2);
     }
 
-    // TEST984: YAML sequence detection via MediaAdapterRegistry produces ListOpaque
+    // TEST1277: Registration of a cap group with an adapter that conforms_to an existing adapter is rejected
     #[test]
-    fn test943_yaml_detection_via_adapter_registry() {
+    fn test1277_reject_conforming_overlap() {
         let (media_registry, _temp) = create_test_registry();
-        let adapter_registry = MediaAdapterRegistry::new(media_registry);
+        let mut registry = MediaAdapterRegistry::new(media_registry);
 
-        let path = PathBuf::from("list.yaml");
-        let content = b"- item1\n- item2\n- item3";
-        let result = adapter_registry.detect(&path, content);
+        // Register group A with media:json
+        registry
+            .register_cap_group("group-a", &["media:json".to_string()], "cartridge-a")
+            .unwrap();
 
-        assert_eq!(result.content_structure, ContentStructure::ListOpaque);
+        // Try to register group B with media:json;record;textable (conforms to media:json)
+        let result = registry.register_cap_group(
+            "group-b",
+            &["media:json;record;textable".to_string()],
+            "cartridge-b",
+        );
+        assert!(result.is_err(), "Conforming overlap must be rejected");
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("group-b"), "Error must name the rejected group");
+        assert!(err.to_string().contains("group-a"), "Error must name the conflicting group");
     }
 
-    // TEST985: CSV detection via MediaAdapterRegistry
+    // TEST1278: Registration rejects the entire group — no partial registration
     #[test]
-    fn test942_csv_detection_via_adapter_registry() {
+    fn test1278_reject_entire_group() {
         let (media_registry, _temp) = create_test_registry();
-        let adapter_registry = MediaAdapterRegistry::new(media_registry);
+        let mut registry = MediaAdapterRegistry::new(media_registry);
 
-        let path = PathBuf::from("data.csv");
-        let content = b"name,age\nAlice,30\nBob,25";
-        let result = adapter_registry.detect(&path, content);
+        // Register an adapter for media:json
+        registry
+            .register_cap_group("group-a", &["media:json".to_string()], "cartridge-a")
+            .unwrap();
 
-        assert_eq!(result.content_structure, ContentStructure::ListRecord);
+        // Try to register group with 3 adapters, one of which conflicts
+        let result = registry.register_cap_group(
+            "group-b",
+            &[
+                "media:yaml".to_string(),        // ok
+                "media:json;textable".to_string(), // conflicts with media:json
+                "media:csv".to_string(),          // ok
+            ],
+            "cartridge-b",
+        );
+        assert!(result.is_err());
+
+        // Only the original adapter should remain
+        assert_eq!(
+            registry.registered_adapters.len(),
+            1,
+            "Rejected group must not leave partial registrations"
+        );
     }
 
-    // TEST986: Unknown extension returns generic media URN
+    // TEST1279: Intra-group conflict (two adapters within same group overlap) is rejected
     #[test]
-    fn test1031_unknown_extension_returns_generic() {
+    fn test1279_intra_group_conflict() {
         let (media_registry, _temp) = create_test_registry();
-        let adapter_registry = MediaAdapterRegistry::new(media_registry);
+        let mut registry = MediaAdapterRegistry::new(media_registry);
 
-        let path = PathBuf::from("file.xyz123");
-        let content = b"some content";
-        let result = adapter_registry.detect(&path, content);
+        let result = registry.register_cap_group(
+            "bad-group",
+            &[
+                "media:json".to_string(),
+                "media:json;textable".to_string(), // conforms to media:json
+            ],
+            "cartridge-x",
+        );
+        assert!(result.is_err(), "Intra-group conflict must be rejected");
+        assert_eq!(registry.registered_adapters.len(), 0);
+    }
 
-        assert_eq!(result.media_urn, "media:");
-        assert_eq!(result.content_structure, ContentStructure::ScalarOpaque);
+    // TEST1280: find_adapters_for_extension returns correct cartridge IDs
+    #[test]
+    fn test1280_find_adapters_for_extension() {
+        let (media_registry, _temp) = create_test_registry();
+        let mut registry = MediaAdapterRegistry::new(media_registry);
+
+        // Register adapter for media:json (which should match .json extension candidates)
+        registry
+            .register_cap_group("text-group", &["media:json".to_string()], "txtcartridge")
+            .unwrap();
+
+        let results = registry.find_adapters_for_extension("json");
+        // Should find txtcartridge since json extension candidates conform to media:json
+        assert!(
+            !results.is_empty(),
+            "Must find adapter for json extension (found: {:?})",
+            results
+        );
+        assert_eq!(results[0].0, "txtcartridge");
+    }
+
+    // TEST1281: has_adapter_for_extension returns false for unregistered extension
+    #[test]
+    fn test1281_no_adapter_for_unknown() {
+        let (media_registry, _temp) = create_test_registry();
+        let registry = MediaAdapterRegistry::new(media_registry);
+
+        assert!(
+            !registry.has_adapter_for_extension("xyz_unknown"),
+            "Unknown extension must return false"
+        );
     }
 }

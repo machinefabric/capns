@@ -797,6 +797,99 @@ impl RelaySwitch {
         Ok((xid, rx))
     }
 
+    /// Register an external request targeting a specific cartridge by ID.
+    ///
+    /// Instead of dispatching by cap URN, this finds the master that owns
+    /// the specified cartridge and routes directly to it. The REQ frame's
+    /// meta map gets a `target_cartridge` field so the CartridgeHostRuntime
+    /// on the receiving end routes to the correct cartridge process.
+    ///
+    /// Returns `(xid, response_receiver)` — same as `register_external_request`.
+    ///
+    /// Fails descriptively if:
+    /// - The cartridge ID is not known to any master
+    /// - The master owning the cartridge is unhealthy
+    pub async fn register_external_request_for_cartridge(
+        &self,
+        rid: MessageId,
+        cap_urn: &str,
+        cartridge_id: &str,
+    ) -> Result<(MessageId, mpsc::UnboundedReceiver<Frame>), RelaySwitchError> {
+        // Find which master owns this cartridge
+        let masters = self.masters.read().await;
+        let mut dest_idx: Option<usize> = None;
+
+        for (idx, master) in masters.iter().enumerate() {
+            let cartridges = master.installed_cartridges.read().await;
+            if cartridges.iter().any(|c| c.id == cartridge_id) {
+                dest_idx = Some(idx);
+                break;
+            }
+        }
+
+        let dest_idx = dest_idx.ok_or_else(|| {
+            RelaySwitchError::Protocol(format!(
+                "Unknown cartridge '{}': not reported by any master. \
+                 Cannot route adapter-selection request.",
+                cartridge_id
+            ))
+        })?;
+
+        // Check master health
+        if !masters[dest_idx].healthy.load(Ordering::SeqCst) {
+            let last_error = masters[dest_idx].last_error.read().await;
+            return Err(RelaySwitchError::Protocol(format!(
+                "Master for cartridge '{}' is unhealthy: {}",
+                cartridge_id,
+                last_error.as_deref().unwrap_or("unknown error")
+            )));
+        }
+
+        drop(masters); // Release read lock before taking write locks
+
+        // Assign XID
+        let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
+        let key = (xid.clone(), rid.clone());
+
+        // Create response channel
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Register response channel BEFORE sending
+        self.external_response_channels
+            .write()
+            .await
+            .insert(key.clone(), tx);
+
+        // Record origin (None = external caller)
+        self.origin_map.write().await.insert(key.clone(), None);
+
+        // Register routing
+        self.request_routing.write().await.insert(
+            key.clone(),
+            RoutingEntry {
+                source_master_idx: None,
+                destination_master_idx: dest_idx,
+            },
+        );
+
+        // Record RID → XID mapping for continuation frames
+        self.rid_to_xid
+            .write()
+            .await
+            .insert(rid.clone(), xid.clone());
+
+        tracing::info!(
+            "[RelaySwitch] register_external_request_for_cartridge: \
+             cartridge='{}' key=({:?}, {:?}) dest_master={}",
+            cartridge_id,
+            xid,
+            rid,
+            dest_idx
+        );
+
+        Ok((xid, rx))
+    }
+
     /// Cancel a specific in-flight request by RID.
     ///
     /// 1. Looks up RID → XID → routing destination
@@ -1189,11 +1282,41 @@ impl RelaySwitch {
                     RelaySwitchError::Protocol("REQ frame missing cap URN".to_string())
                 })?;
 
-                // Find master that can handle this cap
-                let dest_idx = self
-                    .find_master_for_cap(cap_urn, preferred_cap)
-                    .await
-                    .ok_or_else(|| RelaySwitchError::NoHandler(cap_urn.clone()))?;
+                // Check for target_cartridge in meta — if present, route to that
+                // cartridge's master directly instead of using cap-based dispatch
+                let target_cartridge_id = frame.meta.as_ref().and_then(|m| {
+                    m.get("target_cartridge").and_then(|v| {
+                        if let ciborium::Value::Text(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+                let dest_idx = if let Some(ref cartridge_id) = target_cartridge_id {
+                    // Direct routing by cartridge ID
+                    let masters = self.masters.read().await;
+                    let mut found = None;
+                    for (idx, master) in masters.iter().enumerate() {
+                        let cartridges = master.installed_cartridges.read().await;
+                        if cartridges.iter().any(|c| &c.id == cartridge_id) {
+                            found = Some(idx);
+                            break;
+                        }
+                    }
+                    found.ok_or_else(|| {
+                        RelaySwitchError::Protocol(format!(
+                            "Unknown cartridge '{}': not reported by any master",
+                            cartridge_id
+                        ))
+                    })?
+                } else {
+                    // Standard cap-based dispatch
+                    self.find_master_for_cap(cap_urn, preferred_cap)
+                        .await
+                        .ok_or_else(|| RelaySwitchError::NoHandler(cap_urn.clone()))?
+                };
 
                 // Assign XID if absent (first arrival at RelaySwitch)
                 let xid = if let Some(ref existing_xid) = frame.routing_id {

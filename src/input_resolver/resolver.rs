@@ -1,18 +1,23 @@
 //! Main resolver — combines path resolution with media detection
+//!
+//! Two tiers of detection:
+//! 1. **Synchronous extension-based lookup** — fast, unconfirmed, for UI/menu queries.
+//!    Returns candidate URNs from the media registry based on file extension alone.
+//! 2. **Async cartridge-confirmed detection** — invokes cartridge adapter-selection caps
+//!    to confirm file type at a content/binary level.
 
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
+use crate::input_resolver::adapter::{AdapterResult, CartridgeAdapterInvoker};
 use crate::input_resolver::adapters::MediaAdapterRegistry;
 use crate::input_resolver::path_resolver;
 use crate::input_resolver::{
     ContentStructure, InputItem, InputResolverError, ResolvedFile, ResolvedInputSet,
 };
 use crate::media::registry::MediaUrnRegistry;
-
-/// Maximum content to read for inspection (64 KB)
-const MAX_INSPECTION_SIZE: usize = 64 * 1024;
+use crate::urn::media_urn::MediaUrn;
 
 /// Discriminate candidate media URNs by validation rules in their specs.
 ///
@@ -22,8 +27,6 @@ const MAX_INSPECTION_SIZE: usize = 64 * 1024;
 /// (no rules = no basis for elimination).
 ///
 /// Returns the surviving candidate URN strings in their original order.
-/// Discriminate candidates using validation rules and adapter baseline.
-///
 /// The baseline URN is the adapter's structural detection result (e.g., "media:json;record;textable"
 /// for a JSON object). Candidates more specific than the baseline must have validation rules
 /// that positively match the content — otherwise they're eliminated (they overclaim without proof).
@@ -37,7 +40,7 @@ pub fn discriminate_candidates_by_validation(
     let content_str = std::str::from_utf8(content).ok();
     let content_len = content.len();
 
-    let baseline = crate::urn::media_urn::MediaUrn::from_string(baseline_urn).unwrap_or_else(|e| {
+    let baseline = MediaUrn::from_string(baseline_urn).unwrap_or_else(|e| {
         panic!(
             "discriminate_candidates_by_validation: invalid baseline URN '{}': {}",
             baseline_urn, e
@@ -57,7 +60,7 @@ pub fn discriminate_candidates_by_validation(
                 _ => {
                     // No validation rules. Only keep if the candidate is not more
                     // specific than the baseline (more specific without validation = overclaiming).
-                    let candidate_urn = match crate::urn::media_urn::MediaUrn::from_string(urn) {
+                    let candidate_urn = match MediaUrn::from_string(urn) {
                         Ok(u) => u,
                         Err(_) => return true, // Can't parse → keep
                     };
@@ -129,63 +132,22 @@ pub fn discriminate_candidates_by_validation(
         .collect()
 }
 
-/// Global adapter registry (lazily initialized with bundled MediaUrnRegistry)
-fn get_registry() -> &'static MediaAdapterRegistry {
-    static REGISTRY: OnceLock<MediaAdapterRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        // Create MediaUrnRegistry synchronously for bundled specs
-        let media_registry =
-            MediaUrnRegistry::new_for_test(std::env::temp_dir().join("capdag_media_registry"))
-                .expect("Failed to create MediaUrnRegistry");
-        MediaAdapterRegistry::new(Arc::new(media_registry))
-    })
-}
+// =============================================================================
+// SYNCHRONOUS EXTENSION-BASED DETECTION (preliminary, for UI queries)
+// =============================================================================
 
-/// Resolve a single input item
+/// Resolve a single input item (extension-based, no cartridge confirmation)
 pub fn resolve_input(item: InputItem) -> Result<ResolvedInputSet, InputResolverError> {
     resolve_inputs(vec![item])
 }
 
-/// Resolve multiple input items
+/// Resolve multiple input items (extension-based, no cartridge confirmation)
 pub fn resolve_inputs(items: Vec<InputItem>) -> Result<ResolvedInputSet, InputResolverError> {
-    // Step 1: Resolve paths to file list
     let paths = path_resolver::resolve_items(&items)?;
 
-    // Step 2: Detect media type for each file
-    let registry = get_registry();
     let mut files = Vec::with_capacity(paths.len());
-
     for path in paths {
-        let resolved = detect_file_with_registry(&path, registry)?;
-        files.push(resolved);
-    }
-
-    if files.is_empty() {
-        return Err(InputResolverError::NoFilesResolved);
-    }
-
-    Ok(ResolvedInputSet::new(files))
-}
-
-/// Resolve from string paths with a custom MediaUrnRegistry
-///
-/// Use this when you have your own MediaUrnRegistry instance
-pub fn resolve_paths_with_registry(
-    paths: &[&str],
-    media_registry: Arc<MediaUrnRegistry>,
-) -> Result<ResolvedInputSet, InputResolverError> {
-    let items: Vec<InputItem> = paths.iter().map(|s| InputItem::from_string(s)).collect();
-
-    let adapter_registry = MediaAdapterRegistry::new(media_registry);
-
-    // Step 1: Resolve paths to file list
-    let resolved_paths = path_resolver::resolve_items(&items)?;
-
-    // Step 2: Detect media type for each file
-    let mut files = Vec::with_capacity(resolved_paths.len());
-
-    for path in resolved_paths {
-        let resolved = detect_file_with_adapter_registry(&path, &adapter_registry)?;
+        let resolved = detect_file_by_extension(&path)?;
         files.push(resolved);
     }
 
@@ -199,38 +161,42 @@ pub fn resolve_paths_with_registry(
 /// Convenience: resolve from string paths (auto-detect file/dir/glob)
 pub fn resolve_paths(paths: &[&str]) -> Result<ResolvedInputSet, InputResolverError> {
     let items: Vec<InputItem> = paths.iter().map(|s| InputItem::from_string(s)).collect();
-
     resolve_inputs(items)
 }
 
-/// Detect media type for a single file
+/// Detect media type for a single file using extension only (no content inspection).
+///
+/// Returns the most specific candidate URN from the media registry for the file's
+/// extension, with structure derived from marker tags. This is a preliminary result
+/// — it has NOT been confirmed by a cartridge adapter.
 pub fn detect_file(path: &Path) -> Result<ResolvedFile, InputResolverError> {
-    detect_file_with_registry(path, get_registry())
+    detect_file_by_extension(path)
 }
 
-/// Detect media type for a single file with a custom MediaUrnRegistry
+/// Detect media type for a file using extension and a custom MediaUrnRegistry.
 pub fn detect_file_with_media_registry(
     path: &Path,
     media_registry: Arc<MediaUrnRegistry>,
 ) -> Result<ResolvedFile, InputResolverError> {
-    let adapter_registry = MediaAdapterRegistry::new(media_registry);
-    detect_file_with_adapter_registry(path, &adapter_registry)
+    detect_file_by_extension_with_registry(path, &media_registry)
 }
 
-/// Detect media type using a specific adapter registry
-fn detect_file_with_registry(
-    path: &Path,
-    registry: &MediaAdapterRegistry,
-) -> Result<ResolvedFile, InputResolverError> {
-    detect_file_with_adapter_registry(path, registry)
+/// Extension-based detection using the global bundled registry.
+fn detect_file_by_extension(path: &Path) -> Result<ResolvedFile, InputResolverError> {
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<MediaUrnRegistry> = OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| {
+        MediaUrnRegistry::new_for_test(std::env::temp_dir().join("capdag_media_registry"))
+            .expect("Failed to create MediaUrnRegistry")
+    });
+    detect_file_by_extension_with_registry(path, registry)
 }
 
-/// Detect media type using a specific adapter registry
-fn detect_file_with_adapter_registry(
+/// Extension-based detection using a specific MediaUrnRegistry.
+fn detect_file_by_extension_with_registry(
     path: &Path,
-    registry: &MediaAdapterRegistry,
+    media_registry: &MediaUrnRegistry,
 ) -> Result<ResolvedFile, InputResolverError> {
-    // Get file metadata
     let metadata = fs::metadata(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             InputResolverError::NotFound(path.to_path_buf())
@@ -246,26 +212,74 @@ fn detect_file_with_adapter_registry(
 
     let size_bytes = metadata.len();
 
-    // Read content for inspection (up to MAX_INSPECTION_SIZE)
-    let content = read_content_for_inspection(path, size_bytes)?;
+    // Get extension and look up candidates
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
 
-    // Detect media type
-    let result = registry.detect(path, &content);
+    let (media_urn, content_structure) = match ext {
+        Some(ref ext_str) => {
+            match media_registry.media_urns_for_extension(ext_str) {
+                Ok(urns) if !urns.is_empty() => {
+                    // Parse and pick the most specific candidate
+                    let mut best_urn: Option<(MediaUrn, String)> = None;
+                    for urn_str in &urns {
+                        if let Ok(urn) = MediaUrn::from_string(urn_str) {
+                            let dominated = match &best_urn {
+                                Some((best, _)) => urn.specificity() > best.specificity(),
+                                None => true,
+                            };
+                            if dominated {
+                                best_urn = Some((urn, urn_str.clone()));
+                            }
+                        }
+                    }
+                    match best_urn {
+                        Some((urn, urn_str)) => {
+                            let structure = structure_from_marker_tags(&urn);
+                            (urn_str, structure)
+                        }
+                        None => ("media:".to_string(), ContentStructure::ScalarOpaque),
+                    }
+                }
+                _ => ("media:".to_string(), ContentStructure::ScalarOpaque),
+            }
+        }
+        None => ("media:".to_string(), ContentStructure::ScalarOpaque),
+    };
 
     Ok(ResolvedFile {
         path: path.to_path_buf(),
-        media_urn: result.media_urn,
+        media_urn,
         size_bytes,
-        content_structure: result.content_structure,
+        content_structure,
     })
 }
 
-/// Read file content for inspection
-fn read_content_for_inspection(path: &Path, size: u64) -> Result<Vec<u8>, InputResolverError> {
-    use std::io::Read;
+// =============================================================================
+// ASYNC CARTRIDGE-CONFIRMED DETECTION
+// =============================================================================
 
-    let mut file = fs::File::open(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
+/// Detect media type for a file with cartridge adapter confirmation.
+///
+/// This is the full detection flow:
+/// 1. Extension lookup → candidate URNs
+/// 2. Find registered adapters for those candidates
+/// 3. Invoke adapter-selection cap on each matched cartridge
+/// 4. Select most specific confirmed URN
+///
+/// Fails hard if no adapters are registered, if all cartridges return no match,
+/// or if the response is invalid.
+pub async fn detect_file_confirmed(
+    path: &Path,
+    adapter_registry: &MediaAdapterRegistry,
+    invoker: &dyn CartridgeAdapterInvoker,
+) -> Result<ResolvedFile, InputResolverError> {
+    let metadata = fs::metadata(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            InputResolverError::NotFound(path.to_path_buf())
+        } else if e.kind() == std::io::ErrorKind::PermissionDenied {
             InputResolverError::PermissionDenied(path.to_path_buf())
         } else {
             InputResolverError::IoError {
@@ -275,18 +289,159 @@ fn read_content_for_inspection(path: &Path, size: u64) -> Result<Vec<u8>, InputR
         }
     })?;
 
-    let read_size = (size as usize).min(MAX_INSPECTION_SIZE);
-    let mut buffer = vec![0u8; read_size];
+    let size_bytes = metadata.len();
 
-    let bytes_read = file
-        .read(&mut buffer)
-        .map_err(|e| InputResolverError::IoError {
-            path: path.to_path_buf(),
-            error: e,
+    // Step 1: Extension lookup
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    let ext_str = ext.as_deref().unwrap_or("");
+
+    // Step 2: Find adapters
+    let adapters = adapter_registry.find_adapters_for_extension(ext_str);
+
+    if adapters.is_empty() {
+        return Err(InputResolverError::InspectionFailed(format!(
+            "No content-inspection adapter registered for extension '.{}'. \
+             File '{}' cannot be identified — a cartridge must register an adapter \
+             for this file type.",
+            ext_str,
+            path.display()
+        )));
+    }
+
+    // Step 3: Invoke each cartridge's adapter-selection cap
+    let mut all_returned_urns: Vec<(String, String)> = Vec::new(); // (urn_str, cartridge_id)
+
+    for (cartridge_id, _adapter_urn) in &adapters {
+        let result = invoker
+            .invoke_adapter_selection(cartridge_id, path)
+            .await?;
+
+        if let Some(media_urns) = result {
+            for urn_str in media_urns {
+                all_returned_urns.push((urn_str, cartridge_id.clone()));
+            }
+        }
+    }
+
+    // Step 4: All cartridges returned empty END — none matched
+    if all_returned_urns.is_empty() {
+        let adapter_names: Vec<&str> = adapters.iter().map(|(id, _)| id.as_str()).collect();
+        return Err(InputResolverError::InspectionFailed(format!(
+            "All registered adapters returned no match for file '{}' (extension '.{}'). \
+             Adapters consulted: {:?}. The file content does not match any registered media type.",
+            path.display(),
+            ext_str,
+            adapter_names,
+        )));
+    }
+
+    // Step 5: Validate and parse returned URNs
+    let mut parsed_urns: Vec<(MediaUrn, String, String)> = Vec::new(); // (urn, urn_str, cartridge_id)
+
+    for (urn_str, cartridge_id) in &all_returned_urns {
+        let urn = MediaUrn::from_string(urn_str).map_err(|e| {
+            InputResolverError::InspectionFailed(format!(
+                "Cartridge '{}' returned invalid media URN '{}': {}",
+                cartridge_id, urn_str, e
+            ))
         })?;
+        parsed_urns.push((urn, urn_str.clone(), cartridge_id.clone()));
+    }
 
-    buffer.truncate(bytes_read);
-    Ok(buffer)
+    // Step 6: Select by specificity
+    let (best_idx, _) = parsed_urns
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (urn, _, _))| urn.specificity())
+        .unwrap(); // parsed_urns is non-empty (checked above)
+
+    // Check for ties at the same specificity
+    let best_specificity = parsed_urns[best_idx].0.specificity();
+    let ties: Vec<&(MediaUrn, String, String)> = parsed_urns
+        .iter()
+        .filter(|(urn, _, _)| urn.specificity() == best_specificity)
+        .collect();
+
+    if ties.len() > 1 {
+        // Check if one conforms to the other (which would make it not a real tie)
+        let mut real_ties: Vec<&(MediaUrn, String, String)> = Vec::new();
+        for tie in &ties {
+            let dominated = ties.iter().any(|other| {
+                std::ptr::eq(*tie, *other) == false
+                    && tie.0.conforms_to(&other.0).unwrap_or(false)
+            });
+            if !dominated {
+                real_ties.push(tie);
+            }
+        }
+
+        if real_ties.len() > 1 {
+            let tie_descs: Vec<String> = real_ties
+                .iter()
+                .map(|(_, urn_str, cid)| format!("'{}' (from cartridge '{}')", urn_str, cid))
+                .collect();
+            return Err(InputResolverError::InspectionFailed(format!(
+                "Ambiguous adapter selection for '{}': multiple adapters returned URNs \
+                 at the same specificity level with no conformance relationship: {}. \
+                 This indicates a registration conflict that should have been caught \
+                 at cap group registration time.",
+                path.display(),
+                tie_descs.join(", "),
+            )));
+        }
+    }
+
+    let (selected_urn, selected_urn_str, _) = &parsed_urns[best_idx];
+    let content_structure = structure_from_marker_tags(selected_urn);
+
+    Ok(ResolvedFile {
+        path: path.to_path_buf(),
+        media_urn: selected_urn_str.clone(),
+        size_bytes,
+        content_structure,
+    })
+}
+
+/// Resolve multiple input items with cartridge-confirmed detection.
+pub async fn resolve_inputs_confirmed(
+    items: Vec<InputItem>,
+    adapter_registry: &MediaAdapterRegistry,
+    invoker: &dyn CartridgeAdapterInvoker,
+) -> Result<ResolvedInputSet, InputResolverError> {
+    let paths = path_resolver::resolve_items(&items)?;
+
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let resolved = detect_file_confirmed(&path, adapter_registry, invoker).await?;
+        files.push(resolved);
+    }
+
+    if files.is_empty() {
+        return Err(InputResolverError::NoFilesResolved);
+    }
+
+    Ok(ResolvedInputSet::new(files))
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+/// Determine content structure from a MediaUrn's marker tags
+fn structure_from_marker_tags(urn: &MediaUrn) -> ContentStructure {
+    let has_list = urn.has_marker_tag("list");
+    let has_record = urn.has_marker_tag("record");
+
+    match (has_list, has_record) {
+        (true, true) => ContentStructure::ListRecord,
+        (true, false) => ContentStructure::ListOpaque,
+        (false, true) => ContentStructure::ScalarRecord,
+        (false, false) => ContentStructure::ScalarOpaque,
+    }
 }
 
 #[cfg(test)]
@@ -306,9 +461,14 @@ mod tests {
         path
     }
 
-    // Aggregate Cardinality Tests (TEST1090-TEST1099)
+    fn create_test_media_registry() -> (Arc<MediaUrnRegistry>, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_dir = temp_dir.path().to_path_buf();
+        let registry = MediaUrnRegistry::new_for_test(cache_dir).unwrap();
+        (Arc::new(registry), temp_dir)
+    }
 
-    // TEST1090: 1 file scalar content → is_sequence=false (one file)
+    // TEST1090: 1 file → is_sequence=false
     #[test]
     fn test1090_single_file_scalar() {
         let dir = create_test_dir();
@@ -318,28 +478,6 @@ mod tests {
 
         assert_eq!(result.files.len(), 1);
         assert!(!result.is_sequence, "single file must be is_sequence=false");
-    }
-
-    // TEST1091: 1 file with list content (CSV) → is_sequence=false.
-    // Content structure is ListRecord (the file contains tabular data),
-    // but is_sequence is false because there is only one file.
-    // Content structure ≠ input cardinality.
-    #[test]
-    fn test1091_single_file_list_content() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "data.csv", b"a,b,c\n1,2,3\n4,5,6");
-
-        let result = resolve_paths(&[path.to_str().unwrap()]).unwrap();
-
-        assert_eq!(result.files.len(), 1);
-        assert!(
-            !result.is_sequence,
-            "single file must be is_sequence=false regardless of content structure"
-        );
-        assert_eq!(
-            result.files[0].content_structure,
-            ContentStructure::ListRecord
-        );
     }
 
     // TEST1092: 2 files → is_sequence=true
@@ -352,10 +490,7 @@ mod tests {
         let result = resolve_paths(&[path1.to_str().unwrap(), path2.to_str().unwrap()]).unwrap();
 
         assert_eq!(result.files.len(), 2);
-        assert!(
-            result.is_sequence,
-            "multiple files must be is_sequence=true"
-        );
+        assert!(result.is_sequence, "multiple files must be is_sequence=true");
     }
 
     // TEST1093: 1 dir with 1 file → is_sequence=false
@@ -367,10 +502,7 @@ mod tests {
         let result = resolve_paths(&[dir.path().to_str().unwrap()]).unwrap();
 
         assert_eq!(result.files.len(), 1);
-        assert!(
-            !result.is_sequence,
-            "directory with single file must be is_sequence=false"
-        );
+        assert!(!result.is_sequence, "directory with single file must be is_sequence=false");
     }
 
     // TEST1094: 1 dir with 3 files → is_sequence=true
@@ -384,122 +516,10 @@ mod tests {
         let result = resolve_paths(&[dir.path().to_str().unwrap()]).unwrap();
 
         assert_eq!(result.files.len(), 3);
-        assert!(
-            result.is_sequence,
-            "directory with multiple files must be is_sequence=true"
-        );
+        assert!(result.is_sequence, "directory with multiple files must be is_sequence=true");
     }
 
-    // TEST1098: Common media (all same type)
-    #[test]
-    fn test1098_common_media() {
-        let dir = create_test_dir();
-        create_file(&dir, "a.pdf", b"%PDF-1.4");
-        create_file(&dir, "b.pdf", b"%PDF-1.5");
-
-        let result = resolve_paths(&[dir.path().to_str().unwrap()]).unwrap();
-
-        assert!(result.is_homogeneous(), "two PDFs must be homogeneous");
-        // common_media is the full equivalent URN, not a string-split base
-        let common = result.common_media.as_ref().unwrap();
-        let common_urn = crate::urn::media_urn::MediaUrn::from_string(common).unwrap();
-        assert!(
-            common_urn.has_marker_tag("pdf"),
-            "common media for PDFs must have pdf tag, got: {}",
-            common
-        );
-    }
-
-    // TEST1099: Heterogeneous (mixed types)
-    #[test]
-    fn test1099_heterogeneous() {
-        let dir = create_test_dir();
-        create_file(&dir, "doc.pdf", b"%PDF-1.4");
-        create_file(&dir, "img.png", b"\x89PNG\r\n\x1a\n");
-
-        let result = resolve_paths(&[dir.path().to_str().unwrap()]).unwrap();
-
-        assert_eq!(result.common_media, None);
-        assert!(!result.is_homogeneous());
-    }
-
-    // Integration Tests - resolve_paths with content detection
-
-    // TEST978 (integration): JSON object via resolve_paths
-    #[test]
-    fn test978_resolve_json_object() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "data.json", br#"{"key": "value"}"#);
-
-        let result = resolve_paths(&[path.to_str().unwrap()]).unwrap();
-
-        assert_eq!(
-            result.files[0].content_structure,
-            ContentStructure::ScalarRecord
-        );
-        assert!(result.files[0].media_urn.contains("record"));
-    }
-
-    // TEST979 (integration): JSON array of objects via resolve_paths
-    #[test]
-    fn test979_resolve_json_array_of_objects() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "data.json", br#"[{"a": 1}, {"b": 2}]"#);
-
-        let result = resolve_paths(&[path.to_str().unwrap()]).unwrap();
-
-        assert_eq!(
-            result.files[0].content_structure,
-            ContentStructure::ListRecord
-        );
-        assert!(result.files[0].media_urn.contains("list"));
-        assert!(result.files[0].media_urn.contains("record"));
-    }
-
-    // TEST980 (integration): NDJSON via resolve_paths
-    #[test]
-    fn test980_resolve_ndjson() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "data.ndjson", b"{\"a\":1}\n{\"b\":2}\n{\"c\":3}");
-
-        let result = resolve_paths(&[path.to_str().unwrap()]).unwrap();
-
-        assert_eq!(
-            result.files[0].content_structure,
-            ContentStructure::ListRecord
-        );
-        assert!(result.files[0].media_urn.contains("ndjson"));
-    }
-
-    // TEST981 (integration): YAML mapping via resolve_paths
-    #[test]
-    fn test981_resolve_yaml_mapping() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "config.yaml", b"key: value\nother: data");
-
-        let result = resolve_paths(&[path.to_str().unwrap()]).unwrap();
-
-        assert_eq!(
-            result.files[0].content_structure,
-            ContentStructure::ScalarRecord
-        );
-    }
-
-    // TEST982 (integration): YAML sequence via resolve_paths
-    #[test]
-    fn test982_resolve_yaml_sequence() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "list.yaml", b"- item1\n- item2\n- item3");
-
-        let result = resolve_paths(&[path.to_str().unwrap()]).unwrap();
-
-        assert_eq!(
-            result.files[0].content_structure,
-            ContentStructure::ListOpaque
-        );
-    }
-
-    // TEST977 (integration): OS files excluded in resolve_paths
+    // TEST977: OS files excluded in resolve_paths
     #[test]
     fn test977_os_files_excluded_integration() {
         let dir = create_test_dir();
@@ -512,155 +532,24 @@ mod tests {
         assert!(result.files[0].path.to_str().unwrap().contains("real.txt"));
     }
 
-    // TEST1095/1096 (integration): Glob with detection
+    // TEST1098: Extension-based detection picks up pdf tag for .pdf files
     #[test]
-    fn test1095_glob_with_detection() {
+    fn test1098_extension_based_pdf() {
         let dir = create_test_dir();
-        create_file(&dir, "a.json", br#"{"x": 1}"#);
-        create_file(&dir, "b.json", br#"[1, 2, 3]"#);
+        let path = create_file(&dir, "doc.pdf", b"%PDF-1.4");
 
-        let pattern = format!("{}/*.json", dir.path().display());
-        let result = resolve_paths(&[&pattern]).unwrap();
-
-        assert_eq!(result.files.len(), 2);
-        // Both should be detected as JSON with correct structures
-    }
-
-    // Content Analysis Tests (TEST_CA_1 through TEST_CA_4)
-    // These test detect_file_with_media_registry — the function used by the
-    // AnalyzeFileContent gRPC handler to determine precise media URNs.
-
-    // TEST1231: JSON object files resolve to record-shaped JSON media.
-    #[test]
-    fn test1231_ca_1_json_object_detection() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "data.json", br#"{"name": "test", "count": 42}"#);
-
-        let (registry, _temp) = create_test_media_registry();
-        let resolved = detect_file_with_media_registry(&path, registry).unwrap();
-
+        let resolved = detect_file(&path).unwrap();
+        let urn = MediaUrn::from_string(&resolved.media_urn).unwrap();
         assert!(
-            resolved.media_urn.contains("record"),
-            "JSON object should be detected as record, got: {}",
+            urn.has_marker_tag("pdf"),
+            "PDF extension must produce URN with pdf tag, got: {}",
             resolved.media_urn
         );
-        assert_eq!(
-            resolved.content_structure,
-            ContentStructure::ScalarRecord,
-            "JSON object should have ScalarRecord structure"
-        );
     }
 
-    // TEST1232: JSON arrays of objects resolve to list-and-record JSON media.
-    #[test]
-    fn test1232_ca_2_json_array_detection() {
-        let dir = create_test_dir();
-        let path = create_file(&dir, "items.json", br#"[{"a":1},{"b":2},{"c":3}]"#);
+    // Discrimination Tests (kept — they test validation logic, not adapter detection)
 
-        let (registry, _temp) = create_test_media_registry();
-        let resolved = detect_file_with_media_registry(&path, registry).unwrap();
-
-        assert!(
-            resolved.media_urn.contains("list"),
-            "JSON array should be detected as list, got: {}",
-            resolved.media_urn
-        );
-        assert!(
-            resolved.media_urn.contains("record"),
-            "JSON array of objects should be detected as record, got: {}",
-            resolved.media_urn
-        );
-        assert_eq!(
-            resolved.content_structure,
-            ContentStructure::ListRecord,
-            "JSON array of objects should have ListRecord structure"
-        );
-    }
-
-    // TEST1233: The least upper bound of JSON object files keeps shared json and record tags.
-    #[test]
-    fn test1233_ca_3_directory_json_objects_lub() {
-        let dir = create_test_dir();
-        create_file(&dir, "a.json", br#"{"key": "alpha"}"#);
-        create_file(&dir, "b.json", br#"{"key": "beta"}"#);
-        create_file(&dir, "c.json", br#"{"key": "gamma"}"#);
-
-        let (registry, _temp) = create_test_media_registry();
-        let dir_files = super::path_resolver::resolve_directory(dir.path()).unwrap();
-        assert_eq!(dir_files.len(), 3);
-
-        let mut detected_urns = Vec::new();
-        for file_path in &dir_files {
-            let resolved = detect_file_with_media_registry(file_path, registry.clone()).unwrap();
-            let urn = crate::MediaUrn::from_string(&resolved.media_urn).unwrap();
-            detected_urns.push(urn);
-        }
-
-        let lub = crate::MediaUrn::least_upper_bound(&detected_urns);
-        let lub_str = lub.to_string();
-        assert!(
-            lub_str.contains("json"),
-            "LUB of all JSON files should contain json tag, got: {}",
-            lub_str
-        );
-        assert!(
-            lub_str.contains("record"),
-            "LUB of all JSON object files should contain record tag, got: {}",
-            lub_str
-        );
-    }
-
-    // TEST1234: Mixed JSON and CSV files drop format-specific tags in their least upper bound.
-    #[test]
-    fn test1234_ca_4_directory_mixed_types_lub() {
-        let dir = create_test_dir();
-        create_file(&dir, "data.json", br#"{"key": "value"}"#);
-        create_file(&dir, "data.csv", b"a,b,c\n1,2,3\n4,5,6");
-
-        let (registry, _temp) = create_test_media_registry();
-        let dir_files = super::path_resolver::resolve_directory(dir.path()).unwrap();
-        assert_eq!(dir_files.len(), 2);
-
-        let mut detected_urns = Vec::new();
-        for file_path in &dir_files {
-            let resolved = detect_file_with_media_registry(file_path, registry.clone()).unwrap();
-            let urn = crate::MediaUrn::from_string(&resolved.media_urn).unwrap();
-            detected_urns.push(urn);
-        }
-
-        let lub = crate::MediaUrn::least_upper_bound(&detected_urns);
-        let lub_str = lub.to_string();
-        // JSON and CSV are both textable+record but have different base types
-        // LUB should drop json and csv tags, keeping only shared markers
-        assert!(
-            !lub_str.contains("json"),
-            "LUB of JSON+CSV should not contain json tag, got: {}",
-            lub_str
-        );
-        assert!(
-            !lub_str.contains("csv"),
-            "LUB of JSON+CSV should not contain csv tag, got: {}",
-            lub_str
-        );
-        assert!(
-            lub_str.contains("record") || lub_str.contains("textable"),
-            "LUB of JSON+CSV should contain shared markers (record or textable), got: {}",
-            lub_str
-        );
-    }
-
-    fn create_test_media_registry() -> (Arc<crate::media::registry::MediaUrnRegistry>, TempDir) {
-        let temp_dir = TempDir::new().unwrap();
-        let cache_dir = temp_dir.path().to_path_buf();
-        let registry = crate::media::registry::MediaUrnRegistry::new_for_test(cache_dir).unwrap();
-        (Arc::new(registry), temp_dir)
-    }
-
-    // Discrimination Tests (TEST_DISC_1 through TEST_DISC_6)
-    // These test discriminate_candidates_by_validation against real bundled media specs.
-
-    /// Helper: get all txt-extension URNs from the bundled registry.
-    fn txt_extension_urns(registry: &crate::media::registry::MediaUrnRegistry) -> Vec<String> {
+    fn txt_extension_urns(registry: &MediaUrnRegistry) -> Vec<String> {
         registry.media_urns_for_extension("txt").unwrap()
     }
 
@@ -671,12 +560,10 @@ mod tests {
         let all_txt_urns = txt_extension_urns(&registry);
 
         let content = b"Hello world\nThis is a plain text file\nNo colons here";
-        // Baseline: adapter detected multi-line plain text
         let baseline = "media:list;textable;txt";
         let survivors =
             discriminate_candidates_by_validation(content, &all_txt_urns, &registry, baseline);
 
-        // model-spec variants have pattern ".*:.*" — plain text without colons fails this
         for survivor in &survivors {
             assert!(
                 !survivor.contains("model-spec"),
@@ -693,12 +580,10 @@ mod tests {
         let all_txt_urns = txt_extension_urns(&registry);
 
         let content = b"hf:MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF";
-        // Baseline: adapter detected single-line plain text
         let baseline = "media:textable;txt";
         let survivors =
             discriminate_candidates_by_validation(content, &all_txt_urns, &registry, baseline);
 
-        // Content has a colon → model-spec pattern matches → model-spec variants survive
         assert!(
             survivors.iter().any(|u| u.contains("model-spec")),
             "At least one model-spec URN should survive — content contains a colon, survivors: {:?}",
@@ -706,7 +591,7 @@ mod tests {
         );
     }
 
-    // TEST1237: Candidate discrimination returns an empty list when there are no candidates.
+    // TEST1237: Empty candidates → empty result
     #[test]
     fn test1237_disc_5_empty_candidates() {
         let (registry, _temp) = create_test_media_registry();
@@ -715,7 +600,7 @@ mod tests {
         assert!(survivors.is_empty());
     }
 
-    // TEST1238: Unknown candidate URNs survive discrimination when no registry spec can reject them.
+    // TEST1238: Unknown URN survives discrimination
     #[test]
     fn test1238_disc_6_unknown_urn_survives() {
         let (registry, _temp) = create_test_media_registry();
@@ -725,6 +610,132 @@ mod tests {
         assert_eq!(
             survivors, candidates,
             "Unknown URN should survive — no spec to eliminate it"
+        );
+    }
+
+    // TEST1288: structure_from_marker_tags correctly maps tag combinations to ContentStructure
+    #[test]
+    fn test1288_structure_from_marker_tags() {
+        let scalar_opaque = MediaUrn::from_string("media:pdf").unwrap();
+        assert_eq!(structure_from_marker_tags(&scalar_opaque), ContentStructure::ScalarOpaque);
+
+        let scalar_record = MediaUrn::from_string("media:json;record;textable").unwrap();
+        assert_eq!(structure_from_marker_tags(&scalar_record), ContentStructure::ScalarRecord);
+
+        let list_opaque = MediaUrn::from_string("media:list;textable").unwrap();
+        assert_eq!(structure_from_marker_tags(&list_opaque), ContentStructure::ListOpaque);
+
+        let list_record = MediaUrn::from_string("media:json;list;record;textable").unwrap();
+        assert_eq!(structure_from_marker_tags(&list_record), ContentStructure::ListRecord);
+    }
+
+    // =========================================================================
+    // Async confirmed detection tests (with mock invoker)
+    // =========================================================================
+
+    /// Mock invoker that returns predefined media URNs for any cartridge
+    struct MockInvoker {
+        response: Option<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl CartridgeAdapterInvoker for MockInvoker {
+        async fn invoke_adapter_selection(
+            &self,
+            _cartridge_id: &str,
+            _file_path: &Path,
+        ) -> Result<Option<Vec<String>>, InputResolverError> {
+            Ok(self.response.clone())
+        }
+    }
+
+    // TEST1285: detect_file_confirmed fails when no adapters are registered for the extension
+    #[tokio::test]
+    async fn test1285_confirmed_no_adapters_fails() {
+        let dir = create_test_dir();
+        let path = create_file(&dir, "data.json", br#"{"key": "value"}"#);
+
+        let (media_registry, _temp) = create_test_media_registry();
+        let adapter_registry = MediaAdapterRegistry::new(media_registry);
+        let invoker = MockInvoker { response: None };
+
+        let result = detect_file_confirmed(&path, &adapter_registry, &invoker).await;
+        assert!(
+            result.is_err(),
+            "Must fail when no adapters are registered for the extension"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("No content-inspection adapter"),
+            "Error must mention missing adapter, got: {}",
+            err_msg
+        );
+    }
+
+    // TEST1286: detect_file_confirmed succeeds when adapter returns URNs
+    #[tokio::test]
+    async fn test1286_confirmed_adapter_returns_urns() {
+        let dir = create_test_dir();
+        let path = create_file(&dir, "data.json", br#"{"key": "value"}"#);
+
+        let (media_registry, _temp) = create_test_media_registry();
+        let mut adapter_registry = MediaAdapterRegistry::new(media_registry);
+
+        // Register an adapter for media:json
+        adapter_registry
+            .register_cap_group(
+                "test-group",
+                &["media:json".to_string()],
+                "test-cartridge",
+            )
+            .unwrap();
+
+        let invoker = MockInvoker {
+            response: Some(vec!["media:json;record;textable".to_string()]),
+        };
+
+        let result = detect_file_confirmed(&path, &adapter_registry, &invoker).await;
+        assert!(result.is_ok(), "Must succeed when adapter returns URNs: {:?}", result.err());
+
+        let resolved = result.unwrap();
+        assert!(
+            resolved.media_urn.contains("json"),
+            "Resolved URN must contain json, got: {}",
+            resolved.media_urn
+        );
+        assert_eq!(resolved.content_structure, ContentStructure::ScalarRecord);
+    }
+
+    // TEST1287: detect_file_confirmed fails when all adapters return empty END (no match)
+    #[tokio::test]
+    async fn test1287_confirmed_all_adapters_no_match() {
+        let dir = create_test_dir();
+        let path = create_file(&dir, "data.json", br#"not json"#);
+
+        let (media_registry, _temp) = create_test_media_registry();
+        let mut adapter_registry = MediaAdapterRegistry::new(media_registry);
+
+        adapter_registry
+            .register_cap_group(
+                "test-group",
+                &["media:json".to_string()],
+                "test-cartridge",
+            )
+            .unwrap();
+
+        // Invoker returns None (empty END — no match)
+        let invoker = MockInvoker { response: None };
+
+        let result = detect_file_confirmed(&path, &adapter_registry, &invoker).await;
+        assert!(
+            result.is_err(),
+            "Must fail when all adapters return no match"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("returned no match"),
+            "Error must mention no match, got: {}",
+            err_msg
         );
     }
 }

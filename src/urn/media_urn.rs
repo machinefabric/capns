@@ -228,6 +228,10 @@ pub const MEDIA_TRANSCRIPTION_OUTPUT: &str = "media:record;textable;transcriptio
 /// Media URN for decision output — JSON object with identifier and boolean value
 pub const MEDIA_DECISION: &str = "media:decision;json;record;textable";
 
+/// Media URN for adapter selection output — JSON object with media_urns array
+/// Returned by cartridge content-inspection adapters to identify file media types
+pub const MEDIA_ADAPTER_SELECTION: &str = "media:adapter-selection;json;record";
+
 // =============================================================================
 // MEDIA URN TYPE
 // =============================================================================
@@ -1271,6 +1275,28 @@ mod debug_tests {
             lub.is_equivalent(&expected).unwrap(),
             "LUB should drop conflicting format tag, got {}",
             lub.to_string()
+        );
+    }
+
+    // TEST1271: MEDIA_ADAPTER_SELECTION constant parses and has expected tags
+    #[test]
+    fn test1271_media_adapter_selection_constant() {
+        let urn = MediaUrn::from_string(MEDIA_ADAPTER_SELECTION)
+            .expect("MEDIA_ADAPTER_SELECTION must be a valid media URN");
+        assert!(
+            urn.has_marker_tag("adapter-selection"),
+            "Must have adapter-selection tag, got: {}",
+            urn.to_string()
+        );
+        assert!(
+            urn.has_marker_tag("json"),
+            "Must have json tag, got: {}",
+            urn.to_string()
+        );
+        assert!(
+            urn.has_marker_tag("record"),
+            "Must have record tag, got: {}",
+            urn.to_string()
         );
     }
 }

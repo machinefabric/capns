@@ -65,7 +65,8 @@ pub use standard::*;
 // Bifaci protocol — frames, I/O, runtimes
 pub use bifaci::cartridge_runtime::{
     find_stream, find_stream_meta, find_stream_str, require_stream, require_stream_str,
-    CapacityHandle, CartridgeRuntime, CliStreamEmitter, DiscardOp, FrameSender, IdentityOp,
+    AdapterSelectionOp, CapacityHandle, CartridgeRuntime, CliStreamEmitter, DiscardOp, FrameSender,
+    IdentityOp,
     InputPackage, InputStream, NoPeerInvoker, OpFactory, OutputStream, PeerCall, PeerInvoker,
     PeerResponse, PeerResponseItem, ProgressSender, Request, RuntimeError, StreamError, StreamMeta,
     StreamSender, WET_KEY_REQUEST,
@@ -190,8 +191,9 @@ pub use orchestrator::{
 
 // InputResolver — unified input resolution with media detection
 pub use input_resolver::{
-    detect_file, discriminate_candidates_by_validation, resolve_input, resolve_inputs,
-    resolve_paths, AdapterResult, AdapterSelection, ContentStructure, InputItem,
-    InputResolverError, MediaAdapter, MediaAdapterRegistry, ResolvedFile, ResolvedInputSet,
-    ValueAdapter, ValueAdapterRegistry, ValueAdapterResult,
+    detect_file, detect_file_confirmed, detect_file_with_media_registry,
+    discriminate_candidates_by_validation, resolve_input, resolve_inputs,
+    resolve_inputs_confirmed, resolve_paths, AdapterResult, CartridgeAdapterInvoker,
+    ContentStructure, InputItem, InputResolverError, MediaAdapterRegistry, ResolvedFile,
+    ResolvedInputSet, ValueAdapter, ValueAdapterRegistry, ValueAdapterResult,
 };

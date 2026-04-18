@@ -1835,6 +1835,7 @@ mod tests {
         assert_eq!(paths[0].steps[0].title(), "Direct");
     }
 
+    // TEST1110: Strand serializes to JSON and deserializes back preserving all step types
     #[test]
     fn test1110_strand_round_trips_through_serde_without_losing_step_types() {
         let strand = Strand {

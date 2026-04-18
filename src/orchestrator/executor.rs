@@ -380,7 +380,7 @@ impl CartridgeManager {
                 .map(|p| {
                     (
                         p,
-                        CapManifest::new(String::new(), String::new(), String::new(), vec![]),
+                        CapManifest::new(String::new(), String::new(), String::new(), Vec::new()),
                     )
                 })
                 .collect(),
@@ -395,7 +395,7 @@ impl CartridgeManager {
             match self.discover_manifest(bin_path).await {
                 Ok(manifest) => {
                     tracing::info!("[DevMode] Cartridge: {}", manifest.name);
-                    for cap in &manifest.caps {
+                    for cap in manifest.all_caps() {
                         tracing::info!("[DevMode]   - {}", cap.urn);
                     }
                     self.dev_cartridges.insert(bin_path.clone(), manifest);
@@ -473,9 +473,9 @@ impl CartridgeManager {
             .map(|path| {
                 let mut caps: HashSet<String> = HashSet::new();
 
-                // Use full manifest caps for dev cartridges
+                // Use full manifest caps for dev cartridges (including cap groups)
                 if let Some(manifest) = self.dev_cartridges.get(&path) {
-                    for cap in &manifest.caps {
+                    for cap in manifest.all_caps() {
                         caps.insert(cap.urn.to_string());
                     }
                 }
@@ -503,7 +503,7 @@ impl CartridgeManager {
         // Check dev cartridges first - use is_dispatchable to find any cartridge
         // that can legally handle the requested cap.
         for (bin_path, manifest) in &self.dev_cartridges {
-            for cap in &manifest.caps {
+            for cap in manifest.all_caps() {
                 // cap.urn is the provider, requested_urn is the request
                 if cap.urn.is_dispatchable(&requested_urn) {
                     return Ok((bin_path.clone(), format!("dev:{}", bin_path.display())));

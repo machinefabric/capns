@@ -795,6 +795,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // TEST668: resolve_binding returns byte values when slot is populated with data
     #[test]
     fn test668_resolve_slot_with_populated_byte_slot_values() {
         let files = vec![];
@@ -830,6 +831,7 @@ mod tests {
         assert_eq!(result.source, ArgumentSource::Slot);
     }
 
+    // TEST669: resolve_binding falls back to cap default value when slot has no data
     #[test]
     fn test669_resolve_slot_falls_back_to_default() {
         let files = vec![];
@@ -861,6 +863,7 @@ mod tests {
         assert_eq!(result.source, ArgumentSource::CapDefault);
     }
 
+    // TEST670: resolve_binding returns error when required slot has no value and no default
     #[test]
     fn test670_resolve_required_slot_no_value_returns_err() {
         let files = vec![];
@@ -883,6 +886,7 @@ mod tests {
         assert!(err.contains("media:question;textable"));
     }
 
+    // TEST671: resolve_binding returns None when optional slot has no value and no default
     #[test]
     fn test671_resolve_optional_slot_no_value_returns_none() {
         let files = vec![];

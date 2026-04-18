@@ -264,6 +264,7 @@ mod tests {
     use std::io;
     use tempfile::tempdir;
 
+    // TEST1143: InputItem::from_string distinguishes glob patterns, directories, and files
     #[test]
     fn test1143_input_item_from_string_distinguishes_glob_directory_and_file() {
         let dir = tempdir().expect("temp dir");
@@ -278,6 +279,7 @@ mod tests {
         assert_eq!(glob_item, InputItem::Glob("fixtures/**/*.pdf".to_string()));
     }
 
+    // TEST1144: ContentStructure is_list/is_record helpers and Display implementation are correct
     #[test]
     fn test1144_content_structure_helpers_and_display() {
         assert!(!ContentStructure::ScalarOpaque.is_list());
@@ -289,6 +291,7 @@ mod tests {
         assert_eq!(ContentStructure::ListRecord.to_string(), "list/record");
     }
 
+    // TEST1145: ResolvedInputSet uses URN equivalence for common_media and file count for is_sequence
     #[test]
     fn test1145_resolved_input_set_uses_equivalent_media_and_file_count_cardinality() {
         let single_list_file = ResolvedInputSet::new(vec![ResolvedFile {
@@ -326,6 +329,7 @@ mod tests {
         );
     }
 
+    // TEST1146: InputResolverError Display and source() implementations produce correct messages
     #[test]
     fn test1146_input_resolver_error_display_and_source() {
         let io_error = InputResolverError::IoError {

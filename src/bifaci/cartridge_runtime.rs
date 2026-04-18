@@ -42,7 +42,7 @@ use crate::bifaci::io::{handshake_accept, CborError, FrameReader, FrameWriter};
 use crate::bifaci::manifest::CapManifest;
 use crate::cap::caller::CapArgumentValue;
 use crate::cap::definition::{ArgSource, Cap, CapArg};
-use crate::standard::caps::{CAP_DISCARD, CAP_IDENTITY};
+use crate::standard::caps::{CAP_ADAPTER_SELECTION, CAP_DISCARD, CAP_IDENTITY};
 use crate::urn::cap_urn::CapUrn;
 use crate::urn::media_urn::{MediaUrn, MEDIA_FILE_PATH, MEDIA_FILE_PATH_ARRAY};
 use async_trait::async_trait;
@@ -1402,6 +1402,49 @@ impl Op<()> for DiscardOp {
     }
 }
 
+/// Default adapter selection handler — returns empty END (no match).
+///
+/// This is the standard default for cartridges that do not inspect file content.
+/// Cartridges that provide content inspection override this by registering their
+/// own handler for `CAP_ADAPTER_SELECTION`.
+///
+/// The empty END frame (exit code 0, no stream output) is the ONLY valid "no match"
+/// response. The orchestrator treats any stream output that isn't valid
+/// `{"media_urns": [...]}` as a runtime error.
+#[derive(Default)]
+pub struct AdapterSelectionOp;
+
+#[async_trait]
+impl Op<()> for AdapterSelectionOp {
+    async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
+        let req: Arc<Request> = wet
+            .get_required(WET_KEY_REQUEST)
+            .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+        let mut input = req
+            .take_input()
+            .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
+        // Drain all input — we don't inspect it in the default handler
+        while let Some(stream_result) = input.recv().await {
+            let mut stream = stream_result.map_err(|e| {
+                OpError::ExecutionFailed(format!("AdapterSelection input error: {}", e))
+            })?;
+            while let Some(chunk_result) = stream.recv_data().await {
+                let _ = chunk_result.map_err(|e| {
+                    OpError::ExecutionFailed(format!("AdapterSelection chunk error: {}", e))
+                })?;
+            }
+        }
+        // Return Ok(()) without starting output — produces empty END frame
+        Ok(())
+    }
+
+    fn metadata(&self) -> OpMetadata {
+        OpMetadata::builder("AdapterSelectionOp")
+            .description("Default adapter selection — returns empty END (no match)")
+            .build()
+    }
+}
+
 /// Tracks a pending peer request (cartridge invoking host cap).
 /// The reader loop forwards response frames to the channel.
 /// LOG frames are re-stamped with the origin request ID and forwarded
@@ -2487,6 +2530,9 @@ impl CartridgeRuntime {
         if self.find_handler(CAP_DISCARD).is_none() {
             self.register_op_type::<DiscardOp>(CAP_DISCARD);
         }
+        if self.find_handler(CAP_ADAPTER_SELECTION).is_none() {
+            self.register_op_type::<AdapterSelectionOp>(CAP_ADAPTER_SELECTION);
+        }
     }
 
     /// Set the maximum number of concurrent handler invocations.
@@ -2859,7 +2905,7 @@ impl CartridgeRuntime {
         manifest: &'a CapManifest,
         command_name: &str,
     ) -> Option<&'a Cap> {
-        manifest.caps.iter().find(|cap| cap.command == command_name)
+        manifest.all_caps().into_iter().find(|cap| cap.command == command_name)
     }
 
     /// Build payload from streaming stdin (CLI mode with piped binary).
@@ -3304,7 +3350,7 @@ impl CartridgeRuntime {
             "manifest"
         );
 
-        for cap in &manifest.caps {
+        for cap in manifest.all_caps() {
             let desc = cap.cap_description.as_deref().unwrap_or(&cap.title);
             let padded_command = format!("{:16}", cap.command);
             let _ = writeln!(handle, "    {}{}", padded_command, desc);
@@ -4354,7 +4400,11 @@ mod tests {
             name.to_string(),
             version.to_string(),
             description.to_string(),
-            caps,
+            vec![crate::CapGroup {
+                name: "default".to_string(),
+                caps,
+                adapter_urns: Vec::new(),
+            }],
         )
     }
 
@@ -4366,7 +4416,7 @@ mod tests {
     const TEST_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:op=test","title":"Test","command":"test"}]}"#;
 
     /// Valid manifest with proper in/out specs for tests that need parsed CapManifest
-    const VALID_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}]}"#;
+    const VALID_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}],"adapter_urns":[]}]}"#;
 
     // TEST248: Test register_op and find_handler by exact cap URN
     #[test]
@@ -4607,7 +4657,7 @@ mod tests {
             "cap:op=test is valid (defaults to media: for in/out)"
         );
         let manifest = runtime_basic.manifest.unwrap();
-        assert_eq!(manifest.caps.len(), 2, "Original cap + auto-added identity");
+        assert_eq!(manifest.all_caps().len(), 2, "Original cap + auto-added identity");
 
         // VALID_MANIFEST has proper in/out specs
         let runtime_valid = CartridgeRuntime::with_manifest_json(VALID_MANIFEST);
@@ -7028,6 +7078,47 @@ mod tests {
                 .find_handler("cap:in=\"media:void\";op=nonexistent;out=\"media:void\"")
                 .is_none(),
             "Standard handlers must not catch arbitrary specific requests"
+        );
+    }
+
+    // TEST1282: AdapterSelectionOp is auto-registered by CartridgeRuntime
+    #[test]
+    fn test1282_adapter_selection_auto_registered() {
+        let runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
+
+        assert!(
+            runtime.find_handler(CAP_ADAPTER_SELECTION).is_some(),
+            "CartridgeRuntime must auto-register adapter selection handler"
+        );
+    }
+
+    // TEST1283: Custom adapter selection Op overrides the default
+    #[test]
+    fn test1283_adapter_selection_custom_override() {
+        let mut runtime = CartridgeRuntime::new(VALID_MANIFEST.as_bytes());
+
+        // Verify default is registered
+        assert!(runtime.find_handler(CAP_ADAPTER_SELECTION).is_some());
+
+        // Override with custom handler
+        #[derive(Default)]
+        struct CustomAdapterOp;
+        #[async_trait]
+        impl Op<()> for CustomAdapterOp {
+            async fn perform(&self, _dry: &mut DryContext, _wet: &mut WetContext) -> OpResult<()> {
+                Ok(())
+            }
+            fn metadata(&self) -> OpMetadata {
+                OpMetadata::builder("CustomAdapterOp").build()
+            }
+        }
+
+        runtime.register_op_type::<CustomAdapterOp>(CAP_ADAPTER_SELECTION);
+
+        // Must still find a handler (the custom one)
+        assert!(
+            runtime.find_handler(CAP_ADAPTER_SELECTION).is_some(),
+            "Custom adapter selection handler must be findable after override"
         );
     }
 

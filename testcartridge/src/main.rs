@@ -375,7 +375,11 @@ fn build_manifest() -> CapManifest {
         "testcartridge".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
         "Integration test cartridge for stream multiplexing protocol verification".to_string(),
-        caps,
+        vec![capdag::CapGroup {
+            name: "test-caps".to_string(),
+            caps,
+            adapter_urns: Vec::new(),
+        }],
     )
     .with_author("https://github.com/machinefabric".to_string())
     .with_page_url("https://github.com/machinefabric/testcartridge".to_string())

@@ -136,6 +136,7 @@ pub enum MachineParseError {
 mod tests {
     use super::*;
 
+    // TEST1147: MachineSyntaxError Display includes position and detail for each variant
     #[test]
     fn test1147_machine_syntax_error_display_is_specific() {
         let err = MachineSyntaxError::InvalidWiring {
@@ -149,6 +150,7 @@ mod tests {
         );
     }
 
+    // TEST1148: MachineParseError::from(MachineSyntaxError) preserves the syntax error variant
     #[test]
     fn test1148_machine_parse_error_from_syntax_preserves_variant() {
         let parse_error: MachineParseError = MachineSyntaxError::UndefinedAlias {
@@ -164,6 +166,7 @@ mod tests {
         }
     }
 
+    // TEST1149: MachineParseError::from(MachineAbstractionError) preserves the resolution error variant
     #[test]
     fn test1149_machine_parse_error_from_resolution_preserves_variant() {
         let parse_error: MachineParseError = MachineAbstractionError::AmbiguousMachineNotation {

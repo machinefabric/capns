@@ -832,14 +832,15 @@ async fn test394_peer_invoke_roundtrip() {
     let manifest: capdag::CapManifest =
         serde_json::from_slice(manifest_bytes).expect("Failed to parse manifest");
 
+    let all_caps = manifest.all_caps();
     eprintln!(
         "[TEST394] Discovered {} caps from testcartridge",
-        manifest.caps.len()
+        all_caps.len()
     );
 
     // Register all caps with the router (pointing to this same host)
     let host_arc = Arc::new(host);
-    for cap in &manifest.caps {
+    for cap in &all_caps {
         let cap_urn = cap.urn.to_string();
         eprintln!("[TEST394] Registering cap: {}", cap_urn);
         router

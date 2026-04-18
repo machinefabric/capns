@@ -185,6 +185,7 @@ mod tests {
         )
     }
 
+    // TEST1142: ResolvedGraph.to_mermaid() renders node shapes, deduplicates edges, and escapes labels
     #[test]
     fn test1142_resolved_graph_to_mermaid_renders_shapes_dedupes_edges_and_escapes() {
         let cap = make_test_cap(

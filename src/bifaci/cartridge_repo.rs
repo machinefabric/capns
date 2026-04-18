@@ -794,9 +794,9 @@ mod tests {
         assert_eq!(cartridge.version, "1.0.0");
     }
 
+    // TEST321: CartridgeInfo.is_signed() returns true when signature is present
     #[test]
     fn test321_cartridge_info_is_signed() {
-        // TEST321: Verify is_signed() method
         let mut cartridge = CartridgeInfo {
             id: "testcartridge".to_string(),
             name: "Test".to_string(),
@@ -825,9 +825,9 @@ mod tests {
         assert!(!cartridge.is_signed());
     }
 
+    // TEST322: CartridgeInfo.build_for_platform() returns the build matching the current platform
     #[test]
     fn test322_cartridge_info_build_for_platform() {
-        // TEST322: Verify build_for_platform() method
         let cartridge = CartridgeInfo {
             id: "testcartridge".to_string(),
             name: "Test".to_string(),
@@ -891,9 +891,9 @@ mod tests {
         assert!(empty_cartridge.build_for_platform("darwin-arm64").is_none());
     }
 
+    // TEST323: CartridgeRepoServer validates registry JSON schema version
     #[test]
     fn test323_cartridge_repo_server_validate_registry() {
-        // TEST323: Validate registry schema version
         let registry = CartridgeRegistry {
             schema_version: "4.0".to_string(),
             last_updated: "2026-02-07".to_string(),
@@ -915,9 +915,9 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("4.0"));
     }
 
+    // TEST324: CartridgeRepoServer transforms v3 registry JSON into flat cartridge array
     #[test]
     fn test324_cartridge_repo_server_transform_to_array() {
-        // TEST324: Transform v3 registry to flat cartridge array
         let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
@@ -972,9 +972,9 @@ mod tests {
         assert_eq!(cartridges_array[0].version, "1.0.0");
     }
 
+    // TEST325: CartridgeRepoServer.get_cartridges() returns all parsed cartridges
     #[test]
     fn test325_cartridge_repo_server_get_cartridges() {
-        // TEST325: Get all cartridges via get_cartridges()
         let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
@@ -1024,9 +1024,9 @@ mod tests {
         assert_eq!(response.cartridges[0].id, "testcartridge");
     }
 
+    // TEST326: CartridgeRepoServer.get_cartridge() returns cartridge matching the given ID
     #[test]
     fn test326_cartridge_repo_server_get_cartridge_by_id() {
-        // TEST326: Get cartridge by ID
         let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
@@ -1079,9 +1079,9 @@ mod tests {
         assert!(not_found.is_none());
     }
 
+    // TEST327: CartridgeRepoServer.search_cartridges() filters by text query against name and description
     #[test]
     fn test327_cartridge_repo_server_search_cartridges() {
-        // TEST327: Search cartridges by text query
         let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
@@ -1134,9 +1134,9 @@ mod tests {
         assert_eq!(no_match.len(), 0);
     }
 
+    // TEST328: CartridgeRepoServer.get_by_category() filters cartridges by category tag
     #[test]
     fn test328_cartridge_repo_server_get_by_category() {
-        // TEST328: Filter cartridges by category
         let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
@@ -1189,9 +1189,9 @@ mod tests {
         assert_eq!(no_match.len(), 0);
     }
 
+    // TEST329: CartridgeRepoServer.get_suggestions_for_cap() finds cartridges providing a given cap URN
     #[test]
     fn test329_cartridge_repo_server_get_by_cap() {
-        // TEST329: Find cartridges by cap URN
         let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
@@ -1249,9 +1249,9 @@ mod tests {
         assert_eq!(no_match.len(), 0);
     }
 
+    // TEST330: CartridgeRepoClient updates its local cache from server response
     #[tokio::test]
     async fn test330_cartridge_repo_client_update_cache() {
-        // TEST330: CartridgeRepoClient cache update
         let repo = CartridgeRepo::new(3600);
 
         // Create a mock registry response
@@ -1286,9 +1286,9 @@ mod tests {
         assert_eq!(cartridge.unwrap().id, "testcartridge");
     }
 
+    // TEST331: CartridgeRepoClient.get_suggestions_for_cap() returns cartridge suggestions for a cap URN
     #[tokio::test]
     async fn test331_cartridge_repo_client_get_suggestions() {
-        // TEST331: Get suggestions for missing cap
         let repo = CartridgeRepo::new(3600);
 
         let cap_urn = r#"cap:in="media:pdf";op=disbind;out="media:disbound-page;textable;list""#;
@@ -1326,9 +1326,9 @@ mod tests {
         assert_eq!(suggestions[0].cap_urn, cap_urn);
     }
 
+    // TEST332: CartridgeRepoClient.get_cartridge() retrieves a specific cartridge by ID from cache
     #[tokio::test]
     async fn test332_cartridge_repo_client_get_cartridge() {
-        // TEST332: Get cartridge by ID from client
         let repo = CartridgeRepo::new(3600);
 
         let registry = CartridgeRegistryResponse {
@@ -1363,9 +1363,9 @@ mod tests {
         assert!(not_found.is_none());
     }
 
+    // TEST333: CartridgeRepoClient.get_all_caps() returns aggregate cap URNs from all cached cartridges
     #[tokio::test]
     async fn test333_cartridge_repo_client_get_all_caps() {
-        // TEST333: Get all available caps
         let repo = CartridgeRepo::new(3600);
 
         let cap1 = "cap:in=\"media:pdf\";op=disbind;out=\"media:disbound-page;textable;list\"";
@@ -1429,9 +1429,9 @@ mod tests {
         assert!(caps.contains(&cap2.to_string()));
     }
 
+    // TEST334: CartridgeRepoClient.needs_sync() returns true when cache TTL has expired
     #[tokio::test]
     async fn test334_cartridge_repo_client_needs_sync() {
-        // TEST334: Check if client needs sync
         let repo = CartridgeRepo::new(3600);
 
         let urls = vec!["https://example.com/cartridges".to_string()];
@@ -1448,9 +1448,9 @@ mod tests {
         assert!(!repo.needs_sync(&urls).await);
     }
 
+    // TEST335: Server creates registry response and client consumes it end-to-end
     #[test]
     fn test335_cartridge_repo_server_client_integration() {
-        // TEST335: Server creates response, client consumes it
         let mut cartridges_map = HashMap::new();
         let mut versions = HashMap::new();
 
