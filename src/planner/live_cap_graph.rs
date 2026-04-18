@@ -650,7 +650,16 @@ impl LiveCapGraph {
 
     /// Find all reachable targets from a source media URN.
     ///
-    /// Uses BFS to explore the graph up to max_depth steps.
+    /// Uses **BFS** — visits each (MediaUrn, is_sequence) node once to discover
+    /// which targets are reachable and how many edges reach each one. O(V+E),
+    /// completes in microseconds. Does NOT enumerate actual paths.
+    ///
+    /// Used for the transmute menu where we need target names and path counts
+    /// but not the routes themselves. IDDFS would be orders of magnitude slower
+    /// here because it enumerates every distinct path combinatorially — with 80+
+    /// edges and depth 10 that can mean thousands of paths explored per target,
+    /// multiplied by 20+ reachable targets.
+    ///
     /// `is_sequence` is the initial cardinality state of the input (from context).
     /// Returns targets sorted by (min_path_length, display_name).
     pub fn get_reachable_targets(
@@ -720,7 +729,16 @@ impl LiveCapGraph {
     // PATH FINDING (DFS with exact target matching)
     // =========================================================================
 
-    /// Find all paths from source to target media URN.
+    /// Find all paths from source to a specific target media URN.
+    ///
+    /// Uses **IDDFS** (iterative deepening DFS) — enumerates every distinct route
+    /// (sequence of cap/ForEach/Collect steps) between source and target. Finds
+    /// shortest paths first (depth 1, then 2, etc.). Can take 10-100ms per call
+    /// depending on graph density due to combinatorial path explosion.
+    ///
+    /// Used when the user has already chosen a target and needs to see or select
+    /// the specific transformation chain. Not suitable for discovery (use BFS
+    /// `get_reachable_targets` instead — it's O(V+E) vs combinatorial).
     ///
     /// **Critical**: Uses `is_equivalent()` for target matching, NOT `conforms_to()`.
     /// `is_sequence` is the initial cardinality state (from input context).
@@ -819,8 +837,9 @@ impl LiveCapGraph {
 
     /// Find paths with streaming progress reporting.
     ///
-    /// Calls `on_event` for each progress update and each path found.
-    /// Returns the final sorted list of paths.
+    /// Same IDDFS algorithm as `find_paths_to_exact_target`, but calls `on_event`
+    /// for each progress update and each path found so the UI can show results
+    /// incrementally. Returns the final sorted list of paths.
     pub fn find_paths_streaming<F>(
         &self,
         source: &MediaUrn,
@@ -2230,5 +2249,171 @@ mod tests {
 
         let err = strand.knit(&registry).unwrap_err();
         assert!(matches!(err, MachineAbstractionError::UnknownCap { .. }));
+    }
+
+    // =========================================================================
+    // Round-trip path tests (source == target)
+    // =========================================================================
+
+    // TEST1289: BFS reachable targets includes the source itself when round-trip paths exist.
+    // A→B and B→A means A is reachable from A (via A→B→A).
+    #[test]
+    fn test1289_bfs_reachable_includes_source_roundtrip() {
+        let mut graph = LiveCapGraph::new();
+
+        // textable → integer (coerce)
+        graph.add_cap(&make_test_cap(
+            "media:textable",
+            "media:integer;numeric;textable",
+            "coerce_to_int",
+            "Coerce to Integer",
+        ));
+        // integer → textable (coerce back)
+        graph.add_cap(&make_test_cap(
+            "media:integer;numeric;textable",
+            "media:textable",
+            "coerce_to_text",
+            "Coerce to Text",
+        ));
+
+        let source = MediaUrn::from_string("media:textable").unwrap();
+        let targets = graph.get_reachable_targets(&source, false, 5);
+
+        // Source should be reachable (via textable→integer→textable)
+        let has_self = targets.iter().any(|t| {
+            t.media_spec.is_equivalent(&source).unwrap_or(false)
+        });
+        assert!(
+            has_self,
+            "BFS must find source as reachable target in round-trip graph. Found: {:?}",
+            targets.iter().map(|t| t.media_spec.to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    // TEST1290: IDDFS find_paths_to_exact_target finds round-trip paths when source == target.
+    // This was a bug where the visited set blocked returning to the source, and
+    // early return on target hit at wrong depth prevented exploration.
+    #[test]
+    fn test1290_iddfs_finds_roundtrip_paths() {
+        let mut graph = LiveCapGraph::new();
+
+        // textable → integer
+        graph.add_cap(&make_test_cap(
+            "media:textable",
+            "media:integer;numeric;textable",
+            "coerce_to_int",
+            "Coerce to Integer",
+        ));
+        // integer → textable
+        graph.add_cap(&make_test_cap(
+            "media:integer;numeric;textable",
+            "media:textable",
+            "coerce_to_text",
+            "Coerce to Text",
+        ));
+
+        let source = MediaUrn::from_string("media:textable").unwrap();
+        let target = MediaUrn::from_string("media:textable").unwrap();
+
+        let paths = graph.find_paths_to_exact_target(&source, &target, false, 5, 100);
+
+        assert!(
+            !paths.is_empty(),
+            "IDDFS must find round-trip paths (textable→integer→textable). Got 0 paths."
+        );
+
+        // The shortest round-trip should be 2 steps
+        let shortest = paths.iter().min_by_key(|p| p.total_steps).unwrap();
+        assert_eq!(
+            shortest.total_steps, 2,
+            "Shortest round-trip should be 2 steps (coerce + coerce back)"
+        );
+    }
+
+    // TEST1291: IDDFS round-trip paths are also found with is_sequence=true.
+    // The ForEach/Collect edges must not block round-trip discovery.
+    #[test]
+    fn test1291_iddfs_roundtrip_with_sequence() {
+        let mut graph = LiveCapGraph::new();
+
+        // textable → integer
+        graph.add_cap(&make_test_cap(
+            "media:textable",
+            "media:integer;numeric;textable",
+            "coerce_to_int",
+            "Coerce to Integer",
+        ));
+        // integer → textable
+        graph.add_cap(&make_test_cap(
+            "media:integer;numeric;textable",
+            "media:textable",
+            "coerce_to_text",
+            "Coerce to Text",
+        ));
+
+        let source = MediaUrn::from_string("media:textable").unwrap();
+        let target = MediaUrn::from_string("media:textable").unwrap();
+
+        // With is_sequence=true, the path goes through ForEach first
+        let paths = graph.find_paths_to_exact_target(&source, &target, true, 5, 100);
+
+        assert!(
+            !paths.is_empty(),
+            "IDDFS must find round-trip paths even with is_sequence=true. Got 0 paths."
+        );
+    }
+
+    // TEST1292: BFS and IDDFS agree that round-trip targets exist.
+    // If BFS says target X is reachable from source X, IDDFS must find at least one path.
+    #[test]
+    fn test1292_bfs_iddfs_roundtrip_consistency() {
+        let mut graph = LiveCapGraph::new();
+
+        // Build a small graph: A→B, B→C, C→A
+        graph.add_cap(&make_test_cap("media:a", "media:b", "a_to_b", "A to B"));
+        graph.add_cap(&make_test_cap("media:b", "media:c", "b_to_c", "B to C"));
+        graph.add_cap(&make_test_cap("media:c", "media:a", "c_to_a", "C to A"));
+
+        let source = MediaUrn::from_string("media:a").unwrap();
+
+        // BFS should find source as reachable (via A→B→C→A)
+        let bfs_targets = graph.get_reachable_targets(&source, false, 5);
+        let bfs_has_self = bfs_targets.iter().any(|t| {
+            t.media_spec.is_equivalent(&source).unwrap_or(false)
+        });
+        assert!(bfs_has_self, "BFS must find A reachable from A in cyclic graph");
+
+        // IDDFS must also find paths
+        let target = MediaUrn::from_string("media:a").unwrap();
+        let iddfs_paths = graph.find_paths_to_exact_target(&source, &target, false, 5, 100);
+        assert!(
+            !iddfs_paths.is_empty(),
+            "IDDFS must find round-trip paths when BFS says target is reachable. BFS found {} targets including self, IDDFS found 0 paths.",
+            bfs_targets.len()
+        );
+
+        // Shortest path should be 3 steps (A→B→C→A)
+        let shortest = iddfs_paths.iter().min_by_key(|p| p.total_steps).unwrap();
+        assert_eq!(shortest.total_steps, 3);
+    }
+
+    // TEST1293: IDDFS round-trip does not produce paths with 0 cap steps.
+    // Identity-only round trips (no real transformation) must be excluded.
+    #[test]
+    fn test1293_roundtrip_requires_cap_steps() {
+        let mut graph = LiveCapGraph::new();
+
+        // Only one direction — no round trip possible
+        graph.add_cap(&make_test_cap("media:a", "media:b", "a_to_b", "A to B"));
+
+        let source = MediaUrn::from_string("media:a").unwrap();
+        let target = MediaUrn::from_string("media:a").unwrap();
+
+        let paths = graph.find_paths_to_exact_target(&source, &target, false, 5, 100);
+        assert!(
+            paths.is_empty(),
+            "No round-trip should exist when there's no return edge. Got {} paths.",
+            paths.len()
+        );
     }
 }
