@@ -1924,8 +1924,8 @@ impl FilePathContext {
     fn resolve_stdin_urn(&self, file_path_media_urn: &str) -> Option<String> {
         let manifest = self.manifest.as_ref()?;
         let cap_def = manifest
-            .caps
-            .iter()
+            .all_caps()
+            .into_iter()
             .find(|c| c.urn.to_string() == self.cap_urn)?;
         let incoming = crate::MediaUrn::from_string(file_path_media_urn).ok()?;
         let arg_def = cap_def.args.iter().find(|a| {

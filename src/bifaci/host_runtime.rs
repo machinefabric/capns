@@ -2037,8 +2037,8 @@ fn parse_caps_from_manifest(manifest: &[u8]) -> Result<Vec<crate::Cap>, AsyncHos
     // Verify CAP_IDENTITY is declared — mandatory for every cartridge
     let identity_urn =
         CapUrn::from_string(CAP_IDENTITY).expect("BUG: CAP_IDENTITY constant is invalid");
-    let has_identity = manifest_obj
-        .caps
+    let all_caps = manifest_obj.all_caps();
+    let has_identity = all_caps
         .iter()
         .any(|cap| identity_urn.conforms_to(&cap.urn));
     if !has_identity {
@@ -2048,8 +2048,8 @@ fn parse_caps_from_manifest(manifest: &[u8]) -> Result<Vec<crate::Cap>, AsyncHos
         )));
     }
 
-    // Return the Cap objects directly
-    Ok(manifest_obj.caps)
+    // Return all Cap objects from all cap groups
+    Ok(all_caps.into_iter().cloned().collect())
 }
 
 // =============================================================================

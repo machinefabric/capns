@@ -878,7 +878,7 @@ This catalog lists all tests in the CapDag (Rust) codebase.
 | test974 | `test974_sequence_is_not_array` | TEST974: CBOR sequence is NOT a CBOR array — split_cbor_array rejects a sequence | src/orchestrator/cbor_util.rs:489 |
 | test975 | `test975_single_value_sequence` | TEST975: split_cbor_sequence works on data that is also a valid CBOR array (single top-level value) | src/orchestrator/cbor_util.rs:507 |
 | test976 | `test976_cap_graph_find_best_path` | TEST976: CapGraph::find_best_path returns highest-specificity path over shortest | src/urn/cap_matrix.rs:2022 |
-| test977 | `test977_os_files_excluded_integration` | TEST977: OS files excluded in resolve_paths | src/input_resolver/resolver.rs:524 |
+| test977 | `test977_os_files_excluded_integration` | TEST977: OS files excluded in resolve_paths | src/input_resolver/resolver.rs:532 |
 | test984 | `test984_pdf_thumbnail_to_gguf_describe_fanin` | / TEST050: PDF thumbnail to GGUF describe with model_spec fan-in / Flow: CHAIN + FAN-IN (thumbnail and model_spec both feed into description) / Tests: Multiple inputs converging on single output node | tests/cartridge_scenarios.rs:3083 |
 | test985 | `test985_audio_transcribe_to_embed` | / TEST051: Audio transcription (single cap test for whisper) / Flow: single cap / Tests: candlecartridge transcribe cap | tests/cartridge_scenarios.rs:3136 |
 | test986 | `test986_pdf_fanout_with_chain` | / TEST052: PDF fan-out with chain: metadata + outline + thumbnail → image embedding / Flow: FAN-OUT (3 outputs) + CHAIN (thumbnail → embedding) / Tests: Single input fanning out with one branch continuing to ML | tests/cartridge_scenarios.rs:3186 |
@@ -956,11 +956,11 @@ This catalog lists all tests in the CapDag (Rust) codebase.
 | test1070 | `test1070_pdf_thumbnail_to_image_embedding` | TEST015: Cross-cartridge chain: PDF thumbnail piped to CLIP image embedding | tests/cartridge_scenarios.rs:1023 |
 | test1071 | `test1071_text_document_intelligence` | TEST017: Markdown fan-out produces metadata, outline, and thumbnail | tests/cartridge_scenarios.rs:1148 |
 | test1072 | `test1072_multi_format_document_processing` | TEST018: Parallel processing of PDF and markdown through independent fan-outs | tests/cartridge_scenarios.rs:1199 |
-| test1090 | `test1090_single_file_scalar` | TEST1090: 1 file → is_sequence=false | src/input_resolver/resolver.rs:473 |
-| test1092 | `test1092_two_files` | TEST1092: 2 files → is_sequence=true | src/input_resolver/resolver.rs:485 |
-| test1093 | `test1093_dir_single_file` | TEST1093: 1 dir with 1 file → is_sequence=false | src/input_resolver/resolver.rs:498 |
-| test1094 | `test1094_dir_multiple_files` | TEST1094: 1 dir with 3 files → is_sequence=true | src/input_resolver/resolver.rs:510 |
-| test1098 | `test1098_extension_based_pdf` | TEST1098: Extension-based detection picks up pdf tag for .pdf files | src/input_resolver/resolver.rs:537 |
+| test1090 | `test1090_single_file_scalar` | TEST1090: 1 file → is_sequence=false | src/input_resolver/resolver.rs:481 |
+| test1092 | `test1092_two_files` | TEST1092: 2 files → is_sequence=true | src/input_resolver/resolver.rs:493 |
+| test1093 | `test1093_dir_single_file` | TEST1093: 1 dir with 1 file → is_sequence=false | src/input_resolver/resolver.rs:506 |
+| test1094 | `test1094_dir_multiple_files` | TEST1094: 1 dir with 3 files → is_sequence=true | src/input_resolver/resolver.rs:518 |
+| test1098 | `test1098_extension_based_pdf` | TEST1098: Extension-based detection picks up pdf tag for .pdf files | src/input_resolver/resolver.rs:545 |
 | test1100 | `test1100_cap_urn_normalizes_media_urn_tag_order` | TEST1100: Tests that CapUrn normalizes media URN tags to canonical order This is the root cause fix for caps not matching when cartridges report URNs with different tag ordering than the registry (e.g., "record;textable" vs "textable;record") | src/planner/plan_builder.rs:1301 |
 | test1103 | `test1103_is_dispatchable_uses_correct_directionality` | TEST1103: Tests that is_dispatchable has correct directionality The available cap (provider) must be dispatchable for the requested cap (request). This tests the directionality: provider.is_dispatchable(&request) NOTE: This now tests CapUrn::is_dispatchable directly, not via MachinePlanBuilder | src/planner/plan_builder.rs:1334 |
 | test1104 | `test1104_is_dispatchable_rejects_non_dispatchable` | TEST1104: Tests that is_dispatchable rejects when provider cannot dispatch request | src/planner/plan_builder.rs:1357 |
@@ -1081,10 +1081,10 @@ This catalog lists all tests in the CapDag (Rust) codebase.
 | test1228 | `test1228_value_adapter_refine_match` | TEST1228: Value adapters can append a more specific marker when both base URN and value match. | src/input_resolver/value_adapter.rs:78 |
 | test1229 | `test1229_value_adapter_refine_no_match_base` | TEST1229: Value adapters return no refinement when the base media URN is outside their domain. | src/input_resolver/value_adapter.rs:91 |
 | test1230 | `test1230_value_adapter_refine_no_match_value` | TEST1230: Value adapters return no refinement when the inspected value does not match. | src/input_resolver/value_adapter.rs:99 |
-| test1235 | `test1235_disc_1_plain_text_eliminates_model_specs` | TEST1235: Plain text without model-spec syntax eliminates model-spec TXT candidates. | src/input_resolver/resolver.rs:558 |
-| test1236 | `test1236_disc_2_model_spec_content_survives_pattern` | TEST1236: Colon-delimited model spec text survives TXT candidate discrimination. | src/input_resolver/resolver.rs:578 |
-| test1237 | `test1237_disc_5_empty_candidates` | TEST1237: Empty candidates → empty result | src/input_resolver/resolver.rs:596 |
-| test1238 | `test1238_disc_6_unknown_urn_survives` | TEST1238: Unknown URN survives discrimination | src/input_resolver/resolver.rs:605 |
+| test1235 | `test1235_disc_1_plain_text_eliminates_model_specs` | TEST1235: Plain text without model-spec syntax eliminates model-spec TXT candidates. | src/input_resolver/resolver.rs:566 |
+| test1236 | `test1236_disc_2_model_spec_content_survives_pattern` | TEST1236: Colon-delimited model spec text survives TXT candidate discrimination. | src/input_resolver/resolver.rs:586 |
+| test1237 | `test1237_disc_5_empty_candidates` | TEST1237: Empty candidates → empty result | src/input_resolver/resolver.rs:604 |
+| test1238 | `test1238_disc_6_unknown_urn_survives` | TEST1238: Unknown URN survives discrimination | src/input_resolver/resolver.rs:613 |
 | test1243 | `test1243_roundtrip_serialize_deserialize` | TEST1243: Cartridge JSON round-trips through serde without losing required fields. | src/bifaci/cartridge_json.rs:239 |
 | test1244 | `test1244_dev_install_omits_optional_fields` | TEST1244: Dev-installed cartridge metadata omits registry-only package fields when serialized. | src/bifaci/cartridge_json.rs:263 |
 | test1245 | `test1245_read_from_dir_validates_entry_exists` | TEST1245: Reading cartridge metadata fails when the declared entry binary is missing. | src/bifaci/cartridge_json.rs:283 |
@@ -1127,10 +1127,10 @@ This catalog lists all tests in the CapDag (Rust) codebase.
 | test1282 | `test1282_adapter_selection_auto_registered` | TEST1282: AdapterSelectionOp is auto-registered by CartridgeRuntime | src/bifaci/cartridge_runtime.rs:7086 |
 | test1283 | `test1283_adapter_selection_custom_override` | TEST1283: Custom adapter selection Op overrides the default | src/bifaci/cartridge_runtime.rs:7097 |
 | test1284 | `test1284_cap_group_with_adapter_urns` | TEST1284: Cap group with adapter URNs serializes and deserializes correctly | src/bifaci/manifest.rs:343 |
-| test1285 | `test1285_confirmed_no_adapters_fails` | TEST1285: detect_file_confirmed fails when no adapters are registered for the extension | src/input_resolver/resolver.rs:654 |
-| test1286 | `test1286_confirmed_adapter_returns_urns` | TEST1286: detect_file_confirmed succeeds when adapter returns URNs | src/input_resolver/resolver.rs:677 |
-| test1287 | `test1287_confirmed_all_adapters_no_match` | TEST1287: detect_file_confirmed fails when all adapters return empty END (no match) | src/input_resolver/resolver.rs:711 |
-| test1288 | `test1288_structure_from_marker_tags` | TEST1288: structure_from_marker_tags correctly maps tag combinations to ContentStructure | src/input_resolver/resolver.rs:618 |
+| test1285 | `test1285_confirmed_no_adapters_fails` | TEST1285: detect_file_confirmed fails when no adapters are registered for the extension | src/input_resolver/resolver.rs:662 |
+| test1286 | `test1286_confirmed_adapter_returns_urns` | TEST1286: detect_file_confirmed succeeds when adapter returns URNs | src/input_resolver/resolver.rs:685 |
+| test1287 | `test1287_confirmed_all_adapters_no_match` | TEST1287: detect_file_confirmed fails when all adapters return empty END (no match) | src/input_resolver/resolver.rs:719 |
+| test1288 | `test1288_structure_from_marker_tags` | TEST1288: structure_from_marker_tags correctly maps tag combinations to ContentStructure | src/input_resolver/resolver.rs:626 |
 ---
 
 *Generated from CapDag (Rust) source tree*

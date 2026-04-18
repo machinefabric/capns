@@ -303,13 +303,14 @@ pub async fn detect_file_confirmed(
     let adapters = adapter_registry.find_adapters_for_extension(ext_str);
 
     if adapters.is_empty() {
-        return Err(InputResolverError::InspectionFailed(format!(
-            "No content-inspection adapter registered for extension '.{}'. \
-             File '{}' cannot be identified — a cartridge must register an adapter \
-             for this file type.",
-            ext_str,
-            path.display()
-        )));
+        return Err(InputResolverError::InspectionFailed {
+            path: path.to_path_buf(),
+            reason: format!(
+                "No content-inspection adapter registered for extension '.{}'. \
+                 A cartridge must register an adapter for this file type.",
+                ext_str,
+            ),
+        });
     }
 
     // Step 3: Invoke each cartridge's adapter-selection cap
@@ -330,13 +331,15 @@ pub async fn detect_file_confirmed(
     // Step 4: All cartridges returned empty END — none matched
     if all_returned_urns.is_empty() {
         let adapter_names: Vec<&str> = adapters.iter().map(|(id, _)| id.as_str()).collect();
-        return Err(InputResolverError::InspectionFailed(format!(
-            "All registered adapters returned no match for file '{}' (extension '.{}'). \
-             Adapters consulted: {:?}. The file content does not match any registered media type.",
-            path.display(),
-            ext_str,
-            adapter_names,
-        )));
+        return Err(InputResolverError::InspectionFailed {
+            path: path.to_path_buf(),
+            reason: format!(
+                "All registered adapters returned no match (extension '.{}'). \
+                 Adapters consulted: {:?}. The file content does not match any registered media type.",
+                ext_str,
+                adapter_names,
+            ),
+        });
     }
 
     // Step 5: Validate and parse returned URNs
@@ -344,10 +347,13 @@ pub async fn detect_file_confirmed(
 
     for (urn_str, cartridge_id) in &all_returned_urns {
         let urn = MediaUrn::from_string(urn_str).map_err(|e| {
-            InputResolverError::InspectionFailed(format!(
-                "Cartridge '{}' returned invalid media URN '{}': {}",
-                cartridge_id, urn_str, e
-            ))
+            InputResolverError::InspectionFailed {
+                path: path.to_path_buf(),
+                reason: format!(
+                    "Cartridge '{}' returned invalid media URN '{}': {}",
+                    cartridge_id, urn_str, e
+                ),
+            }
         })?;
         parsed_urns.push((urn, urn_str.clone(), cartridge_id.clone()));
     }
@@ -384,14 +390,16 @@ pub async fn detect_file_confirmed(
                 .iter()
                 .map(|(_, urn_str, cid)| format!("'{}' (from cartridge '{}')", urn_str, cid))
                 .collect();
-            return Err(InputResolverError::InspectionFailed(format!(
-                "Ambiguous adapter selection for '{}': multiple adapters returned URNs \
-                 at the same specificity level with no conformance relationship: {}. \
-                 This indicates a registration conflict that should have been caught \
-                 at cap group registration time.",
-                path.display(),
-                tie_descs.join(", "),
-            )));
+            return Err(InputResolverError::InspectionFailed {
+                path: path.to_path_buf(),
+                reason: format!(
+                    "Ambiguous adapter selection: multiple adapters returned URNs \
+                     at the same specificity level with no conformance relationship: {}. \
+                     This indicates a registration conflict that should have been caught \
+                     at cap group registration time.",
+                    tie_descs.join(", "),
+                ),
+            });
         }
     }
 
