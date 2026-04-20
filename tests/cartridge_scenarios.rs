@@ -634,7 +634,39 @@ fn require_binaries(names: &[&str]) -> Vec<PathBuf> {
 }
 
 // =============================================================================
-// Test Fixture Generators
+// Test Data
+// =============================================================================
+
+/// Path to test data files (real files from automation/test_files).
+fn test_data_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+}
+
+/// Load a real multi-page PDF (chain_test_3page.pdf from automation test data).
+fn load_test_pdf() -> Vec<u8> {
+    let path = test_data_dir().join("chain_test_3page.pdf");
+    std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("Failed to read test PDF {}: {}", path.display(), e))
+}
+
+/// Load a real PNG image (cat photo from automation vision datasets).
+fn load_test_png() -> Vec<u8> {
+    let path = test_data_dir().join("cat.png");
+    std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("Failed to read test PNG {}: {}", path.display(), e))
+}
+
+/// Load a real WAV audio file (speech.wav from automation test data).
+fn load_test_wav() -> Vec<u8> {
+    let path = test_data_dir().join("speech.wav");
+    std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("Failed to read test WAV {}: {}", path.display(), e))
+}
+
+// =============================================================================
+// Synthetic Fixture Generators (for tests that need specific dimensions/content)
 // =============================================================================
 
 /// Generate a minimal valid PDF with one blank page.
@@ -1015,7 +1047,7 @@ async fn test1069_pdf_document_intelligence() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -1068,7 +1100,7 @@ async fn test1070_pdf_thumbnail_to_image_embedding() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -1124,7 +1156,7 @@ async fn test881_pdf_full_intelligence_pipeline() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -1223,7 +1255,7 @@ async fn test1072_multi_format_document_processing() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
     inputs.insert(
         "md_input".to_string(),
@@ -1437,7 +1469,7 @@ async fn test882_candle_describe_image() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "image_input".to_string(),
-        NodeData::Bytes(generate_test_png(32, 32, 255, 0, 0)), // 32x32 red image
+        NodeData::Bytes(load_test_png()),
     );
 
     let outputs = execute_dag(
@@ -1484,7 +1516,7 @@ async fn test1032_audio_transcription() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "audio_input".to_string(),
-        NodeData::Bytes(generate_test_wav()),
+        NodeData::Bytes(load_test_wav()),
     );
 
     let outputs = execute_dag(
@@ -1528,7 +1560,7 @@ async fn test1034_pdf_complete_analysis() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -1661,7 +1693,7 @@ async fn test1037_two_format_full_analysis() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
     inputs.insert(
         "md_input".to_string(),
@@ -1732,7 +1764,7 @@ async fn test1038_model_plus_pdf_combined() {
     );
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -1798,7 +1830,7 @@ async fn test1040_three_cartridge_pipeline() {
     );
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
     inputs.insert(
         "md_input".to_string(),
@@ -2123,8 +2155,10 @@ async fn test1046_model_list_models() {
 
     let (_temp, cartridge_dir, dev_bins) = setup_test_env(dev_binaries);
     let mut inputs = HashMap::new();
-    // Empty JSON object: list all models without filtering
-    inputs.insert("repo_input".to_string(), NodeData::Bytes(b"{}".to_vec()));
+    inputs.insert(
+        "repo_input".to_string(),
+        NodeData::Text("huggingface".to_string()),
+    );
 
     let outputs = execute_dag(
         &graph,
@@ -2557,7 +2591,7 @@ async fn test1057_gguf_describe_image() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "image_input".to_string(),
-        NodeData::Bytes(generate_test_png(64, 64, 100, 149, 237)), // blue image
+        NodeData::Bytes(load_test_png()),
     );
 
     let outputs = execute_dag(
@@ -2609,7 +2643,7 @@ async fn test1058_pdf_thumbnail_to_gguf_vision() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -2803,7 +2837,7 @@ async fn test1061_mlx_describe_image() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "image_input".to_string(),
-        NodeData::Bytes(generate_test_png(100, 100, 255, 0, 0)),
+        NodeData::Bytes(load_test_png()),
     );
 
     let outputs = execute_dag(
@@ -2988,7 +3022,7 @@ async fn test1066_pdf_to_thumbnail_to_describe_to_embed() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -3043,7 +3077,7 @@ async fn test984_pdf_thumbnail_to_gguf_describe_fanin() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -3091,7 +3125,7 @@ async fn test985_audio_transcribe_to_embed() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "audio_input".to_string(),
-        NodeData::Bytes(generate_test_wav()),
+        NodeData::Bytes(load_test_wav()),
     );
 
     let outputs = execute_dag(
@@ -3142,7 +3176,7 @@ async fn test986_pdf_fanout_with_chain() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -3200,7 +3234,7 @@ async fn test987_multi_format_parallel_chains() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
     inputs.insert(
         "md_input".to_string(),
@@ -3257,7 +3291,7 @@ async fn test988_deep_chain_with_parallel() {
     let mut inputs = HashMap::new();
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
@@ -3320,7 +3354,7 @@ async fn test989_five_cartridge_chain() {
     );
     inputs.insert(
         "pdf_input".to_string(),
-        NodeData::Bytes(generate_test_pdf()),
+        NodeData::Bytes(load_test_pdf()),
     );
 
     let outputs = execute_dag(
