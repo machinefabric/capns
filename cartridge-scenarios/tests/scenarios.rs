@@ -278,442 +278,85 @@ fn standard_registry() -> Arc<CapRegistry> {
 // Binary Discovery and Auto-Build
 // =============================================================================
 
-/// Get the cartridge directory path.
+/// Locate the project-root `dx` dispatcher. The CARGO_MANIFEST_DIR for
+/// cartridge-scenarios is `<root>/capdag/cartridge-scenarios`, so `dx` sits
+/// two directories above.
+fn dx_command() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|root| root.join("dx"))
+        .expect("cartridge-scenarios crate must live under <root>/capdag/")
+}
+
+/// Ensure a cartridge binary exists and is up-to-date, delegating all of:
+/// project-type detection (Cargo.toml / go.mod / Makefile / Package.swift),
+/// build-output directory layout, Metal/GPU feature handling, source-freshness
+/// comparison, and the actual compile command (`cargo build` / `go build` /
+/// `xcodebuild` / `swift build`) to the project-root `dx cartridge` command.
 ///
-/// This crate lives at `machinefabric/capdag/cartridge-scenarios`, so:
-/// - `testcartridge` is at `../testcartridge` (sibling under capdag/)
-/// - all other cartridges live at `../../{name}` (machinefabric root)
-fn cartridge_dir(name: &str) -> Option<PathBuf> {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").ok()?;
-    let manifest_path = PathBuf::from(&manifest_dir);
-    let capdag_root = manifest_path.parent()?; // capdag/
-    let project_root = capdag_root.parent()?; // machinefabric/
+/// That keeps every consumer — `dx cartridge` on the CLI, this integration
+/// test harness, any future tool — on the single source of truth for "how is
+/// cartridge X built and where does its binary land?".
+///
+/// `dx cartridge <name>` is a no-op when the binary is already up-to-date, so
+/// invoking it unconditionally costs nothing beyond the freshness check.
+fn ensure_cartridge_binary(name: &str) -> Result<PathBuf, String> {
+    let dx = dx_command();
 
-    if name == "testcartridge" {
-        let dir = capdag_root.join(name);
-        if dir.exists() {
-            return Some(dir);
-        }
-    }
-
-    let dir = project_root.join(name);
-    if dir.exists() {
-        Some(dir)
-    } else {
-        None
-    }
-}
-
-/// Check if a binary was built with Metal support (macOS only)
-#[cfg(target_os = "macos")]
-fn has_metal_support(binary_path: &PathBuf) -> bool {
-    // Use otool to check if binary links against Metal.framework
-    let output = Command::new("otool").arg("-L").arg(binary_path).output();
-
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.contains("Metal.framework")
-        }
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn has_metal_support(_binary_path: &PathBuf) -> bool {
-    false
-}
-
-/// Check if a cartridge needs rebuilding by comparing source modification times
-/// or if GPU features are missing
-fn needs_rebuild(name: &str, binary_path: &PathBuf) -> bool {
-    // First check if this is a GPU cartridge that needs metal but doesn't have it
-    if GPU_CARTRIDGES.contains(&name) {
-        if let Some(feature) = gpu_feature_for_platform() {
-            if feature == "metal" && !has_metal_support(binary_path) {
-                eprintln!(
-                    "[CartridgeTest] {} binary missing Metal GPU support, will rebuild",
-                    name
-                );
-                return true;
-            }
-        }
-    }
-
-    let binary_mtime = match binary_path.metadata().and_then(|m| m.modified()) {
-        Ok(t) => t,
-        Err(_) => return true, // Can't read binary metadata, rebuild
-    };
-
-    let cart_dir = match cartridge_dir(name) {
-        Some(d) => d,
-        None => return false, // No source dir, can't check
-    };
-
-    // Check Cargo.toml
-    let cargo_toml = cart_dir.join("Cargo.toml");
-    if let Ok(meta) = cargo_toml.metadata() {
-        if let Ok(mtime) = meta.modified() {
-            if mtime > binary_mtime {
-                eprintln!("[CartridgeTest] {} Cargo.toml is newer than binary", name);
-                return true;
-            }
-        }
-    }
-
-    // Check src/ directory recursively
-    let src_dir = cart_dir.join("src");
-    if src_dir.exists() {
-        if let Ok(entries) = walkdir_check(&src_dir, &binary_mtime) {
-            if entries {
-                eprintln!("[CartridgeTest] {} src/ has files newer than binary", name);
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Check if any file in a directory is newer than the reference time
-fn walkdir_check(dir: &PathBuf, reference: &std::time::SystemTime) -> std::io::Result<bool> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            if walkdir_check(&path, reference)? {
-                return Ok(true);
-            }
-        } else if path.is_file() {
-            if let Ok(meta) = path.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    if mtime > *reference {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Cartridges that support GPU acceleration via metal/cuda features
-const GPU_CARTRIDGES: &[&str] = &["candlecartridge", "ggufcartridge"];
-
-/// Check if a cartridge has a specific feature defined in its Cargo.toml
-fn cartridge_has_feature(name: &str, feature: &str) -> bool {
-    let cart_dir = match cartridge_dir(name) {
-        Some(d) => d,
-        None => return false,
-    };
-
-    let cargo_toml = cart_dir.join("Cargo.toml");
-    let content = match std::fs::read_to_string(&cargo_toml) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-
-    // Look for [features] section and check if the feature is defined
-    let mut in_features_section = false;
-    for line in content.lines() {
-        let line = line.trim();
-        if line == "[features]" {
-            in_features_section = true;
-            continue;
-        }
-        if in_features_section {
-            if line.starts_with('[') {
-                // New section, stop looking
-                break;
-            }
-            // Check if this line defines the feature we're looking for
-            if line.starts_with(feature) && (line.contains('=') || line.contains(" =")) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Get GPU feature for the current platform
-fn gpu_feature_for_platform() -> Option<&'static str> {
-    if cfg!(target_os = "macos") {
-        Some("metal")
-    } else if cfg!(target_os = "linux") || cfg!(target_os = "windows") {
-        // On Linux/Windows, try CUDA if available
-        // For now, we don't auto-detect CUDA, so return None
-        // Users can set CAPDAG_GPU_FEATURE=cuda to enable
-        std::env::var("CAPDAG_GPU_FEATURE")
-            .ok()
-            .and_then(|v| if v == "cuda" { Some("cuda") } else { None })
-            .or(None)
-    } else {
-        None
-    }
-}
-
-/// Returns true if the cartridge is a Swift package (has Package.swift, no Cargo.toml).
-fn is_swift_cartridge(name: &str) -> bool {
-    if let Some(dir) = cartridge_dir(name) {
-        dir.join("Package.swift").exists() && !dir.join("Cargo.toml").exists()
-    } else {
-        false
-    }
-}
-
-/// Returns true if a Swift cartridge must be built with `xcodebuild` rather
-/// than `swift build`. Indicated by a `.use-xcodebuild` marker file at the
-/// package root. Required for packages whose dependencies ship Metal shaders
-/// (e.g., MLX) — `swift build` doesn't compile/bundle `.metallib` files,
-/// causing runtime failures.
-fn needs_xcodebuild(name: &str) -> bool {
-    cartridge_dir(name)
-        .map(|d| d.join(".use-xcodebuild").exists())
-        .unwrap_or(false)
-}
-
-/// Parse extra `KEY=VALUE` xcodebuild build settings from a package's
-/// `.use-xcodebuild` marker file. Blank lines and `#`-prefixed lines are
-/// ignored. These are the Swift equivalent of Rust's `--features` flag.
-fn xcodebuild_extra_settings(name: &str) -> Vec<String> {
-    let Some(dir) = cartridge_dir(name) else {
-        return Vec::new();
-    };
-    let path = dir.join(".use-xcodebuild");
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    contents
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
-        .collect()
-}
-
-/// Build a cartridge in debug mode with appropriate features
-fn build_cartridge(name: &str) -> Result<(), String> {
-    let cart_dir =
-        cartridge_dir(name).ok_or_else(|| format!("Cartridge directory not found for {}", name))?;
-
-    // Swift cartridges: default to `swift build`. Packages that ship a
-    // `.use-xcodebuild` marker are built via xcodebuild instead, which
-    // compiles and bundles Metal shader libraries (.metallib) required by
-    // MLX. `swift build` does not emit metallibs for SwiftPM dependencies.
-    if is_swift_cartridge(name) {
-        if needs_xcodebuild(name) {
-            let derived = cart_dir.join(".build").join("xcode");
-            let extra_settings = xcodebuild_extra_settings(name);
-            eprintln!("[CartridgeTest] Building {} (Swift) via xcodebuild...", name);
-            eprintln!(
-                "[CartridgeTest]   Running: xcodebuild build -scheme {} -configuration Debug -derivedDataPath {:?} -destination generic/platform=macOS ONLY_ACTIVE_ARCH=YES{}",
-                name,
-                derived,
-                if extra_settings.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}", extra_settings.join(" "))
-                }
-            );
-            eprintln!("[CartridgeTest]   Directory: {:?}", cart_dir);
-            let output = Command::new("xcodebuild")
-                .arg("build")
-                .args([
-                    "-scheme",
-                    name,
-                    "-configuration",
-                    "Debug",
-                    "-derivedDataPath",
-                ])
-                .arg(&derived)
-                .args([
-                    "-destination",
-                    "generic/platform=macOS",
-                    "ONLY_ACTIVE_ARCH=YES",
-                ])
-                .args(&extra_settings)
-                .current_dir(&cart_dir)
-                .output()
-                .map_err(|e| format!("Failed to run xcodebuild for {}: {}", name, e))?;
-            if !output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                for line in stdout.lines().chain(stderr.lines()) {
-                    eprintln!("[CartridgeTest]   {}", line);
-                }
-                return Err(format!(
-                    "Failed to build {} (xcodebuild, exit code: {:?})",
-                    name,
-                    output.status.code()
-                ));
-            }
-            eprintln!("[CartridgeTest] Successfully built {}", name);
-            return Ok(());
-        }
-
-        eprintln!("[CartridgeTest] Building {} (Swift) in debug mode...", name);
-        eprintln!("[CartridgeTest]   Running: swift build");
-        eprintln!("[CartridgeTest]   Directory: {:?}", cart_dir);
-        let output = Command::new("swift")
-            .arg("build")
-            .current_dir(&cart_dir)
-            .output()
-            .map_err(|e| format!("Failed to run swift build for {}: {}", name, e))?;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.trim().is_empty() {
-            for line in stderr.lines() {
-                eprintln!("[CartridgeTest]   {}", line);
-            }
-        }
-        if !output.status.success() {
-            return Err(format!(
-                "Failed to build {} (swift, exit code: {:?})",
-                name,
-                output.status.code()
-            ));
-        }
-        eprintln!("[CartridgeTest] Successfully built {}", name);
-        return Ok(());
-    }
-
-    // Determine if this cartridge supports GPU and what feature to use
-    // Only use the feature if the cartridge actually defines it in Cargo.toml
-    let gpu_feature = if GPU_CARTRIDGES.contains(&name) {
-        gpu_feature_for_platform().filter(|&feature| cartridge_has_feature(name, feature))
-    } else {
-        None
-    };
-
-    let mut cmd = Command::new("cargo");
-    cmd.arg("build").current_dir(&cart_dir);
-
-    if let Some(feature) = gpu_feature {
-        cmd.arg("--features").arg(feature);
-        eprintln!(
-            "[CartridgeTest] Building {} in debug mode with {} GPU acceleration...",
-            name, feature
-        );
-        eprintln!(
-            "[CartridgeTest]   Running: cargo build --features {}",
-            feature
-        );
-    } else {
-        eprintln!("[CartridgeTest] Building {} in debug mode...", name);
-        eprintln!("[CartridgeTest]   Running: cargo build");
-    }
-    eprintln!("[CartridgeTest]   Directory: {:?}", cart_dir);
-
-    let output = cmd
+    // Step 1: ask the dispatcher where the binary should live, in the same
+    // project-type-aware way it would build it. No build happens here.
+    let path_out = Command::new(&dx)
+        .args(["cartridge", "--debug", "--print-binary-path", name])
         .output()
-        .map_err(|e| format!("Failed to run cargo build for {}: {}", name, e))?;
-
-    // Print stdout if any
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.trim().is_empty() {
-        for line in stdout.lines() {
-            eprintln!("[CartridgeTest]   {}", line);
-        }
-    }
-
-    // Print stderr (cargo output goes here)
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.trim().is_empty() {
-        for line in stderr.lines() {
-            eprintln!("[CartridgeTest]   {}", line);
-        }
-    }
-
-    if !output.status.success() {
+        .map_err(|e| format!("Failed to run 'dx cartridge --print-binary-path {}': {}", name, e))?;
+    if !path_out.status.success() {
+        let err = String::from_utf8_lossy(&path_out.stderr);
         return Err(format!(
-            "Failed to build {} (exit code: {:?})",
+            "dx cartridge --print-binary-path {} failed (exit {:?}): {}",
             name,
-            output.status.code()
+            path_out.status.code(),
+            err.trim()
+        ));
+    }
+    let binary_path = String::from_utf8_lossy(&path_out.stdout)
+        .lines()
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("dx cartridge printed no binary path for {}", name))?;
+    let binary_path = PathBuf::from(binary_path);
+
+    // Step 2: build it. `dx cartridge` skips the compile step internally when
+    // sources are unchanged, and handles Swift/Go/Rust/Makefile uniformly —
+    // including the `.use-xcodebuild` marker, Metal support checks, and
+    // feature-aware cargo flags.
+    eprintln!(
+        "[CartridgeTest] dx cartridge --debug {} (builds if sources are newer)",
+        name
+    );
+    let build = Command::new(&dx)
+        .args(["cartridge", "--debug", name])
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| format!("Failed to run 'dx cartridge {}': {}", name, e))?;
+    if !build.success() {
+        return Err(format!(
+            "dx cartridge --debug {} failed with exit {:?}",
+            name,
+            build.code()
         ));
     }
 
-    eprintln!("[CartridgeTest] Successfully built {}", name);
-    Ok(())
-}
-
-/// Find the most recent debug binary for a cartridge.
-/// Looks for both unversioned (e.g., `pdfcartridge`) and versioned (e.g., `pdfcartridge-0.93.6217`)
-/// names in the cartridge's `target/debug/` directory.
-fn find_cartridge_binary(name: &str) -> Option<PathBuf> {
-    let cart_root = cartridge_dir(name)?;
-
-    // Swift packages: xcodebuild output dir when `.use-xcodebuild` is set,
-    // otherwise the standard SwiftPM .build/debug directory. Rust uses
-    // target/debug/.
-    let bin_dir = if is_swift_cartridge(name) {
-        if needs_xcodebuild(name) {
-            cart_root
-                .join(".build")
-                .join("xcode")
-                .join("Build")
-                .join("Products")
-                .join("Debug")
-        } else {
-            cart_root.join(".build").join("debug")
-        }
-    } else {
-        cart_root.join("target").join("debug")
-    };
-
-    if !bin_dir.exists() {
-        return None;
+    if !binary_path.is_file() {
+        return Err(format!(
+            "dx cartridge --debug {} reported success but binary not found at {}",
+            name,
+            binary_path.display()
+        ));
     }
-
-    // Try exact name first
-    let exact = bin_dir.join(name);
-    if exact.is_file() {
-        return Some(exact);
-    }
-
-    // Try versioned names: find most recent file matching <name>-*
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&bin_dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.file_name().and_then(|f| f.to_str()).map_or(false, |f| {
-                    f.starts_with(&format!("{}-", name))
-                        && !f.ends_with(".d")
-                        && !f.ends_with(".dSYM")
-                })
-        })
-        .collect();
-
-    // Sort by modification time, most recent first
-    candidates.sort_by(|a, b| {
-        b.metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .cmp(&a.metadata().and_then(|m| m.modified()).ok())
-    });
-
-    candidates.into_iter().next()
-}
-
-/// Ensure a cartridge binary exists and is up-to-date, building if necessary
-fn ensure_cartridge_binary(name: &str) -> Result<PathBuf, String> {
-    // First check if binary exists
-    let existing = find_cartridge_binary(name);
-
-    let needs_build = match &existing {
-        None => {
-            eprintln!("[CartridgeTest] {} binary not found, will build", name);
-            true
-        }
-        Some(path) => needs_rebuild(name, path),
-    };
-
-    if needs_build {
-        build_cartridge(name)?;
-    }
-
-    // Now find the binary (should exist after build)
-    find_cartridge_binary(name).ok_or_else(|| format!("{} binary not found after build", name))
+    Ok(binary_path)
 }
 
 /// Require specific cartridge binaries. Builds them if missing or outdated.
