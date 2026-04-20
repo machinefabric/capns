@@ -134,9 +134,6 @@ pub const PROFILE_CAPDAG_STATUS_OUTPUT: &str = "https://capdag.com/schema/status
 pub const PROFILE_CAPDAG_CONTENTS_OUTPUT: &str = "https://capdag.com/schema/contents-output";
 /// Profile URL for embeddings generate output
 pub const PROFILE_CAPDAG_GENERATE_OUTPUT: &str = "https://capdag.com/schema/embeddings";
-/// Profile URL for structured query output
-pub const PROFILE_CAPDAG_STRUCTURED_QUERY_OUTPUT: &str =
-    "https://capdag.com/schema/structured-query-output";
 /// Profile URL for questions array
 pub const PROFILE_CAPDAG_QUESTIONS_ARRAY: &str = "https://capdag.com/schema/questions-array";
 

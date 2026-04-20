@@ -436,17 +436,21 @@ pub fn disbind_urn(input_media: &str) -> CapUrn {
 // TEXT PROCESSING URN BUILDERS
 // -----------------------------------------------------------------------------
 
-/// Build URN for structured-query capability
-/// Input uses MEDIA_JSON_SCHEMA per CATALOG: media:json;json-schema;textable;record
-pub fn structured_query_urn(lang_code: &str) -> CapUrn {
+/// Build URN for generate-json capability.
+///
+/// Takes text content as its data-flow input and a caller-supplied JSON
+/// schema (via `--schema`), runs schema-constrained LLM generation, returns
+/// a JSON object guaranteed to validate against the schema. See
+/// `capgraph/src/caps/generate-json-en.toml` for the full contract.
+pub fn generate_json_urn(lang_code: &str) -> CapUrn {
     CapUrnBuilder::new()
-        .tag("op", "query_structured")
+        .tag("op", "generate_json")
         .tag("language", lang_code)
         .solo_tag("constrained")
-        .in_spec(MEDIA_JSON_SCHEMA)
+        .in_spec(MEDIA_STRING)
         .out_spec(MEDIA_JSON)
         .build()
-        .expect("Failed to build structured-query cap URN")
+        .expect("Failed to build generate-json cap URN")
 }
 
 /// Build URN for make-decision capability
@@ -891,12 +895,12 @@ pub async fn disbind_cap(
 // TEXT PROCESSING CAPABILITIES
 // -----------------------------------------------------------------------------
 
-/// Get structured-query cap from registry
-pub async fn structured_query_cap(
+/// Get generate-json cap from registry
+pub async fn generate_json_cap(
     registry: Arc<CapRegistry>,
     lang_code: &str,
 ) -> Result<Cap, RegistryError> {
-    let urn = structured_query_urn(lang_code);
+    let urn = generate_json_urn(lang_code);
     registry.get_cap(&urn.to_string()).await
 }
 
