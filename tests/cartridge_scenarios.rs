@@ -18,8 +18,8 @@ use std::process::Command;
 use std::sync::{Arc, LazyLock};
 use tempfile::TempDir;
 
-/// Write directly to /dev/tty, bypassing cargo test's stderr capture.
-/// Returns None if no TTY is available (e.g., CI).
+/// Open /dev/tty for live progress rendering. Returns None in environments
+/// without a TTY (e.g., CI, cargo test in the test harness).
 fn tty_writer() -> Option<std::fs::File> {
     std::fs::OpenOptions::new()
         .write(true)
@@ -27,16 +27,25 @@ fn tty_writer() -> Option<std::fs::File> {
         .ok()
 }
 
-/// Initialize tracing subscriber that writes to /dev/tty (bypasses cargo capture).
-/// Safe to call multiple times — subsequent calls silently no-op.
+/// Initialize tracing subscriber that writes to stderr so `cargo test --
+/// --nocapture` (and the test.sh `tee "$tlog"` pipeline) capture it into
+/// the integration test log file. Safe to call multiple times.
+///
+/// Default filter is verbose enough to include cartridge-stderr forwarding
+/// (`host_runtime=debug`) and peer-call routing (`relay_switch=debug`) so
+/// that cartridge scenario failures are diagnosable from the saved log
+/// alone. Override with RUST_LOG.
 fn init_tracing() {
-    if let Some(tty) = tty_writer() {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter("warn")
-            .with_target(false)
-            .with_writer(std::sync::Mutex::new(tty))
-            .try_init();
-    }
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(
+            "info,capdag::bifaci::host_runtime=debug,capdag::bifaci::relay_switch=debug,capdag::orchestrator::executor=debug",
+        )
+    });
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 /// Per-cap progress entry.
@@ -448,13 +457,96 @@ fn is_swift_cartridge(name: &str) -> bool {
     }
 }
 
+/// Returns true if a Swift cartridge must be built with `xcodebuild` rather
+/// than `swift build`. Indicated by a `.use-xcodebuild` marker file at the
+/// package root. Required for packages whose dependencies ship Metal shaders
+/// (e.g., MLX) — `swift build` doesn't compile/bundle `.metallib` files,
+/// causing runtime failures.
+fn needs_xcodebuild(name: &str) -> bool {
+    cartridge_dir(name)
+        .map(|d| d.join(".use-xcodebuild").exists())
+        .unwrap_or(false)
+}
+
+/// Parse extra `KEY=VALUE` xcodebuild build settings from a package's
+/// `.use-xcodebuild` marker file. Blank lines and `#`-prefixed lines are
+/// ignored. These are the Swift equivalent of Rust's `--features` flag.
+fn xcodebuild_extra_settings(name: &str) -> Vec<String> {
+    let Some(dir) = cartridge_dir(name) else {
+        return Vec::new();
+    };
+    let path = dir.join(".use-xcodebuild");
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect()
+}
+
 /// Build a cartridge in debug mode with appropriate features
 fn build_cartridge(name: &str) -> Result<(), String> {
     let cart_dir =
         cartridge_dir(name).ok_or_else(|| format!("Cartridge directory not found for {}", name))?;
 
-    // Swift cartridges use `swift build` instead of `cargo build`
+    // Swift cartridges: default to `swift build`. Packages that ship a
+    // `.use-xcodebuild` marker are built via xcodebuild instead, which
+    // compiles and bundles Metal shader libraries (.metallib) required by
+    // MLX. `swift build` does not emit metallibs for SwiftPM dependencies.
     if is_swift_cartridge(name) {
+        if needs_xcodebuild(name) {
+            let derived = cart_dir.join(".build").join("xcode");
+            let extra_settings = xcodebuild_extra_settings(name);
+            eprintln!("[CartridgeTest] Building {} (Swift) via xcodebuild...", name);
+            eprintln!(
+                "[CartridgeTest]   Running: xcodebuild build -scheme {} -configuration Debug -derivedDataPath {:?} -destination generic/platform=macOS ONLY_ACTIVE_ARCH=YES{}",
+                name,
+                derived,
+                if extra_settings.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", extra_settings.join(" "))
+                }
+            );
+            eprintln!("[CartridgeTest]   Directory: {:?}", cart_dir);
+            let output = Command::new("xcodebuild")
+                .arg("build")
+                .args([
+                    "-scheme",
+                    name,
+                    "-configuration",
+                    "Debug",
+                    "-derivedDataPath",
+                ])
+                .arg(&derived)
+                .args([
+                    "-destination",
+                    "generic/platform=macOS",
+                    "ONLY_ACTIVE_ARCH=YES",
+                ])
+                .args(&extra_settings)
+                .current_dir(&cart_dir)
+                .output()
+                .map_err(|e| format!("Failed to run xcodebuild for {}: {}", name, e))?;
+            if !output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                for line in stdout.lines().chain(stderr.lines()) {
+                    eprintln!("[CartridgeTest]   {}", line);
+                }
+                return Err(format!(
+                    "Failed to build {} (xcodebuild, exit code: {:?})",
+                    name,
+                    output.status.code()
+                ));
+            }
+            eprintln!("[CartridgeTest] Successfully built {}", name);
+            return Ok(());
+        }
+
         eprintln!("[CartridgeTest] Building {} (Swift) in debug mode...", name);
         eprintln!("[CartridgeTest]   Running: swift build");
         eprintln!("[CartridgeTest]   Directory: {:?}", cart_dir);
@@ -552,9 +644,20 @@ fn find_cartridge_binary(name: &str) -> Option<PathBuf> {
         manifest_path.parent()?.join(name)
     };
 
-    // Swift packages use .build/debug/, Rust uses target/debug/
+    // Swift packages: xcodebuild output dir when `.use-xcodebuild` is set,
+    // otherwise the standard SwiftPM .build/debug directory. Rust uses
+    // target/debug/.
     let bin_dir = if is_swift_cartridge(name) {
-        cart_root.join(".build").join("debug")
+        if needs_xcodebuild(name) {
+            cart_root
+                .join(".build")
+                .join("xcode")
+                .join("Build")
+                .join("Products")
+                .join("Debug")
+        } else {
+            cart_root.join(".build").join("debug")
+        }
     } else {
         cart_root.join("target").join("debug")
     };
