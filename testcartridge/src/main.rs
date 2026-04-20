@@ -95,7 +95,7 @@ fn build_manifest() -> CapManifest {
     caps.push(edge2);
 
     // TEST-EDGE3: Transform list of node1 files to list of node4 items
-    let edge3_urn = CapUrn::from_string("cap:in=\"media:node1;textable;form=list\";op=test_edge3;out=\"media:node4;textable;form=list\"")
+    let edge3_urn = CapUrn::from_string("cap:in=\"media:node1;textable\";op=test_edge3;out=\"media:node4;textable\"")
         .expect("Valid edge3 URN");
     let mut edge3 = Cap::with_description(
         edge3_urn,
@@ -104,10 +104,10 @@ fn build_manifest() -> CapManifest {
         "Transform folder of node1 files to list of node4 items".to_string(),
     );
     edge3.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=list",
+        "media:file-path;textable",
         true,
         vec![
-            ArgSource::Stdin { stdin: "media:node1;textable;form=list".to_string() },
+            ArgSource::Stdin { stdin: "media:node1;textable".to_string() },
             ArgSource::Position { position: 0 },
         ],
         "Paths to the input text files in folder".to_string(),
@@ -123,7 +123,7 @@ fn build_manifest() -> CapManifest {
     caps.push(edge3);
 
     // TEST-EDGE4: Collect list of node4 items into single node5
-    let edge4_urn = CapUrn::from_string("cap:in=\"media:node4;textable;form=list\";op=test_edge4;out=\"media:node5;textable\"")
+    let edge4_urn = CapUrn::from_string("cap:in=\"media:node4;textable\";op=test_edge4;out=\"media:node5;textable\"")
         .expect("Valid edge4 URN");
     let mut edge4 = Cap::with_description(
         edge4_urn,
@@ -131,15 +131,22 @@ fn build_manifest() -> CapManifest {
         "test-edge4".to_string(),
         "Collect list of node4 items into single node5 output".to_string(),
     );
-    edge4.add_arg(CapArg::with_description(
-        "media:file-path;textable;form=list",
+    // edge4 is a Collect (fan-in): the handler needs all inputs at once to
+    // concatenate them. Declare the arg as is_sequence=true so the runtime
+    // delivers a CBOR array of file bytes instead of iterating per-file.
+    let mut edge4_files_arg = CapArg::with_description(
+        "media:file-path;textable",
         true,
         vec![
-            ArgSource::Stdin { stdin: "media:node4;textable;form=list".to_string() },
+            ArgSource::Stdin {
+                stdin: "media:node4;textable".to_string(),
+            },
             ArgSource::Position { position: 0 },
         ],
         "List of text items to collect".to_string(),
-    ));
+    );
+    edge4_files_arg.is_sequence = true;
+    edge4.add_arg(edge4_files_arg);
     let mut separator_arg = CapArg::with_description(
         "media:edge4arg1;textable",
         false,
@@ -189,7 +196,7 @@ fn build_manifest() -> CapManifest {
     caps.push(edge5);
 
     // TEST-EDGE6: Transform single node1 to list of node4 items
-    let edge6_urn = CapUrn::from_string("cap:in=\"media:node1;textable\";op=test_edge6;out=\"media:node4;textable;form=list\"")
+    let edge6_urn = CapUrn::from_string("cap:in=\"media:node1;textable\";op=test_edge6;out=\"media:node4;textable\"")
         .expect("Valid edge6 URN");
     let mut edge6 = Cap::with_description(
         edge6_urn,
@@ -458,29 +465,24 @@ struct Edge3Op;
 #[async_trait]
 impl Op<()> for Edge3Op {
     async fn perform(&self, _dry: &mut DryContext, wet: &mut WetContext) -> OpResult<()> {
+        // Per-file handler: the runtime's CLI-mode glob-to-ForEach iterates
+        // this handler once per matched file, producing N outputs on stdout.
+        // In CBOR mode with is_sequence=false the runtime delivers a single
+        // file per invocation. Either way, the handler sees exactly one file
+        // and emits exactly one transformed result.
         let req = get_req(wet)?;
         let streams = collect_args(&req).await?;
 
-        let input_list = require_stream(&streams, "media:node1;textable;form=list")
+        let input = require_stream(&streams, "media:node1;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
         let transform = find_stream_str(&streams, "media:edge3arg1;textable")
             .unwrap_or_else(|| "[TRANSFORMED]".to_string());
 
-        let cbor_value: ciborium::Value = ciborium::from_reader(input_list)
-            .map_err(|e| OpError::ExecutionFailed(format!("Failed to parse CBOR: {}", e)))?;
-        let items = match cbor_value {
-            ciborium::Value::Array(arr) => arr,
-            _ => return Err(OpError::ExecutionFailed("Expected CBOR array".to_string())),
-        };
-
-        let mut results = Vec::new();
-        for item in items {
-            if let ciborium::Value::Bytes(bytes) = item {
-                let transformed = format!("{}{}", transform, String::from_utf8_lossy(&bytes));
-                results.push(ciborium::Value::Bytes(transformed.into_bytes()));
-            }
-        }
-        emit(req.output(), &ciborium::Value::Array(results))
+        let transformed = format!("{}{}", transform, String::from_utf8_lossy(input));
+        emit(
+            req.output(),
+            &ciborium::Value::Bytes(transformed.into_bytes()),
+        )
     }
     fn metadata(&self) -> OpMetadata { OpMetadata::builder("Edge3Op").build() }
 }
@@ -494,7 +496,7 @@ impl Op<()> for Edge4Op {
         let req = get_req(wet)?;
         let streams = collect_args(&req).await?;
 
-        let input_list = require_stream(&streams, "media:node4;textable;form=list")
+        let input_list = require_stream(&streams, "media:node4;textable")
             .map_err(|e| OpError::ExecutionFailed(e.to_string()))?;
         let separator = find_stream_str(&streams, "media:edge4arg1;textable")
             .unwrap_or_else(|| " ".to_string());
@@ -881,16 +883,16 @@ async fn main() -> Result<()> {
         "cap:in=\"media:node2;textable\";op=test_edge2;out=\"media:node3;textable\"",
     );
     runtime.register_op_type::<Edge3Op>(
-        "cap:in=\"media:node1;textable;form=list\";op=test_edge3;out=\"media:node4;textable;form=list\"",
+        "cap:in=\"media:node1;textable\";op=test_edge3;out=\"media:node4;textable\"",
     );
     runtime.register_op_type::<Edge4Op>(
-        "cap:in=\"media:node4;textable;form=list\";op=test_edge4;out=\"media:node5;textable\"",
+        "cap:in=\"media:node4;textable\";op=test_edge4;out=\"media:node5;textable\"",
     );
     runtime.register_op_type::<Edge5Op>(
         "cap:in=\"media:node2;textable\";in2=\"media:node3;textable\";op=test_edge5;out=\"media:node5;textable\"",
     );
     runtime.register_op_type::<Edge6Op>(
-        "cap:in=\"media:node1;textable\";op=test_edge6;out=\"media:node4;textable;form=list\"",
+        "cap:in=\"media:node1;textable\";op=test_edge6;out=\"media:node4;textable\"",
     );
     runtime.register_op_type::<Edge7Op>(
         "cap:in=\"media:node3;textable\";op=test_edge7;out=\"media:node6;textable\"",

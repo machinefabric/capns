@@ -129,11 +129,10 @@ pub const MEDIA_CSV: &str = "media:csv;list;record;textable";
 /// Media URN for single-column CSV — list of values without record structure
 pub const MEDIA_CSV_LIST: &str = "media:csv;list;textable";
 
-// File path types - for arguments that represent filesystem paths
-/// Media URN for a single file path - textable, scalar by default (no list marker)
+// File path type — for arguments that represent filesystem paths.
+// There is a single media URN; cardinality lives on `is_sequence`, not on
+// URN tags.
 pub const MEDIA_FILE_PATH: &str = "media:file-path;textable";
-/// Media URN for an array of file paths - textable with list marker
-pub const MEDIA_FILE_PATH_ARRAY: &str = "media:file-path;list;textable";
 
 // Semantic text input types - distinguished by their purpose/context
 /// Media URN for model spec (provider:model format, HuggingFace name, etc.) - scalar by default
@@ -518,21 +517,12 @@ impl MediaUrn {
         self.0.tags.contains_key("void")
     }
 
-    /// Check if this represents a single file path type (not array).
-    /// Returns true if the "file-path" marker tag is present AND no list marker.
+    /// Check if this represents a file path type.
+    ///
+    /// There is a single file-path media URN (`media:file-path;textable`);
+    /// cardinality (single file vs multiple files) is carried on the wire
+    /// via `is_sequence`, not via URN tags.
     pub fn is_file_path(&self) -> bool {
-        self.has_marker_tag("file-path") && !self.is_list()
-    }
-
-    /// Check if this represents a file path array type.
-    /// Returns true if the "file-path" marker tag is present AND has list marker.
-    pub fn is_file_path_array(&self) -> bool {
-        self.has_marker_tag("file-path") && self.is_list()
-    }
-
-    /// Check if this represents any file path type (single or array).
-    /// Returns true if "file-path" marker tag is present.
-    pub fn is_any_file_path(&self) -> bool {
         self.has_marker_tag("file-path")
     }
 }
@@ -1046,55 +1036,18 @@ mod debug_tests {
         assert!(!MediaUrn::from_string(MEDIA_IDENTITY).unwrap().is_bool());
     }
 
-    // TEST551: is_file_path returns true for scalar file-path, false for array
+    // TEST551: is_file_path returns true for the single file-path media URN,
+    // false for everything else. There is no "array" variant — cardinality is
+    // carried by is_sequence on the wire, not by URN tags.
     #[test]
     fn test551_is_file_path() {
         assert!(MediaUrn::from_string(MEDIA_FILE_PATH)
             .unwrap()
             .is_file_path());
-        // Array file-path is NOT is_file_path (it's is_file_path_array)
-        assert!(!MediaUrn::from_string(MEDIA_FILE_PATH_ARRAY)
-            .unwrap()
-            .is_file_path());
-        // Non-file-path types
         assert!(!MediaUrn::from_string(MEDIA_STRING).unwrap().is_file_path());
         assert!(!MediaUrn::from_string(MEDIA_IDENTITY)
             .unwrap()
             .is_file_path());
-    }
-
-    // TEST552: is_file_path_array returns true for list file-path, false for scalar
-    #[test]
-    fn test552_is_file_path_array() {
-        assert!(MediaUrn::from_string(MEDIA_FILE_PATH_ARRAY)
-            .unwrap()
-            .is_file_path_array());
-        // Scalar file-path is NOT is_file_path_array
-        assert!(!MediaUrn::from_string(MEDIA_FILE_PATH)
-            .unwrap()
-            .is_file_path_array());
-        // Non-file-path types
-        assert!(!MediaUrn::from_string(MEDIA_STRING_LIST)
-            .unwrap()
-            .is_file_path_array());
-    }
-
-    // TEST553: is_any_file_path returns true for both scalar and array file-path
-    #[test]
-    fn test553_is_any_file_path() {
-        assert!(MediaUrn::from_string(MEDIA_FILE_PATH)
-            .unwrap()
-            .is_any_file_path());
-        assert!(MediaUrn::from_string(MEDIA_FILE_PATH_ARRAY)
-            .unwrap()
-            .is_any_file_path());
-        // Non-file-path types
-        assert!(!MediaUrn::from_string(MEDIA_STRING)
-            .unwrap()
-            .is_any_file_path());
-        assert!(!MediaUrn::from_string(MEDIA_STRING_LIST)
-            .unwrap()
-            .is_any_file_path());
     }
 
     // TEST555: with_tag adds a tag and without_tag removes it

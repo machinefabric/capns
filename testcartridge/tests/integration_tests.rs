@@ -210,5 +210,15 @@ fn test708_missing_file() {
     assert!(!output.status.success());
 
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("Failed to read file") || stderr.contains("No such file"));
+    // The runtime's file-path auto-conversion fails the call with a
+    // "File not found" error before the handler ever runs. Accept either
+    // the path-resolution error or a downstream read error so the test
+    // doesn't pin itself to a single phrase.
+    assert!(
+        stderr.contains("File not found")
+            || stderr.contains("Failed to read file")
+            || stderr.contains("No such file"),
+        "unexpected stderr: {}",
+        stderr,
+    );
 }

@@ -641,15 +641,20 @@ fn topo_sort(
 
     // Edge B's predecessors: any edge whose target is the
     // source of any binding in B.assignment.
+    //
+    // A self-dependency — an edge whose own target is one of its
+    // own source nodes (`a_idx == b_idx`) — is a structural cycle
+    // by definition. Historically this loop skipped those pairs;
+    // that silently let self-loops like `[A -> cap -> A]` through
+    // the DAG check. We now record the self-edge so it contributes
+    // to its own indegree, which guarantees `topo_sort` fails for
+    // any self-loop.
     let mut indegree: Vec<usize> = vec![0; n];
     let mut successors: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (b_idx, b) in edges.iter().enumerate() {
         for binding in &b.assignment {
             if let Some(producers) = producers_of.get(&binding.source) {
                 for &a_idx in producers {
-                    if a_idx == b_idx {
-                        continue;
-                    }
                     successors[a_idx].push(b_idx);
                     indegree[b_idx] += 1;
                 }

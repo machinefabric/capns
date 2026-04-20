@@ -544,6 +544,27 @@ async fn test950_reject_cycles() {
     }
 }
 
+// TEST943: Two nodes with the same media type but different names are two
+// distinct graph positions — NOT a loop. The identity cap has `in = out` by
+// type, so its upstream and downstream node carry the same media URN; this
+// must not collapse them into a self-loop. Node identity comes from the
+// user-written name, not the media URN.
+#[tokio::test]
+async fn test943_same_media_different_names_is_not_a_cycle() {
+    let registry = create_test_cap_registry();
+
+    let route = r#"
+[identity cap:in="media:node1;textable";op=identity;out="media:node1;textable"]
+[A -> identity -> B]
+"#;
+
+    let result = parse_machine_to_cap_dag(route, &*registry).await;
+    let graph = result.expect("A -> identity -> B must parse: distinct names, not a cycle");
+    assert_eq!(graph.edges.len(), 1, "single edge expected");
+    assert_eq!(graph.edges[0].from, "A");
+    assert_eq!(graph.edges[0].to, "B");
+}
+
 // TEST949: Empty machine notation (no edges)
 #[tokio::test]
 async fn test949_empty_graph() {

@@ -34,7 +34,6 @@ pub use crate::urn::media_urn::{
     MEDIA_BOOLEAN_LIST,
     MEDIA_DECISION,
     MEDIA_FILE_PATH,
-    MEDIA_FILE_PATH_ARRAY,
     MEDIA_HTML,
     MEDIA_IDENTITY,
     MEDIA_INTEGER,

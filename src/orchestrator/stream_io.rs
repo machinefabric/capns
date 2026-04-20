@@ -13,9 +13,14 @@
 
 use crate::bifaci::frame::{Frame, FrameType, MessageId};
 use crate::bifaci::relay_switch::RelaySwitch;
+use crate::orchestrator::executor::CapProgressFn;
 use crate::StreamMeta;
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Error)]
 pub enum StreamIoError {
@@ -30,6 +35,186 @@ pub enum StreamIoError {
 
     #[error("Protocol error: expected Bytes or Text in CBOR transport at item {index}, got {description}")]
     UnexpectedCborType { index: usize, description: String },
+
+    /// Cap-level failure: the cartridge returned END without success, ERR frame,
+    /// or the response channel closed without an END. `cap_urn` identifies the
+    /// failing cap; `details` carries the cartridge's error message or the
+    /// protocol violation detail.
+    #[error("Cap '{cap_urn}' failed: {details}")]
+    Terminal { cap_urn: String, details: String },
+
+    /// Cap did not produce any frames for longer than the configured activity
+    /// timeout. The request has been cancelled at the relay.
+    #[error("Cap '{cap_urn}' activity timeout ({idle_secs}s, limit {limit_secs}s)")]
+    ActivityTimeout {
+        cap_urn: String,
+        idle_secs: u64,
+        limit_secs: u64,
+    },
+
+    /// Writer failure — the `IncrementalWriter` returned an error while
+    /// persisting chunk data.
+    #[error("Writer error: {0}")]
+    Writer(String),
+}
+
+// =============================================================================
+// Activity tracking
+// =============================================================================
+
+/// Pipeline-level stall timeout in seconds.
+///
+/// If no progress LOG frame arrives from ANY body in the entire pipeline for
+/// this duration, the pipeline is considered stalled and all bodies are
+/// aborted. This catches the case where all bodies are "queued" but none is
+/// progressing.
+pub const PIPELINE_STALL_TIMEOUT_SECS: u64 = 120;
+
+/// Per-cap activity timer used by `collect_terminal_output`.
+///
+/// Tracks time since the last activity frame from a cap. A "queued" LOG frame
+/// pauses the timer (the cartridge has confirmed receipt but is waiting for a
+/// handler slot), and any other LOG, progress, or data frame unpauses it and
+/// resets the clock.
+pub struct ActivityTimer {
+    last_activity: Instant,
+    paused: bool,
+    timeout: Duration,
+}
+
+impl ActivityTimer {
+    pub fn new(timeout_secs: u64) -> Self {
+        Self {
+            last_activity: Instant::now(),
+            paused: false,
+            timeout: Duration::from_secs(timeout_secs),
+        }
+    }
+
+    /// Record activity and resume if paused.
+    pub fn touch(&mut self) {
+        self.last_activity = Instant::now();
+        self.paused = false;
+    }
+
+    /// Pause the timeout (request is queued, no progress expected).
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// Handle a LOG frame's level:
+    /// - `"queued"` → pause (request waiting in cartridge queue)
+    /// - anything else → touch (handler active, reset timer)
+    pub fn handle_log_level(&mut self, level: &str) {
+        match level {
+            "queued" => self.pause(),
+            _ => self.touch(),
+        }
+    }
+
+    /// Check if the timeout has been exceeded. Returns false when paused.
+    pub fn is_expired(&self) -> bool {
+        !self.paused && self.last_activity.elapsed() > self.timeout
+    }
+}
+
+/// Shared timestamp for pipeline-level stall detection.
+///
+/// Stores `Instant::elapsed().as_millis()` of the last progress event.
+/// Updated by any body's progress callback. Read by the watchdog task.
+pub struct PipelineProgressTracker {
+    epoch: Instant,
+    last_progress_ms: AtomicU64,
+}
+
+impl Default for PipelineProgressTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PipelineProgressTracker {
+    pub fn new() -> Self {
+        let epoch = Instant::now();
+        Self {
+            epoch,
+            last_progress_ms: AtomicU64::new(epoch.elapsed().as_millis() as u64),
+        }
+    }
+
+    /// Record that progress was observed.
+    pub fn touch(&self) {
+        self.last_progress_ms
+            .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// Check if the stall timeout has been exceeded.
+    pub fn is_stalled(&self) -> bool {
+        let last_ms = self.last_progress_ms.load(Ordering::Relaxed);
+        let now_ms = self.epoch.elapsed().as_millis() as u64;
+        now_ms.saturating_sub(last_ms) > PIPELINE_STALL_TIMEOUT_SECS * 1000
+    }
+}
+
+// =============================================================================
+// Logging callback
+// =============================================================================
+
+/// Pipeline-level log callback.
+///
+/// Arguments: `(cap_urn, level, message, body_index)`.
+/// `body_index` is `Some` for pipeline bodies (ForEach parallelism) and `None`
+/// for single-body / CLI execution.
+pub type PipelineLogFn = Arc<dyn Fn(&str, &str, &str, Option<usize>) + Send + Sync>;
+
+// =============================================================================
+// Terminal output meta
+// =============================================================================
+
+/// Metadata collected from the terminal cap's output stream.
+///
+/// `stream_meta` is set from the STREAM_START frame.
+/// `item_metas` collects per-item meta from each CHUNK frame that starts a new
+/// sequence item (used by ForEach to propagate per-item provenance).
+#[derive(Debug, Clone, Default)]
+pub struct TerminalMeta {
+    pub stream_meta: Option<StreamMeta>,
+    pub item_metas: Vec<StreamMeta>,
+}
+
+// =============================================================================
+// Incremental writer
+// =============================================================================
+
+/// Trait for streaming terminal output to disk as it arrives.
+///
+/// Implementations decide storage policy (blob vs sequence, provenance
+/// sidecars, etc.). The collect loop calls these in order:
+/// `on_stream_start` → 0..N `on_chunk_payload` → `on_stream_end`.
+#[async_trait]
+pub trait IncrementalWriter: Send {
+    /// Called on STREAM_START. `is_sequence` mirrors the wire flag;
+    /// `media_urn` is the stream's declared media URN; `meta` is the
+    /// STREAM_START frame's meta map; `stream_id` is the wire stream id.
+    async fn on_stream_start(
+        &mut self,
+        is_sequence: Option<bool>,
+        media_urn: &str,
+        meta: Option<StreamMeta>,
+        stream_id: Option<String>,
+    ) -> Result<(), StreamIoError>;
+
+    /// Called on each CHUNK. `payload` is the raw CBOR payload of the chunk;
+    /// `meta` is the CHUNK frame's meta (set on first chunk of each sequence
+    /// item; None otherwise).
+    async fn on_chunk_payload(
+        &mut self,
+        payload: &[u8],
+        meta: Option<StreamMeta>,
+    ) -> Result<(), StreamIoError>;
+
+    /// Called on STREAM_END. Flushes buffered state.
+    async fn on_stream_end(&mut self) -> Result<(), StreamIoError>;
 }
 
 /// Send a single input stream (STREAM_START → CHUNKs → STREAM_END) to a cartridge.
@@ -198,5 +383,201 @@ pub fn unwrap_cbor_value(value: ciborium::Value, item_index: usize) -> Result<Ve
             index: item_index,
             description: format!("{:?}", value),
         }),
+    }
+}
+
+// =============================================================================
+// Terminal collect
+// =============================================================================
+
+/// Collect the terminal response from a cap, decoding frames as they arrive.
+///
+/// Walks the response stream (STREAM_START → CHUNK… → STREAM_END → END), with
+/// optional per-cap progress callbacks, pipeline logging, a shared pipeline
+/// stall tracker, and an optional `IncrementalWriter` that streams the bytes
+/// to disk rather than buffering them in memory.
+///
+/// Returns `(response_bytes, is_sequence, terminal_meta)`. When a writer is
+/// provided, `response_bytes` is empty — the data is already persisted via
+/// the writer.
+///
+/// # Error semantics
+/// - `END` with non-zero or absent `exit_code` → `StreamIoError::Terminal`.
+/// - `ERR` frame → `StreamIoError::Terminal`.
+/// - Response channel closed without `END` → `StreamIoError::Terminal`.
+/// - No activity for `activity_timeout_secs` → cancel request at relay,
+///   return `StreamIoError::ActivityTimeout`.
+/// - Writer failures bubble up as their `StreamIoError::Writer`.
+pub async fn collect_terminal_output(
+    mut rx: mpsc::UnboundedReceiver<Frame>,
+    progress_fn: Option<&CapProgressFn>,
+    cap_urn: &str,
+    log_fn: Option<&PipelineLogFn>,
+    body_index: Option<usize>,
+    stall_tracker: Option<&Arc<PipelineProgressTracker>>,
+    writer: Option<&mut dyn IncrementalWriter>,
+    activity_timeout_secs: u64,
+    switch: &Arc<RelaySwitch>,
+    rid: &MessageId,
+) -> Result<(Vec<u8>, Option<bool>, TerminalMeta), StreamIoError> {
+    let mut response_chunks: Vec<u8> = Vec::new();
+    let mut is_sequence: Option<bool> = None;
+    let mut timer = ActivityTimer::new(activity_timeout_secs);
+    let has_writer = writer.is_some();
+    let mut terminal_meta = TerminalMeta::default();
+
+    // Rebind writer as mutable — we pass it through as Option<&mut> but need
+    // to call methods on it inside the loop.
+    let mut writer = writer;
+
+    loop {
+        let frame = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
+
+        match frame {
+            Ok(Some(frame)) => {
+                // Any frame from this cap means the pipeline is alive.
+                if let Some(tracker) = stall_tracker {
+                    tracker.touch();
+                }
+                match frame.frame_type {
+                    FrameType::Chunk => {
+                        timer.touch();
+                        if let Some(payload) = &frame.payload {
+                            if let Some(ref mut w) = writer {
+                                w.on_chunk_payload(payload, frame.meta.clone()).await?;
+                            } else {
+                                response_chunks.extend_from_slice(payload);
+                                // Collect per-item meta for ForEach propagation.
+                                // Each non-None chunk meta marks the first chunk
+                                // of a new item.
+                                if let Some(meta) = frame.meta.clone() {
+                                    terminal_meta.item_metas.push(meta);
+                                }
+                            }
+                        }
+                    }
+                    FrameType::End => {
+                        // exit_code in END meta: 0 = success, absent or non-zero
+                        // = failure. Absence means the cartridge died (OOM,
+                        // crash) and the relay synthesized a bare END — treat
+                        // as failure.
+                        let exit_code = frame.exit_code();
+                        if exit_code != Some(0) {
+                            let detail = match exit_code {
+                                Some(code) => format!("exit_code={}", code),
+                                None => "exit_code absent (cartridge likely crashed)".to_string(),
+                            };
+                            let details =
+                                format!("END without success: {}", detail);
+                            if let Some(lfn) = &log_fn {
+                                lfn(cap_urn, "error", &details, body_index);
+                            }
+                            return Err(StreamIoError::Terminal {
+                                cap_urn: cap_urn.to_string(),
+                                details,
+                            });
+                        }
+
+                        if let Some(payload) = &frame.payload {
+                            if let Some(ref mut w) = writer {
+                                if !payload.is_empty() {
+                                    w.on_chunk_payload(payload, frame.meta.clone()).await?;
+                                }
+                            } else {
+                                response_chunks.extend_from_slice(payload);
+                            }
+                        }
+                        if let Some(ref mut w) = writer {
+                            w.on_stream_end().await?;
+                        }
+                        tracing::info!(
+                            "[pipeline] terminal cap='{}' writer={} response_len={}",
+                            cap_urn,
+                            has_writer,
+                            response_chunks.len()
+                        );
+                        return Ok((response_chunks, is_sequence, terminal_meta));
+                    }
+                    FrameType::Err => {
+                        let msg = frame
+                            .error_message()
+                            .unwrap_or("Unknown cartridge error")
+                            .to_string();
+                        if let Some(lfn) = &log_fn {
+                            lfn(cap_urn, "error", &msg, body_index);
+                        }
+                        return Err(StreamIoError::Terminal {
+                            cap_urn: cap_urn.to_string(),
+                            details: msg,
+                        });
+                    }
+                    FrameType::Log => {
+                        let level = frame.log_level().unwrap_or("info");
+                        timer.handle_log_level(level);
+
+                        if let Some(p) = frame.log_progress() {
+                            let cartridge_msg = frame.log_message().unwrap_or("");
+                            if let Some(pfn) = &progress_fn {
+                                pfn(p, cap_urn, cartridge_msg);
+                            }
+                            if let Some(lfn) = &log_fn {
+                                lfn(cap_urn, "progress", cartridge_msg, body_index);
+                            }
+                        } else if let Some(msg) = frame.log_message() {
+                            if let Some(lfn) = &log_fn {
+                                lfn(cap_urn, level, msg, body_index);
+                            }
+                        }
+                    }
+                    FrameType::StreamStart => {
+                        timer.touch();
+                        if let Some(seq) = frame.is_sequence {
+                            is_sequence = Some(seq);
+                        }
+                        if let Some(ref mut w) = writer {
+                            let media = frame.media_urn.as_deref().unwrap_or("");
+                            w.on_stream_start(
+                                is_sequence,
+                                media,
+                                frame.meta.clone(),
+                                frame.stream_id.clone(),
+                            )
+                            .await?;
+                        } else {
+                            // Capture stream-level meta for ForEach propagation
+                            terminal_meta.stream_meta = frame.meta.clone();
+                        }
+                    }
+                    _ => {
+                        // STREAM_END and others — structural, skip
+                    }
+                }
+            }
+            Ok(None) => {
+                let details = "response channel closed without END".to_string();
+                if let Some(lfn) = &log_fn {
+                    lfn(cap_urn, "error", &details, body_index);
+                }
+                return Err(StreamIoError::Terminal {
+                    cap_urn: cap_urn.to_string(),
+                    details,
+                });
+            }
+            Err(_timeout) => {
+                if timer.is_expired() {
+                    switch.cancel_request(rid, false).await;
+                    let details =
+                        format!("activity timeout ({}s)", activity_timeout_secs);
+                    if let Some(lfn) = &log_fn {
+                        lfn(cap_urn, "error", &details, body_index);
+                    }
+                    return Err(StreamIoError::ActivityTimeout {
+                        cap_urn: cap_urn.to_string(),
+                        idle_secs: activity_timeout_secs,
+                        limit_secs: activity_timeout_secs,
+                    });
+                }
+            }
+        }
     }
 }

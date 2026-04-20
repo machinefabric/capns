@@ -44,11 +44,11 @@ impl MachinePlanBuilder {
 
     /// Find the file-path argument in a cap by checking the media URN type.
     /// Returns the argument media_urn if found, None otherwise.
-    /// This uses tagged URN matching (via `is_any_file_path()`).
+    /// This uses tagged URN matching (via `is_file_path()`).
     fn find_file_path_arg(cap: &Cap) -> Option<String> {
         for arg in cap.get_args() {
             if let Ok(urn) = MediaUrn::from_string(&arg.media_urn) {
-                if urn.is_any_file_path() {
+                if urn.is_file_path() {
                     return Some(arg.media_urn.clone());
                 }
             }
@@ -64,7 +64,7 @@ impl MachinePlanBuilder {
         let in_spec = cap.urn.in_spec();
         for arg in cap.get_args() {
             let is_file_path = MediaUrn::from_string(&arg.media_urn)
-                .map(|urn| urn.is_any_file_path())
+                .map(|urn| urn.is_file_path())
                 .unwrap_or(false);
             if !is_file_path {
                 continue;
@@ -209,7 +209,7 @@ impl MachinePlanBuilder {
                             }
 
                             let is_file_path_type = MediaUrn::from_string(&arg.media_urn)
-                                .map(|urn| urn.is_any_file_path())
+                                .map(|urn| urn.is_file_path())
                                 .unwrap_or(false);
                             if is_file_path_type {
                                 continue;
@@ -741,7 +741,7 @@ impl MachinePlanBuilder {
 
         // Check for file-path types
         let is_file_path_type = if let Ok(urn) = MediaUrn::from_string(media_urn) {
-            urn.is_any_file_path()
+            urn.is_file_path()
         } else {
             false
         };
@@ -1028,34 +1028,6 @@ mod tests {
         let out_spec = "media:png";
         let resolution = builder.determine_resolution_with_io_check(
             crate::MEDIA_FILE_PATH,
-            in_spec,
-            out_spec,
-            1,
-            true,
-            &None,
-        );
-        assert_eq!(resolution, ArgumentResolution::FromPreviousOutput);
-    }
-
-    // TEST999: Tests MEDIA_FILE_PATH_ARRAY argument type resolution for first and subsequent caps
-    // Verifies that file-path array arguments follow the same resolution pattern as single file paths
-    #[test]
-    fn test999_file_path_array_fallback() {
-        let builder = create_test_plan_builder();
-        let in_spec = "media:pdf";
-        let out_spec = "media:png";
-        let resolution = builder.determine_resolution_with_io_check(
-            crate::MEDIA_FILE_PATH_ARRAY,
-            in_spec,
-            out_spec,
-            0,
-            true,
-            &None,
-        );
-        assert_eq!(resolution, ArgumentResolution::FromInputFile);
-
-        let resolution = builder.determine_resolution_with_io_check(
-            crate::MEDIA_FILE_PATH_ARRAY,
             in_spec,
             out_spec,
             1,

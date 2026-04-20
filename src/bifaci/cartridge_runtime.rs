@@ -44,7 +44,7 @@ use crate::cap::caller::CapArgumentValue;
 use crate::cap::definition::{ArgSource, Cap, CapArg};
 use crate::standard::caps::{CAP_ADAPTER_SELECTION, CAP_DISCARD, CAP_IDENTITY};
 use crate::urn::cap_urn::CapUrn;
-use crate::urn::media_urn::{MediaUrn, MEDIA_FILE_PATH, MEDIA_FILE_PATH_ARRAY};
+use crate::urn::media_urn::{MediaUrn, MEDIA_FILE_PATH};
 use async_trait::async_trait;
 // crossbeam is used for demux_multi_stream (bridging sync stdin reads to async handlers)
 use ops::{DryContext, Op, OpError, OpMetadata, OpResult, WetContext};
@@ -1493,17 +1493,33 @@ fn extract_effective_payload(
     let expected_input = cap_urn.in_spec().to_string();
     let expected_media_urn = MediaUrn::from_string(&expected_input).ok();
 
-    // Build map of arg media_urn → stdin source media_urn for file-path conversion
-    let mut arg_to_stdin: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for arg_def in cap.get_args() {
-        if let Some(stdin_urn) = arg_def.sources.iter().find_map(|s| match s {
-            ArgSource::Stdin { stdin } => Some(stdin.clone()),
-            _ => None,
-        }) {
-            arg_to_stdin.insert(arg_def.media_urn.clone(), stdin_urn);
-        }
+    // Build an arg-definition lookup: parsed MediaUrn → (stdin target URN,
+    // is_sequence flag). File-path conversion consults this to decide whether
+    // to emit a single file's bytes or a sequence of files, and what URN to
+    // relabel the stream with so downstream handlers see the target media
+    // type rather than the raw `media:file-path` input.
+    struct ArgDefInfo {
+        stdin_target: Option<String>,
+        is_sequence: bool,
     }
+    let arg_defs: Vec<(MediaUrn, ArgDefInfo)> = cap
+        .get_args()
+        .iter()
+        .filter_map(|a| {
+            let parsed = MediaUrn::from_string(&a.media_urn).ok()?;
+            let stdin_target = a.sources.iter().find_map(|s| match s {
+                ArgSource::Stdin { stdin } => Some(stdin.clone()),
+                _ => None,
+            });
+            Some((
+                parsed,
+                ArgDefInfo {
+                    stdin_target,
+                    is_sequence: a.is_sequence,
+                },
+            ))
+        })
+        .collect();
 
     // Parse the CBOR payload as an array of argument maps
     let cbor_value: ciborium::Value = ciborium::from_reader(payload)
@@ -1518,262 +1534,154 @@ fn extract_effective_payload(
         }
     };
 
-    // File-path auto-conversion: If arg is media:file-path, read file(s)
-    // Cardinality is determined by the `list` marker tag:
-    // - media:file-path;textable (single file, no list marker = scalar)
-    // - media:file-path;list;textable (array of files, has list marker)
+    // File-path auto-conversion.
+    //
+    // When an arg's media URN is a specialization of `media:file-path`, the
+    // incoming value is treated as one or more filesystem paths (literal or
+    // glob) that the runtime reads and turns into file-bytes.
+    //
+    // Cardinality is driven exclusively by the arg definition's `is_sequence`
+    // flag — URN tags carry semantic shape only.
+    //
+    // - `is_sequence = true`  → emit a CBOR `Array` of file bytes, regardless
+    //   of whether the incoming value was a single path or a list.
+    // - `is_sequence = false` → expand to exactly one file and emit a single
+    //   CBOR `Bytes`. More than one resolved file is a configuration error
+    //   at this layer — CLI-mode dispatch is responsible for iterating the
+    //   handler when it detects a glob-to-many against a scalar arg.
     let file_path_base = MediaUrn::from_string("media:file-path")
         .map_err(|e| RuntimeError::Handler(format!("Invalid file-path base pattern: {}", e)))?;
 
     for arg in arguments.iter_mut() {
-        if let ciborium::Value::Map(ref mut arg_map) = arg {
-            let mut media_urn: Option<String> = None;
-            let mut value_ref: Option<&ciborium::Value> = None;
+        let ciborium::Value::Map(ref mut arg_map) = arg else {
+            continue;
+        };
 
-            // Extract media_urn and value (preserve CBOR Value type)
-            for (k, v) in arg_map.iter() {
-                if let ciborium::Value::Text(key) = k {
-                    match key.as_str() {
-                        "media_urn" => {
-                            if let ciborium::Value::Text(s) = v {
-                                media_urn = Some(s.clone());
-                            }
-                        }
-                        "value" => {
-                            value_ref = Some(v);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            // Check if this is a file-path argument using pattern matching
-            if let (Some(ref urn_str), Some(value)) = (media_urn, value_ref) {
-                let arg_urn = MediaUrn::from_string(urn_str).map_err(|e| {
-                    RuntimeError::Handler(format!(
-                        "Invalid argument media URN '{}': {}",
-                        urn_str, e
-                    ))
-                })?;
-
-                // Check if it's a file-path using pattern matching (pattern accepts instance)
-                let is_file_path = file_path_base
-                    .accepts(&arg_urn)
-                    .map_err(|e| RuntimeError::Handler(format!("URN matching failed: {}", e)))?;
-
-                if is_file_path {
-                    // Check if this arg has a stdin source - only auto-convert if it does.
-                    // Args without stdin source pass the file path through as-is.
-                    let has_stdin_source = arg_to_stdin.contains_key(urn_str);
-
-                    if !has_stdin_source {
-                        // No stdin source - file path passes through as-is, no conversion
-                        continue;
-                    }
-
-                    let is_scalar = arg_urn.is_scalar();
-
-                    // Read file(s) and replace value
-                    if is_scalar {
-                        // Single file - value must be Bytes or Text (not Array)
-                        let path_bytes = match value {
-                            ciborium::Value::Bytes(b) => b.clone(),
-                            ciborium::Value::Text(t) => t.as_bytes().to_vec(),
-                            ciborium::Value::Array(_) => {
-                                return Err(RuntimeError::Handler(format!(
-                                    "File-path scalar cannot be an Array - got Array for '{}'",
-                                    urn_str
-                                )));
-                            }
-                            _ => {
-                                return Err(RuntimeError::Handler(format!(
-                                    "File-path scalar must be Bytes or Text - got unexpected type for '{}'",
-                                    urn_str
-                                )));
-                            }
-                        };
-
-                        let path_str = String::from_utf8_lossy(&path_bytes);
-                        let file_bytes = std::fs::read(path_str.as_ref()).map_err(|e| {
-                            RuntimeError::Handler(format!(
-                                "Failed to read file '{}': {}",
-                                path_str, e
-                            ))
-                        })?;
-
-                        // Find target media_urn from arg_to_stdin map
-                        let target_urn = arg_to_stdin
-                            .get(urn_str)
-                            .cloned()
-                            .unwrap_or_else(|| expected_input.clone());
-
-                        // Replace value with file contents AND media_urn with target
-                        for (k, v) in arg_map.iter_mut() {
-                            if let ciborium::Value::Text(key) = k {
-                                if key == "value" {
-                                    *v = ciborium::Value::Bytes(file_bytes.clone());
-                                }
-                                if key == "media_urn" {
-                                    *v = ciborium::Value::Text(target_urn.clone());
-                                }
-                            }
-                        }
-                    } else {
-                        // Array of files - mode-dependent logic
-                        let paths_to_process: Vec<String> = match value {
-                            ciborium::Value::Array(arr) => {
-                                // CBOR Array - ONLY allowed in CBOR mode (NOT CLI mode)
-                                if is_cli_mode {
-                                    return Err(RuntimeError::Handler(format!(
-                                        "File-path array cannot be CBOR Array in CLI mode - got Array for '{}'",
-                                        urn_str
-                                    )));
-                                }
-
-                                // CBOR mode - extract each path from array
-                                let mut paths = Vec::new();
-                                for item in arr {
-                                    match item {
-                                        ciborium::Value::Text(s) => paths.push(s.clone()),
-                                        ciborium::Value::Bytes(b) => {
-                                            paths.push(String::from_utf8_lossy(b).to_string())
-                                        }
-                                        _ => {
-                                            return Err(RuntimeError::Handler(
-                                                "CBOR array must contain text or bytes paths"
-                                                    .to_string(),
-                                            ))
-                                        }
-                                    }
-                                }
-                                paths
-                            }
-                            ciborium::Value::Bytes(b) => {
-                                // Bytes - treat as text glob/literal path
-                                vec![String::from_utf8_lossy(b).to_string()]
-                            }
-                            ciborium::Value::Text(t) => {
-                                // Text - treat as glob/literal path
-                                vec![t.clone()]
-                            }
-                            _ => {
-                                return Err(RuntimeError::Handler(format!(
-                                    "File-path list must be Bytes, Text, or Array (CBOR mode only) - got unexpected type for '{}'",
-                                    urn_str
-                                )));
-                            }
-                        };
-
-                        let mut all_files = Vec::new();
-
-                        // Process each path (could be glob pattern or literal)
-                        for path_str in paths_to_process {
-                            // Detect glob pattern
-                            let is_glob = path_str.contains('*')
-                                || path_str.contains('?')
-                                || path_str.contains('[');
-
-                            if is_glob {
-                                // Expand glob pattern
-                                let paths = glob::glob(&path_str).map_err(|e| {
-                                    RuntimeError::Handler(format!(
-                                        "Invalid glob pattern '{}': {}",
-                                        path_str, e
-                                    ))
-                                })?;
-
-                                for path_result in paths {
-                                    let path = path_result.map_err(|e| {
-                                        RuntimeError::Handler(format!("Glob error: {}", e))
-                                    })?;
-
-                                    // Only include files (skip directories)
-                                    if path.is_file() {
-                                        all_files.push(path);
-                                    }
-                                }
-
-                                if all_files.is_empty() {
-                                    return Err(RuntimeError::Handler(format!(
-                                        "No files matched glob pattern '{}'",
-                                        path_str
-                                    )));
-                                }
-                            } else {
-                                // Literal path - verify it exists
-                                let path = std::path::Path::new(&path_str);
-                                if !path.exists() {
-                                    return Err(RuntimeError::Handler(format!(
-                                        "File not found: '{}'",
-                                        path_str
-                                    )));
-                                }
-                                if path.is_file() {
-                                    all_files.push(path.to_path_buf());
-                                } else {
-                                    return Err(RuntimeError::Handler(format!(
-                                        "Path is not a file: '{}'",
-                                        path_str
-                                    )));
-                                }
-                            }
-                        } // End for path_str in paths_to_process
-
-                        // Read all files
-                        let mut files_data = Vec::new();
-                        for path in &all_files {
-                            let bytes = std::fs::read(path).map_err(|e| {
-                                RuntimeError::Handler(format!(
-                                    "Failed to read file '{}': {}",
-                                    path.display(),
-                                    e
-                                ))
-                            })?;
-                            files_data.push(ciborium::Value::Bytes(bytes));
-                        }
-
-                        // Find target media_urn from arg_to_stdin map
-                        let target_urn = arg_to_stdin
-                            .get(urn_str)
-                            .cloned()
-                            .unwrap_or_else(|| expected_input.clone());
-
-                        // Store as CBOR Array directly (NOT double-encoded as bytes)
-                        let cbor_array = ciborium::Value::Array(files_data);
-
-                        // Replace value with CBOR array AND media_urn with target
-                        for (k, v) in arg_map.iter_mut() {
-                            if let ciborium::Value::Text(key) = k {
-                                if key == "value" {
-                                    *v = cbor_array.clone();
-                                }
-                                if key == "media_urn" {
-                                    *v = ciborium::Value::Text(target_urn.clone());
-                                }
-                            }
+        let mut urn_str: Option<String> = None;
+        let mut value_snapshot: Option<ciborium::Value> = None;
+        for (k, v) in arg_map.iter() {
+            if let ciborium::Value::Text(key) = k {
+                match key.as_str() {
+                    "media_urn" => {
+                        if let ciborium::Value::Text(s) = v {
+                            urn_str = Some(s.clone());
                         }
                     }
+                    "value" => value_snapshot = Some(v.clone()),
+                    _ => {}
                 }
             }
         }
+
+        let (Some(urn_str), Some(value)) = (urn_str, value_snapshot) else {
+            continue;
+        };
+
+        let arg_urn = MediaUrn::from_string(&urn_str).map_err(|e| {
+            RuntimeError::Handler(format!(
+                "Invalid argument media URN '{}': {}",
+                urn_str, e
+            ))
+        })?;
+
+        if !file_path_base
+            .accepts(&arg_urn)
+            .map_err(|e| RuntimeError::Handler(format!("URN matching failed: {}", e)))?
+        {
+            continue;
+        }
+
+        // Look up the cap's arg definition by URN equivalence (NOT string
+        // compare) — the arg we received may carry the same tags in a
+        // different textual order.
+        let arg_def = arg_defs.iter().find_map(|(parsed, info)| {
+            if parsed.is_equivalent(&arg_urn).unwrap_or(false) {
+                Some(info)
+            } else {
+                None
+            }
+        });
+
+        let Some(arg_def) = arg_def else {
+            // File-path arg with no matching definition: leave it alone.
+            continue;
+        };
+
+        // Args without a stdin source pass the path bytes through verbatim
+        // — the handler reads them itself (rare but legal).
+        let Some(ref stdin_target) = arg_def.stdin_target else {
+            continue;
+        };
+
+        let paths = expand_file_path_value(&value, &urn_str, is_cli_mode)?;
+
+        if !arg_def.is_sequence {
+            if paths.len() != 1 {
+                return Err(RuntimeError::Handler(format!(
+                    "File-path arg '{}' declared is_sequence=false resolved to {} files; \
+                     expected exactly 1. CLI-mode dispatch should have iterated the \
+                     handler across the expanded files before calling the runtime.",
+                    urn_str,
+                    paths.len()
+                )));
+            }
+            let bytes = std::fs::read(&paths[0]).map_err(|e| {
+                RuntimeError::Handler(format!(
+                    "Failed to read file '{}': {}",
+                    paths[0].display(),
+                    e
+                ))
+            })?;
+            replace_arg_value(
+                arg_map,
+                ciborium::Value::Bytes(bytes),
+                stdin_target.clone(),
+            );
+        } else {
+            let mut items: Vec<ciborium::Value> = Vec::with_capacity(paths.len());
+            for p in &paths {
+                let bytes = std::fs::read(p).map_err(|e| {
+                    RuntimeError::Handler(format!(
+                        "Failed to read file '{}': {}",
+                        p.display(),
+                        e
+                    ))
+                })?;
+                items.push(ciborium::Value::Bytes(bytes));
+            }
+            replace_arg_value(
+                arg_map,
+                ciborium::Value::Array(items),
+                stdin_target.clone(),
+            );
+        }
     }
 
-    // Validate: At least ONE argument must match in_spec (fail hard if none)
-    // UNLESS in_spec is "media:void" (no input required)
-    // After file-path conversion, arg media_urn may be the stdin target (e.g., "media:")
-    // rather than the original in_spec (e.g., "media:file-path;..."), so we also accept
-    // any stdin source target as a valid match.
-    let is_void_input = expected_input == "media:void";
+    // Validate: at least ONE argument must match the cap's declared in=spec,
+    // unless the cap takes no input (in=media:void). After file-path
+    // auto-conversion, an arg's media_urn may have been relabeled to the
+    // arg-def's stdin-source target rather than the original
+    // `media:file-path;...`, so we also accept any stdin-source target URN
+    // as a valid match.
+    let void_urn = MediaUrn::from_string("media:void")
+        .map_err(|e| RuntimeError::Handler(format!("Invalid void URN literal: {}", e)))?;
+    let is_void_input = expected_media_urn
+        .as_ref()
+        .and_then(|expected| expected.is_equivalent(&void_urn).ok())
+        .unwrap_or(false);
 
     if !is_void_input {
-        // Collect all valid target URNs: in_spec + all stdin source targets
+        // Collect all valid target URNs: in_spec + every arg-def's stdin
+        // source target.
         let mut valid_targets: Vec<MediaUrn> = Vec::new();
         if let Some(ref expected) = expected_media_urn {
             valid_targets.push(expected.clone());
         }
-        for stdin_urn_str in arg_to_stdin.values() {
-            if let Ok(stdin_urn) = MediaUrn::from_string(stdin_urn_str) {
-                valid_targets.push(stdin_urn);
+        for (_, info) in &arg_defs {
+            if let Some(ref stdin_urn_str) = info.stdin_target {
+                if let Ok(stdin_urn) = MediaUrn::from_string(stdin_urn_str) {
+                    valid_targets.push(stdin_urn);
+                }
             }
         }
 
@@ -1821,6 +1729,248 @@ fn extract_effective_payload(
     })?;
 
     Ok(serialized)
+}
+
+/// Compute the per-iteration CBOR argument payloads for a CLI invocation.
+///
+/// The input is the raw payload produced by `build_payload_from_cli` — a
+/// CBOR array of `{media_urn, value}` maps where file-path values are still
+/// raw path or glob strings.
+///
+/// Rules:
+/// - An arg whose media URN specializes `media:file-path` is **iterable**
+///   iff its arg-definition declares `is_sequence = false` **and** its raw
+///   value expands to more than one concrete file.
+/// - Zero iterable args → return the payload unchanged (single iteration).
+/// - One iterable arg → return one payload per expanded file, each with the
+///   iterable arg's value replaced by that single path as a `Text` value.
+///   `extract_effective_payload` then reads the single file and emits bytes.
+/// - Two or more iterable args → hard error: the ForEach axis is ambiguous
+///   and there is no user-specified policy for a cartesian product.
+fn build_cli_foreach_iterations(
+    raw_payload: &[u8],
+    cap: &Cap,
+) -> Result<Vec<Vec<u8>>, RuntimeError> {
+    let file_path_base = MediaUrn::from_string("media:file-path").map_err(|e| {
+        RuntimeError::Handler(format!("Invalid file-path base pattern: {}", e))
+    })?;
+
+    let cbor_value: ciborium::Value = ciborium::from_reader(raw_payload)
+        .map_err(|e| RuntimeError::Deserialize(format!("Failed to parse CBOR arguments: {}", e)))?;
+    let arguments = match cbor_value {
+        ciborium::Value::Array(ref arr) => arr.clone(),
+        _ => {
+            return Err(RuntimeError::Deserialize(
+                "CBOR arguments must be an array".to_string(),
+            ))
+        }
+    };
+
+    // Build arg-def map for is_sequence lookup via URN equivalence.
+    let arg_defs: Vec<(MediaUrn, bool)> = cap
+        .get_args()
+        .iter()
+        .filter_map(|a| {
+            MediaUrn::from_string(&a.media_urn)
+                .ok()
+                .map(|u| (u, a.is_sequence))
+        })
+        .collect();
+
+    let mut iterable: Option<(usize, Vec<std::path::PathBuf>)> = None;
+    for (idx, arg) in arguments.iter().enumerate() {
+        let ciborium::Value::Map(arg_map) = arg else {
+            continue;
+        };
+        let mut urn_str: Option<String> = None;
+        let mut value: Option<ciborium::Value> = None;
+        for (k, v) in arg_map {
+            if let ciborium::Value::Text(key) = k {
+                match key.as_str() {
+                    "media_urn" => {
+                        if let ciborium::Value::Text(s) = v {
+                            urn_str = Some(s.clone());
+                        }
+                    }
+                    "value" => value = Some(v.clone()),
+                    _ => {}
+                }
+            }
+        }
+        let (Some(urn_str), Some(value)) = (urn_str, value) else {
+            continue;
+        };
+        let arg_urn = MediaUrn::from_string(&urn_str).map_err(|e| {
+            RuntimeError::Handler(format!("Invalid argument media URN '{}': {}", urn_str, e))
+        })?;
+        if !file_path_base
+            .accepts(&arg_urn)
+            .map_err(|e| RuntimeError::Handler(format!("URN matching failed: {}", e)))?
+        {
+            continue;
+        }
+
+        let is_sequence_arg = arg_defs
+            .iter()
+            .find(|(p, _)| p.is_equivalent(&arg_urn).unwrap_or(false))
+            .map(|(_, s)| *s)
+            .unwrap_or(false);
+
+        if is_sequence_arg {
+            // Sequence args take multiple files as-is; no ForEach iteration.
+            continue;
+        }
+
+        let paths = expand_file_path_value(&value, &urn_str, true)?;
+        if paths.len() <= 1 {
+            continue;
+        }
+
+        if iterable.is_some() {
+            return Err(RuntimeError::Handler(
+                "Multiple file-path arguments with is_sequence=false each resolved \
+                 to more than one file; the ForEach axis is ambiguous. Declare at \
+                 most one such arg as scalar, or mark additional args as \
+                 is_sequence=true."
+                    .to_string(),
+            ));
+        }
+        iterable = Some((idx, paths));
+    }
+
+    let Some((idx, paths)) = iterable else {
+        return Ok(vec![raw_payload.to_vec()]);
+    };
+
+    // Build N per-iteration payloads: clone the CBOR array, replace the
+    // iterable arg's value at index `idx` with a single-path Text value.
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let mut args_for_iter = arguments.clone();
+        if let ciborium::Value::Map(ref mut arg_map) = args_for_iter[idx] {
+            for (k, v) in arg_map.iter_mut() {
+                if let ciborium::Value::Text(key) = k {
+                    if key == "value" {
+                        *v = ciborium::Value::Text(path.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+        let wrapped = ciborium::Value::Array(args_for_iter);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&wrapped, &mut buf).map_err(|e| {
+            RuntimeError::Serialize(format!("Failed to re-encode iter payload: {}", e))
+        })?;
+        out.push(buf);
+    }
+
+    Ok(out)
+}
+
+/// Expand a file-path arg value into a concrete list of filesystem paths.
+///
+/// The incoming value may be:
+/// - `Bytes` or `Text` containing a single path or a single glob pattern
+/// - `Array` of `Bytes`/`Text` items, each a path or a glob (CBOR mode only)
+///
+/// Globs (detected via `*`, `?`, or `[`) are expanded and the results filtered
+/// to regular files. Literal paths must exist and point at a regular file.
+/// Returns at least one path on success; empty matches fail hard so the
+/// caller never has to guard against a silently-empty list.
+fn expand_file_path_value(
+    value: &ciborium::Value,
+    urn_str: &str,
+    is_cli_mode: bool,
+) -> Result<Vec<std::path::PathBuf>, RuntimeError> {
+    let raw_paths: Vec<String> = match value {
+        ciborium::Value::Bytes(b) => vec![String::from_utf8_lossy(b).into_owned()],
+        ciborium::Value::Text(t) => vec![t.clone()],
+        ciborium::Value::Array(arr) => {
+            if is_cli_mode {
+                return Err(RuntimeError::Handler(format!(
+                    "File-path arg '{}' received a CBOR Array value in CLI mode; CLI \
+                     dispatch must expand globs before calling into the runtime",
+                    urn_str
+                )));
+            }
+            let mut paths = Vec::with_capacity(arr.len());
+            for item in arr {
+                match item {
+                    ciborium::Value::Text(s) => paths.push(s.clone()),
+                    ciborium::Value::Bytes(b) => paths.push(String::from_utf8_lossy(b).into_owned()),
+                    other => {
+                        return Err(RuntimeError::Handler(format!(
+                            "File-path arg '{}' array contained an unsupported CBOR item: {:?}",
+                            urn_str, other
+                        )));
+                    }
+                }
+            }
+            paths
+        }
+        other => {
+            return Err(RuntimeError::Handler(format!(
+                "File-path arg '{}' value must be Bytes, Text, or (CBOR mode) Array — got {:?}",
+                urn_str, other
+            )));
+        }
+    };
+
+    let mut resolved: Vec<std::path::PathBuf> = Vec::new();
+    for raw in &raw_paths {
+        let is_glob = raw.contains('*') || raw.contains('?') || raw.contains('[');
+        if is_glob {
+            let paths = glob::glob(raw).map_err(|e| {
+                RuntimeError::Handler(format!("Invalid glob pattern '{}': {}", raw, e))
+            })?;
+            let before = resolved.len();
+            for p in paths {
+                let p = p.map_err(|e| RuntimeError::Handler(format!("Glob error: {}", e)))?;
+                if p.is_file() {
+                    resolved.push(p);
+                }
+            }
+            if resolved.len() == before {
+                return Err(RuntimeError::Handler(format!(
+                    "No files matched glob pattern '{}'",
+                    raw
+                )));
+            }
+        } else {
+            let path = std::path::PathBuf::from(raw);
+            if !path.exists() {
+                return Err(RuntimeError::Handler(format!("File not found: '{}'", raw)));
+            }
+            if !path.is_file() {
+                return Err(RuntimeError::Handler(format!(
+                    "Path is not a regular file: '{}'",
+                    raw
+                )));
+            }
+            resolved.push(path);
+        }
+    }
+
+    Ok(resolved)
+}
+
+/// Replace an argument map's `value` and `media_urn` entries in place. Used by
+/// `extract_effective_payload` after reading file bytes so the downstream
+/// handler sees the post-conversion URN, not the original `media:file-path`.
+fn replace_arg_value(
+    arg_map: &mut Vec<(ciborium::Value, ciborium::Value)>,
+    new_value: ciborium::Value,
+    new_media_urn: String,
+) {
+    for (k, v) in arg_map.iter_mut() {
+        if let ciborium::Value::Text(key) = k {
+            match key.as_str() {
+                "value" => *v = new_value.clone(),
+                "media_urn" => *v = ciborium::Value::Text(new_media_urn.clone()),
+                _ => {}
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -1910,29 +2060,27 @@ impl FilePathContext {
         self.file_path_pattern.accepts(&arg_urn).unwrap_or(false)
     }
 
-    fn is_scalar(&self, media_urn_str: &str) -> bool {
-        // Uses list marker: no list marker = scalar (default)
-        match MediaUrn::from_string(media_urn_str) {
-            Ok(u) => u.is_scalar(),
-            Err(_) => false,
-        }
-    }
-
-    /// Given the media URN of an incoming file-path stream, find the matching
-    /// arg in the cap definition and return its stdin source URN.
-    /// Uses is_equivalent (not string comparison) to match the arg.
-    fn resolve_stdin_urn(&self, file_path_media_urn: &str) -> Option<String> {
+    /// Find a cap arg whose media URN is equivalent to the incoming URN.
+    /// Uses `MediaUrn::is_equivalent` (tag-set equality) rather than string
+    /// comparison so order-normalization and whitespace don't matter.
+    fn find_arg<'a>(&'a self, incoming: &MediaUrn) -> Option<&'a CapArg> {
         let manifest = self.manifest.as_ref()?;
         let cap_def = manifest
             .all_caps()
             .into_iter()
             .find(|c| c.urn.to_string() == self.cap_urn)?;
-        let incoming = crate::MediaUrn::from_string(file_path_media_urn).ok()?;
-        let arg_def = cap_def.args.iter().find(|a| {
-            crate::MediaUrn::from_string(&a.media_urn)
-                .map(|arg_urn| arg_urn.is_equivalent(&incoming).unwrap_or(false))
+        cap_def.args.iter().find(|a| {
+            MediaUrn::from_string(&a.media_urn)
+                .map(|arg_urn| arg_urn.is_equivalent(incoming).unwrap_or(false))
                 .unwrap_or(false)
-        })?;
+        })
+    }
+
+    /// Given the media URN of an incoming file-path stream, return the
+    /// matching arg's stdin-source target URN.
+    fn resolve_stdin_urn(&self, file_path_media_urn: &str) -> Option<String> {
+        let incoming = MediaUrn::from_string(file_path_media_urn).ok()?;
+        let arg_def = self.find_arg(&incoming)?;
         arg_def.sources.iter().find_map(|s| {
             if let ArgSource::Stdin { stdin } = s {
                 Some(stdin.clone())
@@ -1940,6 +2088,17 @@ impl FilePathContext {
                 None
             }
         })
+    }
+
+    /// Return the matching arg's `is_sequence` declaration. Defaults to
+    /// `false` when no matching arg is found (the conservative scalar path).
+    fn arg_is_sequence(&self, file_path_media_urn: &str) -> bool {
+        let Ok(incoming) = MediaUrn::from_string(file_path_media_urn) else {
+            return false;
+        };
+        self.find_arg(&incoming)
+            .map(|a| a.is_sequence)
+            .unwrap_or(false)
     }
 }
 
@@ -2074,42 +2233,117 @@ fn demux_multi_stream(
                             }
                         }
 
-                        // If the arg has a stdin source, read the file and relabel.
-                        // If not, pass through the file path as a plain value (no file reading).
+                        // If the arg has a stdin source, read the file(s)
+                        // and relabel. If not, pass through the file path as
+                        // a plain value.
+                        //
+                        // Cardinality is driven by the arg's `is_sequence`
+                        // declaration. Scalar args read one file; sequence
+                        // args read N files and emit each as its own CHUNK
+                        // (sequence mode on the output stream).
                         if let Some(resolved_urn) = ctx.resolve_stdin_urn(&media_urn) {
-                            let is_scalar = ctx.is_scalar(&media_urn);
-                            if is_scalar {
-                                let path_str = String::from_utf8_lossy(&path_bytes);
-                                match std::fs::read(path_str.as_ref()) {
-                                    Ok(file_bytes) => {
-                                        let (chunk_tx, chunk_rx) =
-                                            tokio::sync::mpsc::unbounded_channel();
-                                        let _ = chunk_tx
-                                            .send(Ok((ciborium::Value::Bytes(file_bytes), None)));
-                                        drop(chunk_tx);
-                                        let input_stream = InputStream {
-                                            media_urn: resolved_urn,
-                                            stream_meta: None,
-                                            rx: chunk_rx,
-                                        };
-                                        if streams_tx.send(Ok(input_stream)).is_err() {
+                            let is_sequence_arg = ctx.arg_is_sequence(&media_urn);
+                            let paths_raw = String::from_utf8_lossy(&path_bytes).into_owned();
+                            let candidates: Vec<String> = if is_sequence_arg {
+                                // Sequence arg: allow a newline-separated list
+                                // of paths or globs (plain text, no CBOR wrapping).
+                                paths_raw
+                                    .lines()
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect()
+                            } else {
+                                vec![paths_raw]
+                            };
+
+                            let mut resolved: Vec<std::path::PathBuf> = Vec::new();
+                            let mut expansion_error: Option<String> = None;
+                            for raw in &candidates {
+                                let is_glob = raw.contains('*') || raw.contains('?') || raw.contains('[');
+                                if is_glob {
+                                    match glob::glob(raw) {
+                                        Ok(paths) => {
+                                            let before = resolved.len();
+                                            for p in paths {
+                                                match p {
+                                                    Ok(p) if p.is_file() => resolved.push(p),
+                                                    Ok(_) => {}
+                                                    Err(e) => {
+                                                        expansion_error = Some(format!("Glob error: {}", e));
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if expansion_error.is_none() && resolved.len() == before {
+                                                expansion_error = Some(format!("No files matched glob pattern '{}'", raw));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            expansion_error = Some(format!("Invalid glob pattern '{}': {}", raw, e));
+                                        }
+                                    }
+                                } else {
+                                    let p = std::path::PathBuf::from(raw);
+                                    if !p.exists() {
+                                        expansion_error = Some(format!("File not found: '{}'", raw));
+                                    } else if !p.is_file() {
+                                        expansion_error = Some(format!("Path is not a regular file: '{}'", raw));
+                                    } else {
+                                        resolved.push(p);
+                                    }
+                                }
+                                if expansion_error.is_some() {
+                                    break;
+                                }
+                            }
+
+                            if let Some(err) = expansion_error {
+                                let _ = streams_tx.send(Err(StreamError::Io(err)));
+                                break;
+                            }
+
+                            if !is_sequence_arg && resolved.len() != 1 {
+                                let _ = streams_tx.send(Err(StreamError::Protocol(format!(
+                                    "File-path arg with is_sequence=false resolved to {} files; \
+                                     expected exactly 1. Sender must declare is_sequence=true to send multiple files.",
+                                    resolved.len()
+                                ))));
+                                break;
+                            }
+
+                            let (chunk_tx, chunk_rx) = tokio::sync::mpsc::unbounded_channel();
+                            let mut send_failed = false;
+                            for path in &resolved {
+                                match std::fs::read(path) {
+                                    Ok(bytes) => {
+                                        if chunk_tx.send(Ok((ciborium::Value::Bytes(bytes), None))).is_err() {
+                                            send_failed = true;
                                             break;
                                         }
                                     }
                                     Err(e) => {
-                                        let _ = streams_tx.send(Err(StreamError::Io(format!(
+                                        let _ = chunk_tx.send(Err(StreamError::Io(format!(
                                             "Failed to read file '{}': {}",
-                                            path_str, e
+                                            path.display(),
+                                            e
                                         ))));
+                                        send_failed = true;
                                         break;
                                     }
                                 }
-                            } else {
-                                // list — not yet implemented in CBOR mode
-                                let _ = streams_tx.send(Err(StreamError::Protocol(
-                                    "File-path list conversion not yet implemented in CBOR mode"
-                                        .into(),
-                                )));
+                            }
+                            drop(chunk_tx);
+
+                            if send_failed {
+                                break;
+                            }
+
+                            let input_stream = InputStream {
+                                media_urn: resolved_urn,
+                                stream_meta: None,
+                                rx: chunk_rx,
+                            };
+                            if streams_tx.send(Ok(input_stream)).is_err() {
                                 break;
                             }
                         } else {
@@ -2726,37 +2960,52 @@ impl CartridgeRuntime {
         let cap_accepts_stdin = cap.accepts_stdin();
 
         // Priority: CLI args > stdin (args take precedence)
-        let payload = if !cli_args.is_empty() {
-            // ARGUMENT PATH: Build from CLI arguments (may include file paths)
-            // File-path auto-conversion happens in extract_effective_payload
+        if !cli_args.is_empty() {
+            // ARGUMENT PATH: Build from CLI arguments (may include file paths
+            // or globs). If any file-path arg is declared `is_sequence=false`
+            // but its value expands to multiple files, the runtime iterates
+            // the handler once per file — a single process, N invocations,
+            // outputs concatenated to stdout in glob-expansion order.
             let raw_payload = self.build_payload_from_cli(&cap, cli_args)?;
-            extract_effective_payload(
-                &raw_payload,
-                Some("application/cbor"),
-                &cap,
-                true, // CLI mode
-            )?
+            let iterations = build_cli_foreach_iterations(&raw_payload, &cap)?;
+            for per_iter_payload in iterations {
+                let payload = extract_effective_payload(
+                    &per_iter_payload,
+                    Some("application/cbor"),
+                    &cap,
+                    true, // CLI mode
+                )?;
+                self.dispatch_cli_payload(&cap, factory.clone(), payload)
+                    .await?;
+            }
+            Ok(())
         } else if stdin_is_piped && cap_accepts_stdin {
             // STREAMING PATH: No args, read stdin in chunks and accumulate
-            self.build_payload_from_streaming_stdin(&cap)?
+            let payload = self.build_payload_from_streaming_stdin(&cap)?;
+            self.dispatch_cli_payload(&cap, factory, payload).await
         } else {
-            // No input provided
-            return Err(RuntimeError::MissingArgument(
+            Err(RuntimeError::MissingArgument(
                 "No input provided (expected CLI arguments or piped stdin)".to_string(),
-            ));
-        };
+            ))
+        }
+    }
 
-        // Create CLI-mode frame sender and no-op peer invoker
+    /// Dispatch one CLI-mode invocation: take the (already file-path-resolved)
+    /// CBOR arguments payload, build input streams, set up a CLI-backed
+    /// `OutputStream`, and run the handler to completion.
+    async fn dispatch_cli_payload(
+        &self,
+        _cap: &Cap,
+        factory: OpFactory,
+        payload: Vec<u8>,
+    ) -> Result<(), RuntimeError> {
         let cli_emitter = CliStreamEmitter::without_ndjson();
         let frame_sender = CliFrameSender::with_emitter(cli_emitter);
         let peer = NoPeerInvoker;
 
-        // STREAM MULTIPLEXING: Parse CBOR arguments and create separate streams
-        // The payload from extract_effective_payload is a CBOR array of argument maps
         let cbor_value: ciborium::Value = ciborium::from_reader(&payload[..]).map_err(|e| {
             RuntimeError::Deserialize(format!("Failed to parse CBOR arguments: {}", e))
         })?;
-
         let arguments = match cbor_value {
             ciborium::Value::Array(arr) => arr,
             _ => {
@@ -2766,137 +3015,118 @@ impl CartridgeRuntime {
             }
         };
 
-        // Create channel and send each argument as separate Frame streams
         let (tx, rx) = crossbeam_channel::unbounded();
         let max_chunk = Limits::default().max_chunk;
-        let request_id = MessageId::new_uuid(); // Dummy request ID for CLI mode
+        let request_id = MessageId::new_uuid();
 
         for arg in arguments {
-            if let ciborium::Value::Map(arg_map) = arg {
-                let mut media_urn: Option<String> = None;
-                let mut value_bytes: Option<Vec<u8>> = None;
-
-                // Extract media_urn and value
-                for (k, v) in arg_map {
-                    if let ciborium::Value::Text(key) = k {
-                        match key.as_str() {
-                            "media_urn" => {
-                                if let ciborium::Value::Text(s) = v {
-                                    media_urn = Some(s);
-                                }
+            let ciborium::Value::Map(arg_map) = arg else {
+                continue;
+            };
+            let mut media_urn: Option<String> = None;
+            let mut value_bytes: Option<Vec<u8>> = None;
+            for (k, v) in arg_map {
+                if let ciborium::Value::Text(key) = k {
+                    match key.as_str() {
+                        "media_urn" => {
+                            if let ciborium::Value::Text(s) = v {
+                                media_urn = Some(s);
                             }
-                            "value" => {
-                                // ALL values must be CBOR-encoded before sending as CHUNK payloads
-                                // Protocol: CHUNK payloads contain CBOR-encoded data (encode once, no double-wrapping)
-                                let mut cbor_bytes = Vec::new();
-                                ciborium::into_writer(&v, &mut cbor_bytes).map_err(|e| {
-                                    RuntimeError::Serialize(format!(
-                                        "Failed to encode value: {}",
-                                        e
-                                    ))
-                                })?;
-                                value_bytes = Some(cbor_bytes);
-                            }
-                            _ => {}
                         }
+                        "value" => {
+                            let mut cbor_bytes = Vec::new();
+                            ciborium::into_writer(&v, &mut cbor_bytes).map_err(|e| {
+                                RuntimeError::Serialize(format!(
+                                    "Failed to encode value: {}",
+                                    e
+                                ))
+                            })?;
+                            value_bytes = Some(cbor_bytes);
+                        }
+                        _ => {}
                     }
                 }
+            }
 
-                // Send this argument as a CBOR frame stream
-                if let (Some(urn), Some(bytes)) = (media_urn, value_bytes) {
-                    let stream_id = uuid::Uuid::new_v4().to_string();
+            let (Some(urn), Some(bytes)) = (media_urn, value_bytes) else {
+                continue;
+            };
+            let stream_id = uuid::Uuid::new_v4().to_string();
+            let start_frame = Frame::stream_start(
+                request_id.clone(),
+                stream_id.clone(),
+                urn.clone(),
+                None,
+            );
+            tx.send(start_frame).map_err(|_| {
+                RuntimeError::Handler("Failed to send STREAM_START".to_string())
+            })?;
 
-                    // Send STREAM_START
-                    let start_frame = Frame::stream_start(
+            let chunk_count = if bytes.is_empty() {
+                let checksum = Frame::compute_checksum(&[]);
+                let chunk_frame = Frame::chunk(
+                    request_id.clone(),
+                    stream_id.clone(),
+                    0,
+                    vec![],
+                    0,
+                    checksum,
+                );
+                tx.send(chunk_frame).map_err(|_| {
+                    RuntimeError::Handler("Failed to send CHUNK".to_string())
+                })?;
+                1
+            } else {
+                let mut offset = 0;
+                let mut chunk_index = 0u64;
+                while offset < bytes.len() {
+                    let chunk_size = (bytes.len() - offset).min(max_chunk);
+                    let chunk_data = bytes[offset..offset + chunk_size].to_vec();
+                    let checksum = Frame::compute_checksum(&chunk_data);
+                    let chunk_frame = Frame::chunk(
                         request_id.clone(),
                         stream_id.clone(),
-                        urn.clone(),
-                        None,
+                        0,
+                        chunk_data,
+                        chunk_index,
+                        checksum,
                     );
-                    tx.send(start_frame).map_err(|_| {
-                        RuntimeError::Handler("Failed to send STREAM_START".to_string())
+                    tx.send(chunk_frame).map_err(|_| {
+                        RuntimeError::Handler("Failed to send CHUNK".to_string())
                     })?;
-
-                    // Send CHUNK frame(s)
-                    let chunk_count = if bytes.is_empty() {
-                        // Empty value - send single empty chunk
-                        let checksum = Frame::compute_checksum(&[]);
-                        let chunk_frame = Frame::chunk(
-                            request_id.clone(),
-                            stream_id.clone(),
-                            0,
-                            vec![],
-                            0,
-                            checksum,
-                        );
-                        tx.send(chunk_frame).map_err(|_| {
-                            RuntimeError::Handler("Failed to send CHUNK".to_string())
-                        })?;
-                        1
-                    } else {
-                        // Non-empty value - chunk into max_chunk pieces
-                        let mut offset = 0;
-                        let mut chunk_index = 0u64;
-                        while offset < bytes.len() {
-                            let chunk_size = (bytes.len() - offset).min(max_chunk);
-                            let chunk_data = bytes[offset..offset + chunk_size].to_vec();
-                            let checksum = Frame::compute_checksum(&chunk_data);
-                            let chunk_frame = Frame::chunk(
-                                request_id.clone(),
-                                stream_id.clone(),
-                                0,
-                                chunk_data,
-                                chunk_index,
-                                checksum,
-                            );
-                            tx.send(chunk_frame).map_err(|_| {
-                                RuntimeError::Handler("Failed to send CHUNK".to_string())
-                            })?;
-                            offset += chunk_size;
-                            chunk_index += 1;
-                        }
-                        chunk_index
-                    };
-
-                    // Send STREAM_END
-                    let end_frame =
-                        Frame::stream_end(request_id.clone(), stream_id.clone(), chunk_count);
-                    tx.send(end_frame).map_err(|_| {
-                        RuntimeError::Handler("Failed to send STREAM_END".to_string())
-                    })?;
+                    offset += chunk_size;
+                    chunk_index += 1;
                 }
-            }
+                chunk_index
+            };
+
+            let end_frame =
+                Frame::stream_end(request_id.clone(), stream_id.clone(), chunk_count);
+            tx.send(end_frame).map_err(|_| {
+                RuntimeError::Handler("Failed to send STREAM_END".to_string())
+            })?;
         }
 
-        // Send END frame to signal request completion
         let end_frame = Frame::end(request_id.clone(), None);
         tx.send(end_frame)
             .map_err(|_| RuntimeError::Handler("Failed to send END".to_string()))?;
-        drop(tx); // Close channel
+        drop(tx);
 
-        // Create InputPackage from frame channel (no file-path interception — already done)
         let input_package = demux_multi_stream(rx, None);
 
-        // Create OutputStream backed by CLI frame sender
         let cli_sender: Arc<dyn FrameSender> = Arc::new(frame_sender);
         let output = OutputStream::new(
             cli_sender.clone(),
             uuid::Uuid::new_v4().to_string(),
             "*".to_string(),
             request_id.clone(),
-            None, // No routing_id in CLI mode
+            None,
             Limits::default().max_chunk,
         );
 
-        // Invoke Op handler
         let op = factory();
         let peer_arc: Arc<dyn PeerInvoker> = Arc::new(peer);
-        let result = dispatch_op(op, input_package, output, peer_arc).await;
-
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        }
+        dispatch_op(op, input_package, output, peer_arc).await
     }
 
     /// Find a cap by its command name (the CLI subcommand).
@@ -5285,6 +5515,10 @@ mod tests {
     // TEST339: file-path-array reads multiple files with glob pattern
     #[test]
     fn test339_file_path_array_glob_expansion() {
+        // A sequence-declared file-path arg (`is_sequence = true`) expands a
+        // glob to N files and the runtime delivers them as a CBOR Array of
+        // Bytes — one array item per matched file. List-ness comes from the
+        // arg declaration, not from any `;list` URN tag.
         let temp_dir = std::env::temp_dir().join("test339");
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -5293,33 +5527,34 @@ mod tests {
         std::fs::write(&file1, b"content1").unwrap();
         std::fs::write(&file2, b"content2").unwrap();
 
+        let mut batch_arg = CapArg::new(
+            "media:file-path;textable",
+            true,
+            vec![
+                ArgSource::Stdin {
+                    stdin: "media:".to_string(),
+                },
+                ArgSource::Position { position: 0 },
+            ],
+        );
+        batch_arg.is_sequence = true;
+
         let cap = create_test_cap(
             "cap:in=\"media:\";op=batch;out=\"media:void\"",
             "Batch",
             "batch",
-            vec![CapArg::new(
-                "media:file-path;textable;list",
-                true,
-                vec![
-                    ArgSource::Stdin {
-                        stdin: "media:".to_string(),
-                    },
-                    ArgSource::Position { position: 0 },
-                ],
-            )],
+            vec![batch_arg],
         );
 
         let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap.clone()]);
         let runtime = CartridgeRuntime::with_manifest(manifest);
 
-        // Pass glob pattern directly (NOT JSON - no ;json tag in media URN)
         let pattern = format!("{}/*.txt", temp_dir.display());
         let cli_args = vec![pattern];
         let files_bytes = test_filepath_array_conversion(&cap, &cli_args, &runtime);
 
         assert_eq!(files_bytes.len(), 2, "Should find 2 files");
 
-        // Verify contents (order may vary, so sort)
         let mut sorted = files_bytes.clone();
         sorted.sort();
         assert_eq!(sorted, vec![b"content1".to_vec(), b"content2".to_vec()]);
@@ -5376,11 +5611,13 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("/nonexistent/file.pdf"),
-            "Error should mention file path"
+            "Error should mention file path; got: {}",
+            err_msg,
         );
         assert!(
-            err_msg.contains("Failed to read file"),
-            "Error should be clear"
+            err_msg.contains("File not found") || err_msg.contains("Failed to read file"),
+            "Error should be clear; got: {}",
+            err_msg,
         );
     }
 
@@ -5507,7 +5744,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;list",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin {
@@ -5531,7 +5768,7 @@ mod tests {
         let arg = ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("media_urn".to_string()),
-                ciborium::Value::Text("media:file-path;textable;list".to_string()),
+                ciborium::Value::Text("media:file-path;textable".to_string()),
             ),
             (
                 ciborium::Value::Text("value".to_string()),
@@ -5567,7 +5804,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;list",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin {
@@ -5591,7 +5828,7 @@ mod tests {
         let arg = ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("media_urn".to_string()),
-                ciborium::Value::Text("media:file-path;textable;list".to_string()),
+                ciborium::Value::Text("media:file-path;textable".to_string()),
             ),
             (
                 ciborium::Value::Text("value".to_string()),
@@ -5849,42 +6086,45 @@ mod tests {
         std::fs::remove_file(test_file).ok();
     }
 
-    // TEST351: file-path array with empty CBOR array returns empty (CBOR mode)
+    // TEST351: sequence-declared file-path arg with empty input array (CBOR
+    // mode) passes through as an empty CBOR Array — no implicit expansion,
+    // no spurious error. Declaring `is_sequence = true` is what makes the
+    // runtime emit an Array shape; URN tags are semantic only.
     #[test]
     fn test351_file_path_array_empty_array() {
+        let mut batch_arg = CapArg::new(
+            "media:file-path;textable",
+            false, // Not required
+            vec![ArgSource::Stdin {
+                stdin: "media:".to_string(),
+            }],
+        );
+        batch_arg.is_sequence = true;
+
         let cap = create_test_cap(
             "cap:in=\"media:\";op=batch;out=\"media:void\"",
             "Test",
             "batch",
-            vec![CapArg::new(
-                "media:file-path;textable;list",
-                false, // Not required
-                vec![ArgSource::Stdin {
-                    stdin: "media:".to_string(),
-                }],
-            )],
+            vec![batch_arg],
         );
 
-        // Build CBOR payload with empty Array value (CBOR mode)
         let arg = ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("media_urn".to_string()),
-                ciborium::Value::Text("media:file-path;textable;list".to_string()),
+                ciborium::Value::Text("media:file-path;textable".to_string()),
             ),
             (
                 ciborium::Value::Text("value".to_string()),
                 ciborium::Value::Array(vec![]),
-            ), // Empty array
+            ),
         ]);
         let args = ciborium::Value::Array(vec![arg]);
         let mut payload = Vec::new();
         ciborium::into_writer(&args, &mut payload).unwrap();
 
-        // Do file-path conversion with is_cli_mode=false (CBOR mode allows Arrays)
         let result =
             extract_effective_payload(&payload, Some("application/cbor"), &cap, false).unwrap();
 
-        // Decode and verify empty array is preserved
         let result_cbor: ciborium::Value = ciborium::from_reader(&result[..]).unwrap();
         let result_array = match result_cbor {
             ciborium::Value::Array(arr) => arr,
@@ -6070,7 +6310,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;list",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin {
@@ -6095,7 +6335,7 @@ mod tests {
         let arg = ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("media_urn".to_string()),
-                ciborium::Value::Text("media:file-path;textable;list".to_string()),
+                ciborium::Value::Text("media:file-path;textable".to_string()),
             ),
             (
                 ciborium::Value::Text("value".to_string()),
@@ -6131,20 +6371,23 @@ mod tests {
         let file1 = temp_dir.join("file1.txt");
         std::fs::write(&file1, b"content1").unwrap();
 
+        let mut batch_arg = CapArg::new(
+            "media:file-path;textable",
+            true,
+            vec![
+                ArgSource::Stdin {
+                    stdin: "media:".to_string(),
+                },
+                ArgSource::Position { position: 0 },
+            ],
+        );
+        batch_arg.is_sequence = true;
+
         let cap = create_test_cap(
             "cap:in=\"media:\";op=batch;out=\"media:void\"",
             "Test",
             "batch",
-            vec![CapArg::new(
-                "media:file-path;textable;list",
-                true,
-                vec![
-                    ArgSource::Stdin {
-                        stdin: "media:".to_string(),
-                    },
-                    ArgSource::Position { position: 0 },
-                ],
-            )],
+            vec![batch_arg],
         );
 
         let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
@@ -6180,20 +6423,23 @@ mod tests {
         std::fs::write(&file1, b"text").unwrap();
         std::fs::write(&file2, b"json").unwrap();
 
+        let mut batch_arg = CapArg::new(
+            "media:file-path;textable",
+            true,
+            vec![
+                ArgSource::Stdin {
+                    stdin: "media:".to_string(),
+                },
+                ArgSource::Position { position: 0 },
+            ],
+        );
+        batch_arg.is_sequence = true;
+
         let cap = create_test_cap(
             "cap:in=\"media:\";op=batch;out=\"media:void\"",
             "Test",
             "batch",
-            vec![CapArg::new(
-                "media:file-path;textable;list",
-                true,
-                vec![
-                    ArgSource::Stdin {
-                        stdin: "media:".to_string(),
-                    },
-                    ArgSource::Position { position: 0 },
-                ],
-            )],
+            vec![batch_arg],
         );
 
         let manifest = create_test_manifest("TestCartridge", "1.0.0", "Test", vec![cap]);
@@ -6207,7 +6453,7 @@ mod tests {
         let arg = ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("media_urn".to_string()),
-                ciborium::Value::Text("media:file-path;textable;list".to_string()),
+                ciborium::Value::Text("media:file-path;textable".to_string()),
             ),
             (
                 ciborium::Value::Text("value".to_string()),
@@ -6360,7 +6606,7 @@ mod tests {
             "Test",
             "batch",
             vec![CapArg::new(
-                "media:file-path;textable;list",
+                "media:file-path;textable",
                 true,
                 vec![
                     ArgSource::Stdin {
@@ -6381,7 +6627,7 @@ mod tests {
         let arg = ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("media_urn".to_string()),
-                ciborium::Value::Text("media:file-path;textable;list".to_string()),
+                ciborium::Value::Text("media:file-path;textable".to_string()),
             ),
             (
                 ciborium::Value::Text("value".to_string()),
@@ -6788,24 +7034,27 @@ mod tests {
         std::fs::write(&file2, b"content2").unwrap();
         std::fs::write(&file3, b"content3").unwrap();
 
+        let mut batch_arg = CapArg::new(
+            "media:file-path;textable",
+            true,
+            vec![ArgSource::Stdin {
+                stdin: "media:".to_string(),
+            }],
+        );
+        batch_arg.is_sequence = true;
+
         let cap = create_test_cap(
             "cap:in=\"media:\";op=batch;out=\"media:void\"",
             "Test",
             "batch",
-            vec![CapArg::new(
-                "media:file-path;textable;list",
-                true,
-                vec![ArgSource::Stdin {
-                    stdin: "media:".to_string(),
-                }],
-            )],
+            vec![batch_arg],
         );
 
         // Build CBOR payload with Array of file paths (CBOR mode only)
         let arg = ciborium::Value::Map(vec![
             (
                 ciborium::Value::Text("media_urn".to_string()),
-                ciborium::Value::Text("media:file-path;textable;list".to_string()),
+                ciborium::Value::Text("media:file-path;textable".to_string()),
             ),
             (
                 ciborium::Value::Text("value".to_string()),

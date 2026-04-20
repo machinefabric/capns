@@ -278,21 +278,25 @@ fn standard_registry() -> Arc<CapRegistry> {
 // Binary Discovery and Auto-Build
 // =============================================================================
 
-/// Get the cartridge directory path
+/// Get the cartridge directory path.
+///
+/// This crate lives at `machinefabric/capdag/cartridge-scenarios`, so:
+/// - `testcartridge` is at `../testcartridge` (sibling under capdag/)
+/// - all other cartridges live at `../../{name}` (machinefabric root)
 fn cartridge_dir(name: &str) -> Option<PathBuf> {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").ok()?;
     let manifest_path = PathBuf::from(&manifest_dir);
+    let capdag_root = manifest_path.parent()?; // capdag/
+    let project_root = capdag_root.parent()?; // machinefabric/
 
-    // testcartridge is inside capdag/, others are at workspace root
     if name == "testcartridge" {
-        let dir = manifest_path.join(name);
+        let dir = capdag_root.join(name);
         if dir.exists() {
             return Some(dir);
         }
     }
 
-    // Standard location: machinefabric/{name}
-    let dir = manifest_path.parent()?.join(name);
+    let dir = project_root.join(name);
     if dir.exists() {
         Some(dir)
     } else {
@@ -635,14 +639,7 @@ fn build_cartridge(name: &str) -> Result<(), String> {
 /// Looks for both unversioned (e.g., `pdfcartridge`) and versioned (e.g., `pdfcartridge-0.93.6217`)
 /// names in the cartridge's `target/debug/` directory.
 fn find_cartridge_binary(name: &str) -> Option<PathBuf> {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").ok()?;
-    let manifest_path = PathBuf::from(&manifest_dir);
-
-    let cart_root = if name == "testcartridge" {
-        manifest_path.join(name)
-    } else {
-        manifest_path.parent()?.join(name)
-    };
+    let cart_root = cartridge_dir(name)?;
 
     // Swift packages: xcodebuild output dir when `.use-xcodebuild` is set,
     // otherwise the standard SwiftPM .build/debug directory. Rust uses

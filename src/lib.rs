@@ -189,7 +189,9 @@ pub use orchestrator::{
     CapProgressFn, CartridgeManager, CborUtilError, EdgeGroup, ExecutionContext, ExecutionError,
     NodeData, ParseOrchestrationError, ProgressMapper, ResolvedEdge, ResolvedGraph,
     // Stream I/O — shared between orchestrator executor and machfab engine
-    decode_terminal_output, send_one_stream, unwrap_cbor_value, StreamIoError,
+    collect_terminal_output, decode_terminal_output, send_one_stream, unwrap_cbor_value,
+    ActivityTimer, IncrementalWriter, PipelineLogFn, PipelineProgressTracker, StreamIoError,
+    TerminalMeta, PIPELINE_STALL_TIMEOUT_SECS,
 };
 
 // InputResolver — unified input resolution with media detection

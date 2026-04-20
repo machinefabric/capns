@@ -1,0 +1,22 @@
+[package]
+name = "cartridge-scenarios"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end multi-cartridge scenario tests for the capdag orchestrator. Separated from the capdag crate so `cargo test` on capdag never runs them."
+license = "MIT"
+
+# This package exists purely to host integration tests. There is no library
+# target — only the `tests/*.rs` files are compiled and run.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+capdag = { path = ".." }
+ciborium = "0.2"
+serial_test = "3.0"
+tempfile = "3.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

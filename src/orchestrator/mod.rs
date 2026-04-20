@@ -43,4 +43,8 @@ pub use executor::{
     ExecutionError, NodeData, ProgressMapper,
 };
 
-pub use stream_io::{decode_terminal_output, send_one_stream, unwrap_cbor_value, StreamIoError};
+pub use stream_io::{
+    collect_terminal_output, decode_terminal_output, send_one_stream, unwrap_cbor_value,
+    ActivityTimer, IncrementalWriter, PipelineLogFn, PipelineProgressTracker, StreamIoError,
+    TerminalMeta, PIPELINE_STALL_TIMEOUT_SECS,
+};

@@ -21,13 +21,15 @@
 use super::types::{ResolvedEdge, ResolvedGraph};
 use crate::{
     handshake, CapManifest, CapRegistry, CapUrn, CartridgeHostRuntime, CartridgeRepo, Frame,
-    FrameReader, FrameType, FrameWriter, Limits, RelayNotifyCapabilitiesPayload, RelaySlave,
-    RelaySwitch, DEFAULT_MAX_CHUNK,
+    FrameReader, FrameWriter, Limits, RelayNotifyCapabilitiesPayload, RelaySlave, RelaySwitch,
+    DEFAULT_MAX_CHUNK,
 };
+use super::stream_io::StreamIoError;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -1078,7 +1080,6 @@ impl ExecutionContext {
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(DEFAULT_ACTIVITY_TIMEOUT_SECS);
-        let activity_timeout = Duration::from_secs(activity_timeout_secs);
 
         let total_streams = edges.len() + extra_args.len();
         tracing::debug!(target: "execute_fanin", "cap={} streams={} to={}", cap_urn, total_streams, to);
@@ -1159,127 +1160,76 @@ impl ExecutionContext {
             .map_err(|e| ExecutionError::HostError(format!("END: {}", e)))?;
         tracing::debug!(target: "execute_fanin", "END frame sent, waiting for response...");
 
-        // Collect response using tokio::select! to concurrently:
-        // 1. Pump read_from_masters (routes peer requests internally)
-        // 2. Receive response frames on rx
-        //
-        // This is the KEY FIX for the deadlock: we no longer block on
-        // read_from_masters_timeout in a sync loop. Instead, we use async
-        // select! so peer requests (internal provider → external cartridge) can
-        // be processed while we wait for the response.
-        let mut response_chunks: Vec<u8> = Vec::new();
-        let mut got_end = false;
-        let mut is_sequence: Option<bool> = None;
-        let wait_start = std::time::Instant::now();
-        let mut last_activity = std::time::Instant::now();
-        let mut last_warn_secs: u64 = 0;
-
-        while !got_end {
-            tokio::select! {
-                biased;
-
-                // Pump one frame from masters — routes peer requests internally
-                pump_result = self.switch.read_from_masters_timeout(Duration::from_millis(200)) => {
-                    match pump_result {
-                        Ok(Some(frame)) => {
-                            // Routed frame from masters — NOT specific to this cap's request.
-                            // Do NOT reset last_activity; only rx frames count for timeout.
-                            tracing::debug!(
-                                "  [engine] {:?} id={:?} cap={:?}",
-                                frame.frame_type, frame.id, frame.cap
-                            );
-                        }
-                        Ok(None) => {
-                            let idle = last_activity.elapsed();
-                            if idle > activity_timeout {
-                                return Err(ExecutionError::ActivityTimeout {
-                                    cap_urn: cap_urn.clone(),
-                                    idle_secs: idle.as_secs(),
-                                    limit_secs: activity_timeout_secs,
-                                });
-                            }
-                            // Warn every 30s while idle
-                            let idle_secs = idle.as_secs();
-                            if idle_secs >= 30 && idle_secs / 30 > last_warn_secs / 30 {
-                                last_warn_secs = idle_secs;
-                                tracing::warn!(
-                                    "[execute_fanin] cap='{}' rid={:?} idle={:.0}s timeout={}s elapsed={:.0}s",
-                                    cap_urn, request_id, idle.as_secs_f64(),
-                                    activity_timeout_secs, wait_start.elapsed().as_secs_f64()
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            return Err(ExecutionError::HostError(format!(
-                                "read_from_masters: {}",
-                                e
-                            )));
-                        }
-                    }
+        // Spawn a pump task that drains `read_from_masters_timeout` so peer
+        // requests get routed while we wait for this cap's terminal frames.
+        // Without the pump, cartridge→cartridge peer calls deadlock. The
+        // pump exits via the stop flag — never via `abort()`, which can
+        // drop frames mid-route.
+        let pump_stop = Arc::new(AtomicBool::new(false));
+        let pump_stop_flag = pump_stop.clone();
+        let pump_switch = self.switch.clone();
+        let pump_handle = tokio::spawn(async move {
+            loop {
+                if pump_stop_flag.load(Ordering::Relaxed) {
+                    break;
                 }
-
-                // Receive response frame
-                Some(frame) = rx.recv() => {
-                    last_activity = std::time::Instant::now();
-                    tracing::debug!("[execute_fanin] rx.recv(): {:?} id={:?} payload_len={}", frame.frame_type, frame.id, frame.payload.as_ref().map_or(0, |p| p.len()));
-                    match frame.frame_type {
-                        FrameType::Chunk => {
-                            if let Some(payload) = &frame.payload {
-                                response_chunks.extend_from_slice(payload);
-                            }
-                        }
-                        FrameType::End => {
-                            // exit_code in END meta: 0 = success, absent or non-zero = failure
-                            let exit_code = frame.exit_code();
-                            if exit_code != Some(0) {
-                                let detail = match exit_code {
-                                    Some(code) => format!("exit_code={}", code),
-                                    None => "exit_code absent (cartridge likely crashed)".to_string(),
-                                };
-                                return Err(ExecutionError::CartridgeExecutionFailed {
-                                    cap_urn: cap_urn.clone(),
-                                    details: format!("END without success: {}", detail),
-                                });
-                            }
-                            if let Some(payload) = &frame.payload {
-                                response_chunks.extend_from_slice(payload);
-                            }
-                            got_end = true;
-                        }
-                        FrameType::Err => {
-                            let msg = frame
-                                .error_message()
-                                .unwrap_or("Unknown cartridge error")
-                                .to_string();
-                            return Err(ExecutionError::CartridgeExecutionFailed {
-                                cap_urn: cap_urn.clone(),
-                                details: msg,
-                            });
-                        }
-                        FrameType::Log => {
-                            if let Some(p) = frame.log_progress() {
-                                let cartridge_msg = frame.log_message().unwrap_or("");
-                                if let Some(pfn) = &progress_fn {
-                                    pfn(p, cap_urn, cartridge_msg);
-                                }
-                                tracing::debug!("  [cartridge progress:{:.2}] {}", p, cartridge_msg);
-                            } else if let Some(msg) = frame.log_message() {
-                                let level = frame.log_level().unwrap_or("info");
-                                tracing::info!("[cartridge log:{}] cap='{}' {}", level, cap_urn, msg);
-                            }
-                        }
-                        FrameType::StreamStart => {
-                            if let Some(seq) = frame.is_sequence {
-                                is_sequence = Some(seq);
-                            }
-                        }
-                        _ => {
-                            // STREAM_END and others — structural, skip
-                        }
+                match pump_switch
+                    .read_from_masters_timeout(Duration::from_millis(200))
+                    .await
+                {
+                    Ok(Some(_frame)) => {
+                        // Routed internally by handle_master_frame — nothing to do.
+                    }
+                    Ok(None) => {
+                        // Timeout — loop again (also checks stop flag).
+                    }
+                    Err(e) => {
+                        // Per-frame relay errors aren't fatal to the pump.
+                        // Log and continue so other requests keep routing.
+                        tracing::warn!("[executor pump] relay error (continuing): {}", e);
                     }
                 }
             }
-        }
+        });
+
+        // Delegate the terminal-collect loop to the shared `stream_io`
+        // implementation used by the machfab engine. This is the single
+        // source of truth for frame decoding, activity timeouts, progress
+        // callbacks, and END/ERR handling.
+        let collect_result = super::stream_io::collect_terminal_output(
+            rx,
+            progress_fn,
+            cap_urn,
+            None,
+            None,
+            None,
+            None,
+            activity_timeout_secs,
+            &self.switch,
+            &request_id,
+        )
+        .await;
+
+        // Stop the pump before returning — either on success or error.
+        pump_stop.store(true, Ordering::Relaxed);
+        let _ = pump_handle.await;
+
+        let (response_chunks, is_sequence, _terminal_meta) =
+            collect_result.map_err(|e| match e {
+                StreamIoError::ActivityTimeout {
+                    cap_urn,
+                    idle_secs,
+                    limit_secs,
+                } => ExecutionError::ActivityTimeout {
+                    cap_urn,
+                    idle_secs,
+                    limit_secs,
+                },
+                StreamIoError::Terminal { cap_urn, details } => {
+                    ExecutionError::CartridgeExecutionFailed { cap_urn, details }
+                }
+                other => ExecutionError::HostError(format!("{}", other)),
+            })?;
 
         tracing::info!(
             "[execute_fanin] got End for cap='{}' request_id={:?} response_len={}",
