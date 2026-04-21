@@ -463,6 +463,17 @@ impl MediaUrnRegistry {
         cached_specs.get(&normalized_urn).cloned()
     }
 
+    /// Insert a spec directly into the in-memory cache, keyed by its
+    /// normalized URN. Exposed for tests that build a registry
+    /// populated with fixture specs without touching the filesystem
+    /// or network.
+    pub fn insert_cached_spec_for_test(&self, spec: StoredMediaSpec) {
+        let normalized_urn = normalize_media_urn(&spec.urn);
+        if let Ok(mut cached) = self.cached_specs.lock() {
+            cached.insert(normalized_urn, spec);
+        }
+    }
+
     /// Look up all media URNs that match a file extension (synchronous, no network).
     ///
     /// Returns all media URNs registered for the given file extension.

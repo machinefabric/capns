@@ -55,6 +55,19 @@ pub enum MachineAbstractionError {
     /// output back into one of its own ancestors can.
     #[error("strand {strand_index}: resolved data-flow graph contains a cycle")]
     CyclicMachineStrand { strand_index: usize },
+
+    /// A media URN appearing as a node in the resolved strand has
+    /// no cached entry in the media registry. Render-payload
+    /// emission must have a display title for every node and we
+    /// never synthesize titles from URN strings.
+    #[error("media URN '{media_urn}' has no cached spec — cannot emit a display title for render payload")]
+    UncachedMediaSpec { media_urn: String },
+
+    /// A cap URN referenced by an edge has no cached entry in the
+    /// cap registry. Render-payload emission must have a display
+    /// title for every edge.
+    #[error("cap URN '{cap_urn}' has no cached definition — cannot emit a display title for render payload")]
+    UncachedCap { cap_urn: String },
 }
 
 /// Errors raised during lexical / grammatical parsing of machine

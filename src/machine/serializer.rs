@@ -57,6 +57,8 @@ use std::fmt::Write;
 
 use super::error::MachineAbstractionError;
 use super::graph::{Machine, MachineEdge, MachineStrand};
+use crate::cap::registry::CapRegistry;
+use crate::media::registry::MediaUrnRegistry;
 
 /// Serialization format for machine notation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,11 +286,15 @@ impl Machine {
     /// {
     ///   "strands": [
     ///     {
-    ///       "nodes": [{"id": "n0", "urn": "media:pdf"}, ...],
+    ///       "nodes": [
+    ///         {"id": "n0", "urn": "media:pdf", "title": "PDF Document"},
+    ///         ...
+    ///       ],
     ///       "edges": [
     ///         {
     ///           "alias": "edge_0",
     ///           "cap_urn": "cap:in=...;...;out=...",
+    ///           "title": "Extract Text from PDF",
     ///           "is_loop": false,
     ///           "assignment": [
     ///             {
@@ -308,10 +314,20 @@ impl Machine {
     /// }
     /// ```
     ///
+    /// Each node carries the media-spec title from
+    /// `media_registry`, and each edge carries the cap definition
+    /// title from `cap_registry`. Lookups are cache-only (no
+    /// network). A missing cached entry is a hard failure — we
+    /// never synthesize a title from a URN string.
+    ///
     /// Node names use the same global counter as the canonical
     /// notation, so a notation string and its render payload
     /// share the same node identities.
-    pub fn to_render_payload_json(&self) -> Result<String, MachineAbstractionError> {
+    pub fn to_render_payload_json(
+        &self,
+        media_registry: &MediaUrnRegistry,
+        cap_registry: &CapRegistry,
+    ) -> Result<String, MachineAbstractionError> {
         if self.is_empty() {
             return Ok("{\"strands\":[]}".to_string());
         }
@@ -324,14 +340,20 @@ impl Machine {
             if s_idx > 0 {
                 json.push(',');
             }
-            emit_strand_json(&mut json, strand, strand_plan);
+            emit_strand_json(&mut json, strand, strand_plan, media_registry, cap_registry)?;
         }
         write!(json, "]}}").unwrap();
         Ok(json)
     }
 }
 
-fn emit_strand_json(json: &mut String, strand: &MachineStrand, plan: &StrandPlan) {
+fn emit_strand_json(
+    json: &mut String,
+    strand: &MachineStrand,
+    plan: &StrandPlan,
+    media_registry: &MediaUrnRegistry,
+    cap_registry: &CapRegistry,
+) -> Result<(), MachineAbstractionError> {
     write!(json, "{{").unwrap();
 
     // nodes
@@ -340,11 +362,19 @@ fn emit_strand_json(json: &mut String, strand: &MachineStrand, plan: &StrandPlan
         if id > 0 {
             json.push(',');
         }
+        let urn_str = urn.to_string();
+        let title = media_registry
+            .get_cached_spec(&urn_str)
+            .map(|spec| spec.title)
+            .ok_or_else(|| MachineAbstractionError::UncachedMediaSpec {
+                media_urn: urn_str.clone(),
+            })?;
         write!(
             json,
-            "{{\"id\":\"{}\",\"urn\":\"{}\"}}",
+            "{{\"id\":\"{}\",\"urn\":\"{}\",\"title\":\"{}\"}}",
             plan.node_names[id],
-            json_escape(&urn.to_string())
+            json_escape(&urn_str),
+            json_escape(&title)
         )
         .unwrap();
     }
@@ -356,11 +386,19 @@ fn emit_strand_json(json: &mut String, strand: &MachineStrand, plan: &StrandPlan
         if e_idx > 0 {
             json.push(',');
         }
+        let cap_urn_str = edge.cap_urn.to_string();
+        let cap_title = cap_registry
+            .get_cached_cap(&cap_urn_str)
+            .map(|cap| cap.title)
+            .ok_or_else(|| MachineAbstractionError::UncachedCap {
+                cap_urn: cap_urn_str.clone(),
+            })?;
         write!(
             json,
-            "{{\"alias\":\"{}\",\"cap_urn\":\"{}\",\"is_loop\":{},\"assignment\":[",
+            "{{\"alias\":\"{}\",\"cap_urn\":\"{}\",\"title\":\"{}\",\"is_loop\":{},\"assignment\":[",
             plan.edge_aliases[e_idx],
-            json_escape(&edge.cap_urn.to_string()),
+            json_escape(&cap_urn_str),
+            json_escape(&cap_title),
             edge.is_loop
         )
         .unwrap();
@@ -406,6 +444,7 @@ fn emit_strand_json(json: &mut String, strand: &MachineStrand, plan: &StrandPlan
     write!(json, "]").unwrap();
 
     write!(json, "}}").unwrap();
+    Ok(())
 }
 
 /// Minimal JSON string-escape: only `\` and `"` need escaping
@@ -547,9 +586,17 @@ mod tests {
     // TEST1176: Rendering payload JSON includes strand anchor metadata for a populated machine.
     #[test]
     fn test1176_render_payload_json_includes_strand_with_anchors() {
-        let registry = registry_with(vec![extract_cap_def(), embed_cap_def()]);
-        let machine = Machine::from_strand(&pdf_to_vec_strand(), &registry).unwrap();
-        let payload = machine.to_render_payload_json().unwrap();
+        use crate::machine::test_fixtures::media_registry_with_titles;
+        let cap_registry = registry_with(vec![extract_cap_def(), embed_cap_def()]);
+        let media_registry = media_registry_with_titles(&[
+            "media:pdf",
+            "media:txt;textable",
+            "media:vec;record",
+        ]);
+        let machine = Machine::from_strand(&pdf_to_vec_strand(), &cap_registry).unwrap();
+        let payload = machine
+            .to_render_payload_json(&media_registry, &cap_registry)
+            .unwrap();
         // Should have a `strands` array, containing one strand
         // with `nodes`, `edges`, `input_anchor_nodes`,
         // `output_anchor_nodes`.
@@ -562,13 +609,22 @@ mod tests {
         // edge.cap_urn entries.
         assert!(payload.contains("op=extract"));
         assert!(payload.contains("op=embed"));
+        // Titles should appear on nodes and edges.
+        assert!(payload.contains("\"title\":\"Title for media:pdf\""));
+        assert!(payload.contains("\"title\":\"extract\""));
+        assert!(payload.contains("\"title\":\"embed\""));
     }
 
     // TEST1177: Rendering payload JSON for an empty machine emits an empty strands array.
     #[test]
     fn test1177_render_payload_for_empty_machine_has_empty_strands_array() {
+        use crate::machine::test_fixtures::media_registry_with_titles;
+        let cap_registry = registry_with(Vec::new());
+        let media_registry = media_registry_with_titles(&[]);
         let machine = Machine::from_resolved_strands(vec![]);
-        let payload = machine.to_render_payload_json().unwrap();
+        let payload = machine
+            .to_render_payload_json(&media_registry, &cap_registry)
+            .unwrap();
         assert_eq!(payload, "{\"strands\":[]}");
     }
 }

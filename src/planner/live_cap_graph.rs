@@ -752,6 +752,24 @@ impl LiveCapGraph {
         max_depth: usize,
         max_paths: usize,
     ) -> Vec<Strand> {
+        // Fast-fail: if no registered node is equivalent to the target, there
+        // is no path to find. Without this, IDDFS exhaustively explores the
+        // whole reachable graph (up to the 100_000-node abort) before giving
+        // up — which on the current cap set takes ~10s per query and blows
+        // past FinderSync's 3s budget. Target matching in IDDFS uses
+        // `is_equivalent()`, so the same predicate applies here.
+        let target_is_registered = self
+            .nodes
+            .iter()
+            .any(|node| node.is_equivalent(target).unwrap_or(false));
+        if !target_is_registered {
+            tracing::info!(
+                "find_paths_to_exact_target: target={} is not a registered node — returning 0 paths without exploration",
+                target
+            );
+            return Vec::new();
+        }
+
         // Log outgoing edges from source to understand branching
         let source_edges = self.get_outgoing_edges(source, is_sequence);
         tracing::info!(
@@ -853,6 +871,20 @@ impl LiveCapGraph {
     where
         F: FnMut(PathFindingEvent),
     {
+        // Same fast-fail as find_paths_to_exact_target: if no registered node
+        // is equivalent to the target, don't run IDDFS.
+        let target_is_registered = self
+            .nodes
+            .iter()
+            .any(|node| node.is_equivalent(target).unwrap_or(false));
+        if !target_is_registered {
+            tracing::info!(
+                "find_paths_streaming: target={} is not a registered node — returning 0 paths without exploration",
+                target
+            );
+            return Vec::new();
+        }
+
         let mut all_paths: Vec<Strand> = Vec::new();
         let mut total_nodes_explored: u64 = 0;
 

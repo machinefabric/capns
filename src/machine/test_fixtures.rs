@@ -82,6 +82,39 @@ pub(crate) fn registry_with(caps: Vec<Cap>) -> CapRegistry {
     registry
 }
 
+/// Build a `MediaUrnRegistry` pre-populated with minimal test specs
+/// covering the supplied URN strings. Each spec gets a synthetic
+/// title of the form `"Title for <urn>"` — enough to let the
+/// render-payload serializer find a cached entry without depending
+/// on the bundled standard media specs.
+pub(crate) fn media_registry_with_titles(urns: &[&str]) -> crate::media::registry::MediaUrnRegistry {
+    use crate::media::registry::{MediaUrnRegistry, StoredMediaSpec};
+    let tmp = std::env::temp_dir().join(format!(
+        "capdag-test-media-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let registry = MediaUrnRegistry::new_for_test(tmp).expect("media registry for test");
+    for urn in urns {
+        registry.insert_cached_spec_for_test(StoredMediaSpec {
+            urn: urn.to_string(),
+            media_type: "application/octet-stream".to_string(),
+            title: format!("Title for {urn}"),
+            profile_uri: None,
+            schema: None,
+            description: None,
+            documentation: None,
+            validation: None,
+            metadata: None,
+            extensions: Vec::new(),
+        });
+    }
+    registry
+}
+
 /// Convenience: parse a media URN string. Panics on parse
 /// failure with the failing literal in the message.
 pub(crate) fn media(urn: &str) -> MediaUrn {
