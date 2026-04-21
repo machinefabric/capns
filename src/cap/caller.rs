@@ -1,12 +1,14 @@
-//! Pure cap-based execution with strict input validation
+//! Argument/result/stdin-source data types used by in-process cap handlers.
+//!
+//! Previously this file also housed a `CapCaller` + `CapSet` trait stack for
+//! an in-process direct-dispatch execution model. That stack is gone: cap
+//! invocation now goes through the bifaci relay (`RelaySwitch::execute_cap`)
+//! for out-of-process cartridges and through in-process `FrameHandler`
+//! implementations (e.g. `GenerativeTextProvider`) for engine-built providers.
+//! The remaining types below are the argument/return shape both paths share.
 
 use crate::bifaci::frame::{Frame, MessageId};
-use crate::media::registry::MediaUrnRegistry;
-use crate::media::spec::{resolve_media_urn, ResolvedMediaSpec};
-use crate::{Cap, CapUrn, ResponseWrapper};
-use anyhow::{anyhow, Result};
-use serde_json::Value as JsonValue;
-use std::sync::Arc;
+use anyhow::Result;
 
 /// Source for stdin data - either raw bytes or a file reference.
 ///
@@ -152,191 +154,6 @@ pub enum CapResult {
     List(Vec<ciborium::Value>),
     /// No output (void cap).
     Empty,
-}
-
-/// Cap caller that executes via XPC service with strict validation
-pub struct CapCaller {
-    cap: String,
-    cap_set: Box<dyn CapSet>,
-    cap_definition: Cap,
-    media_registry: Arc<MediaUrnRegistry>,
-}
-
-/// Trait for Cap Host communication
-pub trait CapSet: Send + Sync + std::fmt::Debug {
-    /// Execute a cap with arguments identified by media_urn.
-    /// The cap definition's sources specify how to extract values (stdin, position, cli_flag).
-    fn execute_cap(
-        &self,
-        cap_urn: &str,
-        arguments: &[CapArgumentValue],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CapResult>> + Send + '_>>;
-}
-
-impl CapCaller {
-    /// Create a new cap caller with validation
-    pub fn new(
-        cap: String,
-        cap_set: Box<dyn CapSet>,
-        cap_definition: Cap,
-        media_registry: Arc<MediaUrnRegistry>,
-    ) -> Self {
-        Self {
-            cap,
-            cap_set,
-            cap_definition,
-            media_registry,
-        }
-    }
-
-    /// Get the cap definition
-    pub fn cap_definition(&self) -> &Cap {
-        &self.cap_definition
-    }
-
-    /// Get a map of argument media_urn to position for positional arguments
-    /// Returns only arguments that have a position source set
-    pub fn get_positional_arg_positions(&self) -> std::collections::HashMap<String, usize> {
-        use crate::ArgSource;
-        let mut positions = std::collections::HashMap::new();
-        for arg in self.cap_definition.get_args() {
-            for source in &arg.sources {
-                if let ArgSource::Position { position } = source {
-                    positions.insert(arg.media_urn.clone(), *position);
-                    break;
-                }
-            }
-        }
-        positions
-    }
-
-    /// Call the cap with arguments identified by media_urn.
-    /// Validates arguments against cap definition before execution.
-    pub async fn call(&self, arguments: Vec<CapArgumentValue>) -> Result<ResponseWrapper> {
-        // Validate arguments against cap definition
-        self.validate_arguments(&arguments)?;
-
-        // Execute via cap host method
-        let cap_result = self.cap_set.execute_cap(&self.cap, &arguments).await?;
-
-        // Resolve output spec to determine response type
-        let output_spec = self.resolve_output_spec().await?;
-
-        // Determine response type based on what was returned and resolved output spec
-        let response = match cap_result {
-            CapResult::Scalar(data) => {
-                if output_spec.is_binary() {
-                    ResponseWrapper::from_binary(data)
-                } else if output_spec.is_structured() {
-                    ResponseWrapper::from_json(data)
-                } else {
-                    ResponseWrapper::from_text(data)
-                }
-            }
-            CapResult::List(items) => {
-                // Assemble list items into a CBOR sequence for list-typed responses
-                let mut sequence = Vec::new();
-                for item in &items {
-                    ciborium::into_writer(item, &mut sequence)
-                        .map_err(|e| anyhow!("Failed to serialize list item: {}", e))?;
-                }
-                ResponseWrapper::from_binary(sequence)
-            }
-            CapResult::Empty => {
-                return Err(anyhow!("Cap returned no output"));
-            }
-        };
-
-        // Validate output against cap definition (basic type check)
-        self.validate_output_basic(&response).await?;
-
-        Ok(response)
-    }
-
-    /// Convert cap name to command
-    fn cap_to_command(&self, cap: &str) -> String {
-        // Extract operation part (everything before the last colon)
-        let operation = if let Some(colon_pos) = cap.rfind(':') {
-            &cap[..colon_pos]
-        } else {
-            cap
-        };
-
-        // Convert underscores to hyphens for command name
-        operation.replace('_', "-")
-    }
-
-    /// Resolve the output spec ID from the cap URN's out_spec.
-    ///
-    /// This method fails hard if:
-    /// - The cap URN is invalid
-    /// - The spec ID cannot be resolved (not in media_specs, not in registry)
-    async fn resolve_output_spec(&self) -> Result<ResolvedMediaSpec> {
-        let cap_urn = CapUrn::from_string(&self.cap)
-            .map_err(|e| anyhow!("Invalid cap URN '{}': {}", self.cap, e))?;
-
-        // Direction specs are now required first-class fields
-        let spec_id = cap_urn.out_spec();
-
-        resolve_media_urn(spec_id, Some(self.cap_definition.get_media_specs()), &self.media_registry)
-            .await
-            .map_err(|e| anyhow!(
-                "Failed to resolve output spec ID '{}' for cap '{}': {} - check that media_specs contains this spec ID or it is in the registry",
-                spec_id, self.cap, e
-            ))
-    }
-
-    /// Validate arguments against cap definition.
-    /// Checks that all required arguments are provided (by media_urn).
-    fn validate_arguments(&self, arguments: &[CapArgumentValue]) -> Result<()> {
-        let arg_defs = self.cap_definition.get_args();
-
-        // Build set of provided media_urns
-        let provided_urns: std::collections::HashSet<_> =
-            arguments.iter().map(|a| a.media_urn.as_str()).collect();
-
-        // Check all required arguments are provided
-        for arg_def in arg_defs {
-            if arg_def.required && !provided_urns.contains(arg_def.media_urn.as_str()) {
-                return Err(anyhow!("Missing required argument: {}", arg_def.media_urn));
-            }
-        }
-
-        // Check for unknown arguments
-        let known_urns: std::collections::HashSet<_> =
-            arg_defs.iter().map(|a| a.media_urn.as_str()).collect();
-
-        for arg in arguments {
-            if !known_urns.contains(arg.media_urn.as_str()) {
-                return Err(anyhow!(
-                    "Unknown argument media_urn: {} (cap {} accepts: {:?})",
-                    arg.media_urn,
-                    self.cap,
-                    known_urns
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Basic output validation
-    /// Full async validation with ProfileSchemaRegistry should be done at a higher level
-    async fn validate_output_basic(&self, response: &ResponseWrapper) -> Result<()> {
-        let output_spec = self.resolve_output_spec().await?;
-
-        // For structured outputs (map/list), verify it's valid JSON
-        if let Ok(text) = response.as_string() {
-            if output_spec.is_structured() {
-                // Structured data must be valid JSON
-                let _: JsonValue = serde_json::from_str(&text)
-                    .map_err(|e| anyhow!("Output is not valid JSON for cap {}: {}", self.cap, e))?;
-            }
-        }
-        // Binary validation already done in call() before creating the response
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]

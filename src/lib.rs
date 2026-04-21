@@ -39,12 +39,11 @@ pub mod standard;
 pub mod urn;
 
 // URN types
-pub use urn::cap_matrix::*;
 pub use urn::cap_urn::*;
 pub use urn::media_urn::*;
 
 // Cap definitions
-pub use cap::caller::{CapArgumentValue, CapCaller, CapResult, CapSet, StdinSource};
+pub use cap::caller::{CapArgumentValue, CapResult, StdinSource};
 pub use cap::definition::*;
 pub use cap::registry::*;
 pub use cap::response::*;
