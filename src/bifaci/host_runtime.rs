@@ -27,7 +27,10 @@
 
 use crate::bifaci::frame::{FlowKey, Frame, FrameType, Limits, MessageId, SeqAssigner};
 use crate::bifaci::io::{handshake, verify_identity, CborError, FrameReader, FrameWriter};
-use crate::bifaci::relay_switch::{InstalledCartridgeIdentity, RelayNotifyCapabilitiesPayload};
+use crate::bifaci::relay_switch::{
+    CartridgeAttachmentError, CartridgeAttachmentErrorKind, CartridgeRuntimeStats,
+    InstalledCartridgeIdentity, RelayNotifyCapabilitiesPayload,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -308,6 +311,11 @@ struct ManagedCartridge {
     memory_footprint_mb: u64,
     /// Resident set size in MB (self-reported via heartbeat response meta).
     memory_rss_mb: u64,
+    /// Unix timestamp seconds of the last heartbeat response. `None` until
+    /// the first successful heartbeat round-trip completes.
+    last_heartbeat_unix_seconds: Option<i64>,
+    /// Number of times this cartridge has been respawned after death.
+    restart_count: u64,
 }
 
 impl ManagedCartridge {
@@ -335,11 +343,18 @@ impl ManagedCartridge {
             shutdown_reason: None,
             memory_footprint_mb: 0,
             memory_rss_mb: 0,
+            last_heartbeat_unix_seconds: None,
+            restart_count: 0,
         }
     }
 
     /// Create a registered cartridge from a version directory containing cartridge.json.
     /// Identity is computed from the directory tree hash.
+    ///
+    /// A directory-registered cartridge always has a resolvable identity.
+    /// If the directory turns out to be unhashable at construction time,
+    /// we pre-record an attachment failure so the upstream aggregate
+    /// reports the real reason instead of silently dropping the cartridge.
     fn new_registered_dir(
         entry_point: PathBuf,
         cartridge_dir: PathBuf,
@@ -347,24 +362,49 @@ impl ManagedCartridge {
         version: String,
         known_caps: Vec<String>,
     ) -> Self {
-        let sha256 = crate::bifaci::cartridge_json::hash_cartridge_directory(&cartridge_dir)
-            .unwrap_or_else(|e| {
-                tracing::error!(
-                    dir = %cartridge_dir.display(),
-                    error = %e,
-                    "Failed to hash cartridge directory — identity will be unavailable"
-                );
-                String::new()
-            });
-        let installed_identity = if sha256.is_empty() {
-            None
-        } else {
-            Some(InstalledCartridgeIdentity {
-                id,
-                version,
-                sha256,
-            })
-        };
+        let (installed_identity, hello_failed) =
+            match crate::bifaci::cartridge_json::hash_cartridge_directory(&cartridge_dir) {
+                Ok(sha256) => (
+                    Some(InstalledCartridgeIdentity {
+                        id,
+                        version,
+                        sha256,
+                        attachment_error: None,
+                        runtime_stats: None,
+                    }),
+                    false,
+                ),
+                Err(e) => {
+                    let detected_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let err = CartridgeAttachmentError {
+                        kind: CartridgeAttachmentErrorKind::EntryPointMissing,
+                        message: format!(
+                            "Cartridge directory not hashable at '{}': {}",
+                            cartridge_dir.display(),
+                            e
+                        ),
+                        detected_at_unix_seconds: detected_at,
+                    };
+                    tracing::error!(
+                        dir = %cartridge_dir.display(),
+                        error = %e,
+                        "Cartridge directory not hashable — recording attachment failure"
+                    );
+                    (
+                        Some(InstalledCartridgeIdentity {
+                            id,
+                            version,
+                            sha256: String::new(),
+                            attachment_error: Some(err),
+                            runtime_stats: None,
+                        }),
+                        true,
+                    )
+                }
+            };
         Self {
             path: entry_point,
             cartridge_dir: Some(cartridge_dir),
@@ -378,13 +418,15 @@ impl ManagedCartridge {
             running: false,
             reader_handle: None,
             writer_handle: None,
-            hello_failed: false,
+            hello_failed,
             pending_heartbeats: HashMap::new(),
             stderr_handle: None,
             last_death_message: None,
             shutdown_reason: None,
             memory_footprint_mb: 0,
             memory_rss_mb: 0,
+            last_heartbeat_unix_seconds: None,
+            restart_count: 0,
         }
     }
 
@@ -412,11 +454,76 @@ impl ManagedCartridge {
             shutdown_reason: None,
             memory_footprint_mb: 0,
             memory_rss_mb: 0,
+            last_heartbeat_unix_seconds: None,
+            restart_count: 0,
         }
     }
 
     fn installed_cartridge_identity(&self) -> Option<InstalledCartridgeIdentity> {
         self.installed_identity.clone()
+    }
+
+    /// Record an attachment failure for this cartridge.
+    ///
+    /// Flips `hello_failed` so the cartridge is treated as permanently broken
+    /// (no on-demand respawn) and stamps `installed_identity` with the error
+    /// so it surfaces in the next `RelayNotify` aggregate.
+    ///
+    /// If the cartridge had no resolvable identity (bad directory hash,
+    /// unparseable binary name), we synthesize a minimum identity so the
+    /// failure is still reportable to the UI.
+    fn record_attachment_error(
+        &mut self,
+        kind: CartridgeAttachmentErrorKind,
+        message: String,
+    ) {
+        self.hello_failed = true;
+        let detected_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let error = CartridgeAttachmentError {
+            kind,
+            message,
+            detected_at_unix_seconds: detected_at,
+        };
+        match self.installed_identity.as_mut() {
+            Some(existing) => {
+                existing.attachment_error = Some(error);
+            }
+            None => {
+                // Derive an identity from the binary path.
+                //
+                // Callers (`spawn_cartridge`, via `record_attachment_error`)
+                // hold a non-empty `self.path` that has passed executability
+                // / file-existence checks. The `file_stem -> UTF-8 -> parse`
+                // chain therefore must succeed — any failure here signals a
+                // broken invariant, not a user-facing condition to paper over.
+                let stem = self
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "BUG: cartridge binary path '{}' has no UTF-8 file stem",
+                            self.path.display()
+                        )
+                    });
+                let (id, version) = parse_installed_cartridge_name(stem).unwrap_or_else(|| {
+                    panic!(
+                        "BUG: cartridge binary name '{}' does not follow '<name>-<version>' convention",
+                        stem
+                    )
+                });
+                self.installed_identity = Some(InstalledCartridgeIdentity {
+                    id,
+                    version,
+                    sha256: String::new(),
+                    attachment_error: Some(error),
+                    runtime_stats: None,
+                });
+            }
+        }
     }
 }
 
@@ -447,6 +554,8 @@ fn installed_cartridge_identity_from_binary(path: &Path) -> Option<InstalledCart
         id,
         version,
         sha256,
+        attachment_error: None,
+        runtime_stats: None,
     })
 }
 
@@ -586,7 +695,8 @@ impl CartridgeHostRuntime {
             .await
             .map_err(|e| AsyncHostError::Handshake(e.to_string()))?;
 
-        let caps = parse_caps_from_manifest(&result.manifest)?;
+        let caps = parse_caps_from_manifest(&result.manifest)
+            .map_err(|e| e.into_async_host_error())?;
 
         // Verify identity — proves the protocol stack works end-to-end
         verify_identity(&mut reader, &mut writer)
@@ -680,17 +790,22 @@ impl CartridgeHostRuntime {
         let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
         heartbeat_interval.tick().await; // skip initial tick
 
+        // Runtime-stats refresh cadence. Request counts and memory change
+        // continuously; structural changes (spawn/death) already trigger
+        // RelayNotify synchronously via `rebuild_capabilities`, so this
+        // interval only needs to cover the continuous signals. Engine-side
+        // watch dedup drops no-op frames when no stat actually changed.
+        let mut stats_interval = tokio::time::interval(Duration::from_secs(2));
+        stats_interval.tick().await; // skip initial tick
+
         // Send discovery RelayNotify if cartridges were pre-attached.
         // At this point all async tasks are spawned and running, so the frame will be delivered.
         if !self.capabilities.is_empty() {
+            let installed_cartridges = self.build_installed_cartridge_identities();
             let notify_payload = RelayNotifyCapabilitiesPayload {
                 caps: serde_json::from_slice(&self.capabilities)
                     .expect("BUG: host runtime capabilities must be valid JSON cap array"),
-                installed_cartridges: self
-                    .cartridges
-                    .iter()
-                    .filter_map(|cartridge| cartridge.installed_cartridge_identity())
-                    .collect(),
+                installed_cartridges,
             };
             let notify_bytes = serde_json::to_vec(&notify_payload)
                 .expect("Failed to serialize RelayNotify capabilities payload");
@@ -756,6 +871,17 @@ impl CartridgeHostRuntime {
                 // Periodic heartbeat probes
                 _ = heartbeat_interval.tick() => {
                     self.send_heartbeats_and_check_timeouts(&outbound_tx);
+                }
+
+                // Periodic runtime-stats refresh — republish RelayNotify so
+                // the engine sees current request counts, memory, and
+                // heartbeat ages. Only fires the publish if at least one
+                // cartridge is running, keeping idle hosts quiet.
+                _ = stats_interval.tick() => {
+                    let any_running = self.cartridges.iter().any(|c| c.running);
+                    if any_running {
+                        self.rebuild_capabilities(Some(&outbound_tx));
+                    }
                 }
 
                 // External commands via CartridgeProcessHandle
@@ -893,8 +1019,12 @@ impl CartridgeHostRuntime {
 
                 // Spawn on demand if not running
                 if !self.cartridges[cartridge_idx].running {
-                    self.spawn_cartridge(cartridge_idx, resource_fn).await?;
-                    self.rebuild_capabilities(Some(outbound_tx)); // Send RelayNotify to relay
+                    let spawn_outcome = self.spawn_cartridge(cartridge_idx, resource_fn).await;
+                    // Always rebuild so the RelayNotify carries the latest
+                    // per-cartridge attachment state — including freshly
+                    // recorded failures — to the engine's RelaySwitch.
+                    self.rebuild_capabilities(Some(outbound_tx));
+                    spawn_outcome?;
                 }
 
                 // Record in List 2: INCOMING_RXIDS (XID, RID) → cartridge_idx
@@ -1107,6 +1237,13 @@ impl CartridgeHostRuntime {
                                 u64::try_from(*v).unwrap_or(0);
                         }
                     }
+                    // Stamp the round-trip completion timestamp so the
+                    // runtime-stats snapshot can surface heartbeat age to the UI.
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    self.cartridges[cartridge_idx].last_heartbeat_unix_seconds = Some(now_secs);
                     self.update_process_snapshot();
                 } else {
                     // Cartridge-initiated heartbeat — respond immediately
@@ -1238,6 +1375,10 @@ impl CartridgeHostRuntime {
             let cartridge = &mut self.cartridges[cartridge_idx];
             cartridge.running = false;
             cartridge.writer_tx = None;
+            // One completed death (any reason) counts as one restart cycle.
+            // The next on-demand spawn will increment `running` again with
+            // a fresh process.
+            cartridge.restart_count = cartridge.restart_count.saturating_add(1);
             reason = cartridge.shutdown_reason;
             cartridge.shutdown_reason = None; // Reset for potential respawn
 
@@ -1506,19 +1647,27 @@ impl CartridgeHostRuntime {
             )));
         }
 
-        let mut child = tokio::process::Command::new(&cartridge.path)
+        let mut child = match tokio::process::Command::new(&cartridge.path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped()) // Capture stderr for crash diagnostics
             .kill_on_drop(true) // No orphan processes
             .spawn()
-            .map_err(|e| {
-                AsyncHostError::Io(format!(
+        {
+            Ok(child) => child,
+            Err(e) => {
+                let msg = format!(
                     "Failed to spawn cartridge '{}': {}",
                     cartridge.path.display(),
                     e
-                ))
-            })?;
+                );
+                self.cartridges[cartridge_idx].record_attachment_error(
+                    CartridgeAttachmentErrorKind::EntryPointMissing,
+                    msg.clone(),
+                );
+                return Err(AsyncHostError::Io(msg));
+            }
+        };
 
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -1554,27 +1703,55 @@ impl CartridgeHostRuntime {
             Ok(result) => result,
             Err(e) => {
                 // HELLO failure = permanent removal. Binary is broken.
-                self.cartridges[cartridge_idx].hello_failed = true;
-                let _ = child.kill().await;
-                return Err(AsyncHostError::Handshake(format!(
+                let msg = format!(
                     "Cartridge '{}' HELLO failed: {} — permanently removed",
                     self.cartridges[cartridge_idx].path.display(),
                     e
-                )));
+                );
+                self.cartridges[cartridge_idx].record_attachment_error(
+                    CartridgeAttachmentErrorKind::HandshakeFailed,
+                    msg.clone(),
+                );
+                let _ = child.kill().await;
+                return Err(AsyncHostError::Handshake(msg));
             }
         };
 
-        let caps = parse_caps_from_manifest(&handshake_result.manifest)?;
+        let caps = match parse_caps_from_manifest(&handshake_result.manifest) {
+            Ok(caps) => caps,
+            Err(parse_err) => {
+                let kind = parse_err.attachment_kind();
+                let inner = parse_err.into_async_host_error();
+                let label = match kind {
+                    CartridgeAttachmentErrorKind::ManifestInvalid => "manifest invalid",
+                    CartridgeAttachmentErrorKind::Incompatible => "manifest incompatible",
+                    _ => "manifest rejected",
+                };
+                let msg = format!(
+                    "Cartridge '{}' {}: {}",
+                    self.cartridges[cartridge_idx].path.display(),
+                    label,
+                    inner
+                );
+                self.cartridges[cartridge_idx].record_attachment_error(kind, msg.clone());
+                let _ = child.kill().await;
+                return Err(inner);
+            }
+        };
 
         // Verify identity — proves the protocol stack works end-to-end
         if let Err(e) = verify_identity(&mut reader, &mut writer).await {
-            self.cartridges[cartridge_idx].hello_failed = true;
-            let _ = child.kill().await;
-            return Err(AsyncHostError::Protocol(format!(
+            let msg = format!(
                 "Cartridge '{}' identity verification failed: {} — permanently removed",
                 self.cartridges[cartridge_idx].path.display(),
                 e
-            )));
+            );
+            self.cartridges[cartridge_idx].record_attachment_error(
+                CartridgeAttachmentErrorKind::IdentityRejected,
+                msg.clone(),
+            );
+            let _ = child.kill().await;
+            return Err(AsyncHostError::Protocol(msg));
         }
 
         // Start writer task
@@ -1828,6 +2005,46 @@ impl CartridgeHostRuntime {
         }
     }
 
+    /// Build the `installed_cartridges` list for a RelayNotify payload,
+    /// injecting live runtime stats derived from the routing tables and
+    /// cartridge process state. One source of truth — the engine sees what
+    /// the host sees with no time skew beyond the send itself.
+    fn build_installed_cartridge_identities(&self) -> Vec<InstalledCartridgeIdentity> {
+        // Count active incoming requests per cartridge index.
+        let mut active_counts: HashMap<usize, u64> = HashMap::new();
+        for &idx in self.incoming_rxids.values() {
+            *active_counts.entry(idx).or_insert(0) += 1;
+        }
+        // Count outgoing peer requests per cartridge index.
+        let mut peer_counts: HashMap<usize, u64> = HashMap::new();
+        for &idx in self.outgoing_rids.values() {
+            *peer_counts.entry(idx).or_insert(0) += 1;
+        }
+
+        self.cartridges
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, cartridge)| {
+                let base = cartridge.installed_cartridge_identity()?;
+                let pid = cartridge.process.as_ref().and_then(|c| c.id());
+                let stats = CartridgeRuntimeStats {
+                    running: cartridge.running,
+                    pid,
+                    active_request_count: *active_counts.get(&idx).unwrap_or(&0),
+                    peer_request_count: *peer_counts.get(&idx).unwrap_or(&0),
+                    memory_footprint_mb: cartridge.memory_footprint_mb,
+                    memory_rss_mb: cartridge.memory_rss_mb,
+                    last_heartbeat_unix_seconds: cartridge.last_heartbeat_unix_seconds,
+                    restart_count: cartridge.restart_count,
+                };
+                Some(InstalledCartridgeIdentity {
+                    runtime_stats: Some(stats),
+                    ..base
+                })
+            })
+            .collect()
+    }
+
     /// Rebuild the aggregate capabilities from all running, healthy cartridges.
     ///
     /// If outbound_tx is Some (i.e., running in relay mode), sends a RelayNotify
@@ -1836,8 +2053,15 @@ impl CartridgeHostRuntime {
     fn rebuild_capabilities(&mut self, outbound_tx: Option<&mpsc::UnboundedSender<Frame>>) {
         use crate::standard::caps::CAP_IDENTITY;
 
-        // CAP_IDENTITY is always present — structural, not cartridge-dependent
-        let mut cap_urns = vec![CAP_IDENTITY.to_string()];
+        // Collect caps contributed by healthy (non-hello-failed) cartridges.
+        // CAP_IDENTITY is prepended only when at least one healthy cartridge
+        // exists — each cartridge's manifest mandatorily declares CAP_IDENTITY
+        // and answers the echo, so the host-level advertisement is a
+        // reflection of that reality. If no healthy cartridge is present
+        // there is no handler chain to service the engine's identity
+        // probe, and the host must not claim otherwise.
+        let mut cap_urns: Vec<String> = Vec::new();
+        let mut healthy_cartridge_count = 0usize;
 
         // Add capability URN strings from all known/discovered cartridges.
         // Includes caps from ALL registered cartridges that haven't permanently failed HELLO.
@@ -1849,6 +2073,7 @@ impl CartridgeHostRuntime {
                 continue; // Permanently broken, don't advertise
             }
 
+            healthy_cartridge_count += 1;
             if cartridge.running && !cartridge.caps.is_empty() {
                 // Running: use actual caps from manifest (verified via HELLO handshake)
                 for cap in &cartridge.caps {
@@ -1868,19 +2093,20 @@ impl CartridgeHostRuntime {
             }
         }
 
+        if healthy_cartridge_count > 0 {
+            cap_urns.insert(0, CAP_IDENTITY.to_string());
+        }
+
         // For internal use, store as simple JSON array of URN strings
         self.capabilities =
             serde_json::to_vec(&cap_urns).expect("Failed to serialize capability URNs");
 
         // Send RelayNotify to relay if in relay mode.
         if let Some(tx) = outbound_tx {
+            let installed_cartridges = self.build_installed_cartridge_identities();
             let notify_payload = RelayNotifyCapabilitiesPayload {
                 caps: cap_urns.clone(),
-                installed_cartridges: self
-                    .cartridges
-                    .iter()
-                    .filter_map(|cartridge| cartridge.installed_cartridge_identity())
-                    .collect(),
+                installed_cartridges,
             };
             let notify_bytes = serde_json::to_vec(&notify_payload)
                 .expect("Failed to serialize RelayNotify capabilities payload");
@@ -2018,17 +2244,55 @@ impl Drop for CartridgeHostRuntime {
 /// ```json
 /// {"name": "...", "caps": [{"urn": "cap:in=\"media:void\";op=test;out=\"media:void\"", ...}, ...]}
 /// ```
-fn parse_caps_from_manifest(manifest: &[u8]) -> Result<Vec<crate::Cap>, AsyncHostError> {
+/// Reason a manifest was rejected by `parse_caps_from_manifest`. Carries
+/// the specific failure mode so the caller can pick the right
+/// `CartridgeAttachmentErrorKind` — `ManifestInvalid` when the JSON itself
+/// is malformed, `Incompatible` when the JSON parses but violates the
+/// cartridge schema (missing CAP_IDENTITY, old shape, etc.).
+#[derive(Debug)]
+enum ParseCapsError {
+    /// JSON failed to parse or did not deserialize into `CapManifest`.
+    InvalidJson(AsyncHostError),
+    /// JSON parsed but the manifest is structurally incompatible with
+    /// the host's expectations (e.g. missing CAP_IDENTITY).
+    Incompatible(AsyncHostError),
+}
+
+impl std::fmt::Display for ParseCapsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseCapsError::InvalidJson(e) | ParseCapsError::Incompatible(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl ParseCapsError {
+    fn into_async_host_error(self) -> AsyncHostError {
+        match self {
+            ParseCapsError::InvalidJson(e) | ParseCapsError::Incompatible(e) => e,
+        }
+    }
+
+    fn attachment_kind(&self) -> CartridgeAttachmentErrorKind {
+        match self {
+            ParseCapsError::InvalidJson(_) => CartridgeAttachmentErrorKind::ManifestInvalid,
+            ParseCapsError::Incompatible(_) => CartridgeAttachmentErrorKind::Incompatible,
+        }
+    }
+}
+
+fn parse_caps_from_manifest(manifest: &[u8]) -> Result<Vec<crate::Cap>, ParseCapsError> {
     use crate::standard::caps::CAP_IDENTITY;
     use crate::urn::cap_urn::CapUrn;
     use crate::CapManifest;
 
-    // Deserialize directly into CapManifest - fail hard if invalid
     let manifest_obj: CapManifest = serde_json::from_slice(manifest).map_err(|e| {
-        AsyncHostError::Protocol(format!("Invalid CapManifest from cartridge: {}", e))
+        ParseCapsError::InvalidJson(AsyncHostError::Protocol(format!(
+            "Invalid CapManifest from cartridge: {}",
+            e
+        )))
     })?;
 
-    // Verify CAP_IDENTITY is declared — mandatory for every cartridge
     let identity_urn =
         CapUrn::from_string(CAP_IDENTITY).expect("BUG: CAP_IDENTITY constant is invalid");
     let all_caps = manifest_obj.all_caps();
@@ -2036,13 +2300,14 @@ fn parse_caps_from_manifest(manifest: &[u8]) -> Result<Vec<crate::Cap>, AsyncHos
         .iter()
         .any(|cap| identity_urn.conforms_to(&cap.urn));
     if !has_identity {
-        return Err(AsyncHostError::Protocol(format!(
-            "Cartridge manifest missing required CAP_IDENTITY ({})",
-            CAP_IDENTITY
+        return Err(ParseCapsError::Incompatible(AsyncHostError::Protocol(
+            format!(
+                "Cartridge manifest missing required CAP_IDENTITY ({})",
+                CAP_IDENTITY
+            ),
         )));
     }
 
-    // Return all Cap objects from all cap groups
     Ok(all_caps.into_iter().cloned().collect())
 }
 
@@ -2124,31 +2389,54 @@ mod tests {
         (reader, writer)
     }
 
-    // TEST480: parse_caps_from_manifest rejects manifest without CAP_IDENTITY
+    // TEST480: parse_caps_from_manifest classifies failures by kind
+    //
+    // Manifest JSON that parses but lacks CAP_IDENTITY is `Incompatible`
+    // (schema-rejected). Manifest bytes that don't parse as CapManifest are
+    // `ManifestInvalid` (JSON-level failure). The split lets the host's
+    // attachment-error reporter surface the right kind to the UI.
     #[test]
     fn test480_parse_caps_rejects_manifest_without_identity() {
-        // Valid manifest but missing CAP_IDENTITY
+        // JSON-valid manifest, missing CAP_IDENTITY → Incompatible.
         let manifest = r#"{"name":"Test","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
         let result = parse_caps_from_manifest(manifest.as_bytes());
+        let err = result.expect_err("Manifest without CAP_IDENTITY must be rejected");
         assert!(
-            result.is_err(),
-            "Manifest without CAP_IDENTITY must be rejected"
+            matches!(err, ParseCapsError::Incompatible(_)),
+            "Missing CAP_IDENTITY must classify as Incompatible, got {:?}",
+            err
         );
-        let err = result.unwrap_err();
+        assert_eq!(
+            err.attachment_kind(),
+            CartridgeAttachmentErrorKind::Incompatible,
+            "attachment_kind() must agree with the variant"
+        );
         assert!(
             format!("{}", err).contains("CAP_IDENTITY"),
             "Error must mention CAP_IDENTITY, got: {}",
             err
         );
 
-        // Valid manifest WITH CAP_IDENTITY must succeed
+        // Garbage bytes that don't deserialize → ManifestInvalid.
+        let bad_json = b"{not even json";
+        let result_bad = parse_caps_from_manifest(bad_json);
+        let err_bad = result_bad.expect_err("Non-JSON manifest must be rejected");
+        assert!(
+            matches!(err_bad, ParseCapsError::InvalidJson(_)),
+            "Non-JSON manifest must classify as InvalidJson, got {:?}",
+            err_bad
+        );
+        assert_eq!(
+            err_bad.attachment_kind(),
+            CartridgeAttachmentErrorKind::ManifestInvalid,
+            "attachment_kind() must agree with the variant"
+        );
+
+        // Valid manifest WITH CAP_IDENTITY must succeed.
         let manifest_ok = r#"{"name":"Test","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
         let result_ok = parse_caps_from_manifest(manifest_ok.as_bytes());
-        assert!(
-            result_ok.is_ok(),
-            "Manifest with CAP_IDENTITY must be accepted"
-        );
-        assert_eq!(result_ok.unwrap().len(), 2, "Must parse both caps");
+        let caps = result_ok.expect("Manifest with CAP_IDENTITY must be accepted");
+        assert_eq!(caps.len(), 2, "Must parse both caps");
     }
 
     // TEST235: Test ResponseChunk stores payload, seq, offset, len, and eof fields correctly

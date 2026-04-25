@@ -135,11 +135,103 @@ pub struct MasterHealthStatus {
     pub last_error: Option<String>,
 }
 
+/// Kinds of attachment failure for a cartridge. Matches the
+/// `CartridgeAttachmentErrorKind` enum defined in `cartridge.proto`; this enum
+/// is the authoritative, language-neutral domain definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CartridgeAttachmentErrorKind {
+    /// Manifest parsed but violates the cartridge schema (missing required
+    /// CAP_IDENTITY, min_app_version not met, old-format cap_groups, etc.).
+    Incompatible,
+    /// cartridge.json or HELLO manifest failed to parse as JSON, or lacked
+    /// required top-level fields.
+    ManifestInvalid,
+    /// HELLO handshake did not complete (timeout, bad frame sequence, I/O).
+    HandshakeFailed,
+    /// CAP_IDENTITY echo protocol check failed.
+    IdentityRejected,
+    /// Entry point binary missing or not executable.
+    EntryPointMissing,
+    /// Cartridge repeatedly crashed the host during discovery; held in quarantine.
+    Quarantined,
+}
+
+/// Structured per-cartridge attachment failure.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+pub struct CartridgeAttachmentError {
+    pub kind: CartridgeAttachmentErrorKind,
+    pub message: String,
+    /// Unix timestamp seconds when the failure was first detected.
+    pub detected_at_unix_seconds: i64,
+}
+
+/// Live runtime statistics for an attached cartridge.
+///
+/// All fields are gathered by the `CartridgeHostRuntime` that owns the
+/// cartridge process — it is the only component with the authoritative
+/// routing tables and process handles. Memory figures are self-reported
+/// by the cartridge in its heartbeat reply (using `proc_pid_rusage` on
+/// its own pid) so the host never needs to inspect another process's
+/// state — this keeps the path sandbox-compatible.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+pub struct CartridgeRuntimeStats {
+    /// Process is currently running and serving requests.
+    pub running: bool,
+    /// OS pid of the cartridge process when running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// Number of incoming requests the host is currently routing to this
+    /// cartridge (entries in `incoming_rxids` whose value is this
+    /// cartridge index).
+    pub active_request_count: u64,
+    /// Number of outstanding peer invocations this cartridge has issued
+    /// (entries in `outgoing_rids` whose value is this cartridge index).
+    pub peer_request_count: u64,
+    /// Physical memory footprint in MB, self-reported via heartbeat.
+    pub memory_footprint_mb: u64,
+    /// Resident set size in MB, self-reported via heartbeat.
+    pub memory_rss_mb: u64,
+    /// Unix timestamp seconds of the last heartbeat response received.
+    /// `None` means no heartbeat has completed a round trip yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_unix_seconds: Option<i64>,
+    /// Number of times this cartridge has been respawned after death.
+    pub restart_count: u64,
+}
+
+impl CartridgeRuntimeStats {
+    /// Snapshot of a registered but not-yet-running cartridge.
+    pub fn not_running() -> Self {
+        Self {
+            running: false,
+            pid: None,
+            active_request_count: 0,
+            peer_request_count: 0,
+            memory_footprint_mb: 0,
+            memory_rss_mb: 0,
+            last_heartbeat_unix_seconds: None,
+            restart_count: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct InstalledCartridgeIdentity {
     pub id: String,
     pub version: String,
     pub sha256: String,
+    /// Present when the cartridge failed attachment (manifest, handshake,
+    /// identity, etc.). Absent when the cartridge is attached and healthy.
+    /// Serialized field name is `attachment_error` so the Swift-side
+    /// payload (snake_case JSON) and the engine agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_error: Option<CartridgeAttachmentError>,
+    /// Live runtime statistics from the owning host. `None` for cartridges
+    /// on hosts that don't track process state (e.g. in-process
+    /// cartridges handled directly by the engine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_stats: Option<CartridgeRuntimeStats>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -210,8 +302,15 @@ pub struct RelaySwitch {
         RwLock<HashMap<(MessageId, MessageId), mpsc::UnboundedSender<Frame>>>,
     /// Aggregate capabilities (union of all masters)
     aggregate_capabilities: RwLock<Vec<u8>>,
-    /// Aggregate installed cartridge identities (union of all healthy masters)
+    /// Aggregate installed cartridge identities (union of all healthy masters).
+    /// Includes both attached-successfully and attachment-failed cartridges;
+    /// failed ones carry `attachment_error`.
     aggregate_installed_cartridges: RwLock<Vec<InstalledCartridgeIdentity>>,
+    /// Watch channel broadcasting the latest `aggregate_installed_cartridges`.
+    /// Subscribers (e.g. the Mac gRPC bridge) receive the current value on
+    /// subscribe and a fresh value every time `rebuild_capabilities` produces
+    /// a different snapshot.
+    aggregate_installed_cartridges_tx: tokio::sync::watch::Sender<Vec<InstalledCartridgeIdentity>>,
     /// Negotiated limits (minimum across all masters)
     negotiated_limits: RwLock<Limits>,
     /// Channel receiver for frames from master reader tasks (Mutex for exclusive receive)
@@ -226,6 +325,14 @@ pub struct RelaySwitch {
     live_cap_graph: RwLock<LiveCapGraph>,
     /// Cap registry for looking up Cap definitions
     cap_registry: Arc<CapRegistry>,
+    /// Stop flag for the persistent background drain pump. Set by `Drop`
+    /// so the pump task exits on its next iteration.
+    background_pump_stop: Arc<AtomicBool>,
+    /// Handle for the persistent background drain pump, stored so `Drop`
+    /// can abort the task when the switch goes away. `None` until
+    /// `start_background_pump` is called exactly once after the switch is
+    /// Arc-wrapped.
+    background_pump_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for RelaySwitch {
@@ -298,18 +405,23 @@ impl RelaySwitch {
             let mut caps = payload.caps.clone();
             let mut limits = notify_frame.relay_notify_limits().unwrap_or_default();
 
-            // Verify identity through the relay chain.
             let mut seq_assigner = SeqAssigner::new();
-            let xid_val = xid_counter.fetch_add(1, Ordering::SeqCst) + 1;
-            let xid = MessageId::Uint(xid_val);
-            {
+
+            // End-to-end identity verification. The probe only makes sense
+            // when the host has at least one advertised cap — an empty cap
+            // list means "no cartridges attached successfully" and there is
+            // no handler chain to test. The master still joins so its
+            // `installed_cartridges` attachment errors reach the engine.
+            if !payload.caps.is_empty() {
+                let xid_val = xid_counter.fetch_add(1, Ordering::SeqCst) + 1;
+                let xid = MessageId::Uint(xid_val);
+
                 use crate::standard::caps::CAP_IDENTITY;
 
                 let nonce = identity_nonce();
                 let req_id = MessageId::new_uuid();
                 let stream_id = "identity-verify".to_string();
 
-                // Send REQ + STREAM_START + CHUNK + STREAM_END + END with XID + seq
                 let mut req = Frame::req(req_id.clone(), CAP_IDENTITY, vec![], "application/cbor");
                 req.routing_id = Some(xid.clone());
                 seq_assigner.assign(&mut req);
@@ -507,6 +619,7 @@ impl RelaySwitch {
             masters[master_idx].reader_handle = Some(reader_handle);
         }
 
+        let (aggregate_installed_cartridges_tx, _) = tokio::sync::watch::channel(Vec::new());
         let switch = Self {
             masters: RwLock::new(masters),
             cap_table: RwLock::new(Vec::new()),
@@ -517,6 +630,7 @@ impl RelaySwitch {
             external_response_channels: RwLock::new(HashMap::new()),
             aggregate_capabilities: RwLock::new(Vec::new()),
             aggregate_installed_cartridges: RwLock::new(Vec::new()),
+            aggregate_installed_cartridges_tx,
             negotiated_limits: RwLock::new(Limits::default()),
             frame_rx: Mutex::new(frame_rx),
             frame_tx,
@@ -524,6 +638,8 @@ impl RelaySwitch {
             rid_to_xid: RwLock::new(HashMap::new()),
             live_cap_graph: RwLock::new(LiveCapGraph::new()),
             cap_registry,
+            background_pump_stop: Arc::new(AtomicBool::new(false)),
+            background_pump_handle: std::sync::Mutex::new(None),
         };
 
         // Build routing tables from already-populated caps
@@ -542,6 +658,81 @@ impl RelaySwitch {
     /// Get the aggregate installed cartridges of all healthy masters.
     pub async fn installed_cartridges(&self) -> Vec<InstalledCartridgeIdentity> {
         self.aggregate_installed_cartridges.read().await.clone()
+    }
+
+    /// Subscribe to per-cartridge attachment-state changes. The returned
+    /// receiver yields the current snapshot immediately and a fresh snapshot
+    /// every time the aggregate changes.
+    pub fn subscribe_installed_cartridges(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Vec<InstalledCartridgeIdentity>> {
+        self.aggregate_installed_cartridges_tx.subscribe()
+    }
+
+    /// Spawn the persistent background drain pump.
+    ///
+    /// `frame_rx` accumulates inbound frames from every connected master
+    /// (RelayNotify capability updates, peer invocations, responses to
+    /// `execute_cap`). Without a running drain the channel fills up and
+    /// control frames queue until the next per-execution pump runs —
+    /// which means capability updates (e.g. a newly installed cartridge)
+    /// are invisible to the engine until the next cap execution happens.
+    ///
+    /// This pump runs for the switch's lifetime and consumes frames
+    /// through `handle_master_frame` — the same dispatch path the
+    /// per-execution pumps use. Frames destined for response channels
+    /// are routed there; pass-through frames returned by
+    /// `handle_master_frame` are discarded because no single consumer
+    /// owns them (the lock serializes so there is no data loss).
+    ///
+    /// Idempotent — a second call is a no-op. Must be called with the
+    /// switch already wrapped in `Arc` so the task can outlive the
+    /// caller.
+    pub fn start_background_pump(self: &Arc<Self>) {
+        let mut guard = self
+            .background_pump_handle
+            .lock()
+            .expect("background_pump_handle mutex poisoned");
+        if guard.is_some() {
+            return;
+        }
+
+        let weak = Arc::downgrade(self);
+        let stop = self.background_pump_stop.clone();
+        let handle = tokio::spawn(async move {
+            tracing::info!("[RelaySwitch] background pump started");
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let Some(switch) = weak.upgrade() else {
+                    break;
+                };
+                match switch
+                    .read_from_masters_timeout(std::time::Duration::from_millis(200))
+                    .await
+                {
+                    Ok(Some(_frame)) => {
+                        // Dispatched internally by handle_master_frame via
+                        // external_response_channels / peer routing. The
+                        // returned pass-through frame has no owner in the
+                        // background path — drop it.
+                    }
+                    Ok(None) => {
+                        // Timeout or all-masters-closed; loop to re-check
+                        // the stop flag before blocking again.
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[RelaySwitch] background pump: relay error (continuing): {}",
+                            e
+                        );
+                    }
+                }
+            }
+            tracing::info!("[RelaySwitch] background pump exiting");
+        });
+        *guard = Some(handle);
     }
 
     /// Get the negotiated limits (minimum across all masters).
@@ -1038,10 +1229,19 @@ impl RelaySwitch {
         let mut caps = payload.caps.clone();
         let mut limits = notify_frame.relay_notify_limits().unwrap_or_default();
 
-        // Identity verification (same as in new())
         let mut seq_assigner = SeqAssigner::new();
-        let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
-        {
+
+        // End-to-end identity verification. The engine sends a
+        // `cap:`/CAP_IDENTITY REQ through the relay and expects the nonce
+        // echoed back via some cartridge on the host. This probe is only
+        // meaningful when the host advertises at least one cap — an empty
+        // cap set means "no cartridges attached successfully," so there is
+        // no handler chain to probe. The master still joins: its
+        // `installed_cartridges` carries attachment-error entries the UI
+        // needs to surface.
+        if !payload.caps.is_empty() {
+            let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
+
             use crate::standard::caps::CAP_IDENTITY;
 
             let nonce = identity_nonce();
@@ -2303,7 +2503,17 @@ impl RelaySwitch {
             installed_cartridges = ?all_installed_cartridges,
             "RelaySwitch rebuilt installed cartridges"
         );
-        *self.aggregate_installed_cartridges.write().await = all_installed_cartridges;
+        let prior_installed = self.aggregate_installed_cartridges.read().await.clone();
+        *self.aggregate_installed_cartridges.write().await = all_installed_cartridges.clone();
+        // Publish to subscribers only when the snapshot actually changed —
+        // watch::send always wakes receivers so we guard against redundant
+        // notify storms from unrelated capability rebuilds.
+        if prior_installed != all_installed_cartridges {
+            // send_replace is infallible; receivers dropped is fine.
+            let _ = self
+                .aggregate_installed_cartridges_tx
+                .send(all_installed_cartridges);
+        }
 
         // Log only if changed
         if changed {
@@ -2384,13 +2594,34 @@ impl RelaySwitch {
     }
 }
 
+impl Drop for RelaySwitch {
+    fn drop(&mut self) {
+        // Signal the background pump to exit on its next iteration. The
+        // task holds a Weak<Self> so it also drops out when the last Arc
+        // goes away, but setting the flag lets it exit before the next
+        // 200ms tick.
+        self.background_pump_stop.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.background_pump_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
+        }
+    }
+}
+
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
 
 /// Parse capabilities payload from RelayNotify.
 /// RelayNotify contains a JSON object with capability URNs and installed cartridge identities.
-/// Validates that CAP_IDENTITY is present — hard-fail if missing.
+///
+/// If the host advertises any caps, CAP_IDENTITY must be among them — this
+/// is the contract that makes the engine's end-to-end identity probe
+/// meaningful. If the host advertises an empty cap set, this is a valid
+/// state meaning "this host has no cartridges that passed the attachment
+/// checklist"; the `installed_cartridges` list may still report
+/// attachment failures the UI needs to surface.
 fn parse_relay_notify_payload(
     notify_payload: &[u8],
 ) -> Result<RelayNotifyCapabilitiesPayload, RelaySwitchError> {
@@ -2400,19 +2631,22 @@ fn parse_relay_notify_payload(
     let payload: RelayNotifyCapabilitiesPayload = serde_json::from_slice(notify_payload)
         .map_err(|e| RelaySwitchError::Protocol(format!("Invalid RelayNotify payload: {}", e)))?;
 
-    // Verify CAP_IDENTITY is present — mandatory for every host
-    let identity_urn =
-        CapUrn::from_string(CAP_IDENTITY).expect("BUG: CAP_IDENTITY constant is invalid");
-    let has_identity = payload.caps.iter().any(|cap_str| {
-        CapUrn::from_string(cap_str)
-            .map(|cap_urn| identity_urn.conforms_to(&cap_urn))
-            .unwrap_or(false)
-    });
-    if !has_identity {
-        return Err(RelaySwitchError::Protocol(format!(
-            "RelayNotify missing required CAP_IDENTITY ({})",
-            CAP_IDENTITY
-        )));
+    if !payload.caps.is_empty() {
+        // A non-empty cap set must include CAP_IDENTITY — advertising any cap
+        // without the structural identity cap is a broken host.
+        let identity_urn =
+            CapUrn::from_string(CAP_IDENTITY).expect("BUG: CAP_IDENTITY constant is invalid");
+        let has_identity = payload.caps.iter().any(|cap_str| {
+            CapUrn::from_string(cap_str)
+                .map(|cap_urn| identity_urn.conforms_to(&cap_urn))
+                .unwrap_or(false)
+        });
+        if !has_identity {
+            return Err(RelaySwitchError::Protocol(format!(
+                "RelayNotify advertised caps but is missing required CAP_IDENTITY ({})",
+                CAP_IDENTITY
+            )));
+        }
     }
 
     Ok(payload)
