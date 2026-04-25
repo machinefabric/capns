@@ -75,6 +75,32 @@ pub const MEDIA_AUDIO: &str = "media:wav;audio";
 /// Media URN for video data (mp4, webm, mov, etc.)
 pub const MEDIA_VIDEO: &str = "media:video";
 
+// Image container formats. URN strings here match the declared spec URNs
+// in capdag/standard/media/<name>.json. Tagged-URN normalization makes the
+// declared and normalized forms equivalent under the parser, but matching
+// the spec form exactly avoids surprising any code that prints URNs.
+pub const MEDIA_JPEG: &str = "media:jpeg;image";
+pub const MEDIA_GIF: &str = "media:gif;image";
+pub const MEDIA_BMP: &str = "media:bmp;image";
+pub const MEDIA_TIFF: &str = "media:tiff;image";
+pub const MEDIA_WEBP: &str = "media:webp;image";
+
+// Audio container formats. Conversion caps live in audiocartridge.
+pub const MEDIA_MP3: &str = "media:mp3;audio";
+pub const MEDIA_WAV: &str = "media:wav;audio";
+pub const MEDIA_FLAC: &str = "media:flac;audio";
+pub const MEDIA_OGG: &str = "media:ogg;audio";
+pub const MEDIA_AAC: &str = "media:aac;audio";
+pub const MEDIA_M4A: &str = "media:m4a;audio";
+pub const MEDIA_AIFF: &str = "media:aiff;audio";
+pub const MEDIA_OPUS: &str = "media:opus;audio";
+
+// Video container formats. Conversion caps live in videocartridge.
+pub const MEDIA_MP4: &str = "media:mp4;video";
+pub const MEDIA_MOV: &str = "media:mov;video";
+pub const MEDIA_WEBM: &str = "media:webm;video";
+pub const MEDIA_MKV: &str = "media:mkv;video";
+
 // Semantic AI input types - distinguished by their purpose/context
 /// Media URN for audio input containing speech for transcription (Whisper)
 pub const MEDIA_AUDIO_SPEECH: &str = "media:audio;wav;speech";
