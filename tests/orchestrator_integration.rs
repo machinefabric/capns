@@ -132,13 +132,16 @@ fn check_dir_newer(dir: &PathBuf, reference: &std::time::SystemTime) -> bool {
 /// Build testcartridge in release mode
 fn build_testcartridge() {
     let cart_dir = testcartridge_dir();
+    let target_dir = testcartridge_target_dir();
     eprintln!("[TestcartridgeTest] Building testcartridge in release mode...");
     eprintln!("[TestcartridgeTest]   Directory: {:?}", cart_dir);
+    eprintln!("[TestcartridgeTest]   Target dir: {:?}", target_dir);
     eprintln!("[TestcartridgeTest]   Running: cargo build --release");
 
     let output = Command::new("cargo")
         .arg("build")
         .arg("--release")
+        .env("CARGO_TARGET_DIR", &target_dir)
         .current_dir(&cart_dir)
         .output()
         .expect("Failed to run cargo build for testcartridge");
@@ -169,20 +172,37 @@ fn build_testcartridge() {
     eprintln!("[TestcartridgeTest] Successfully built testcartridge");
 }
 
-/// Get path to testcartridge binary, building if necessary
+/// Resolve the `CARGO_TARGET_DIR` to use for the testcartridge build.
+///
+/// The workspace test runner builds testcartridge into a per-crate
+/// directory (`$CARGO_BUILD_DIR/testcartridge`) but runs the
+/// orchestrator integration tests with `CARGO_TARGET_DIR` pointing at
+/// capdag's own target dir. Both build phases must agree on which
+/// `target` directory holds the testcartridge binary, so we resolve
+/// it from the workspace layout rather than the inherited env.
+fn testcartridge_target_dir() -> PathBuf {
+    if let Ok(dir) = env::var("CAPDAG_TESTCARTRIDGE_TARGET_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    if let Ok(build_dir) = env::var("CARGO_BUILD_DIR") {
+        if !build_dir.is_empty() {
+            return PathBuf::from(build_dir).join("testcartridge");
+        }
+    }
+    // Local `cargo test` (no workspace runner): fall back to the
+    // cartridge's in-tree target directory.
+    testcartridge_dir().join("target")
+}
+
+/// Get path to testcartridge binary, building if necessary.
 fn testcartridge_bin() -> PathBuf {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    let bin_path = PathBuf::from(&manifest_dir)
-        .parent()
-        .expect("No parent dir")
-        .join("capdag")
-        .join("testcartridge")
-        .join("target")
-        .join("release")
-        .join("testcartridge");
+    let target_dir = testcartridge_target_dir();
+    let bin_path = target_dir.join("release").join("testcartridge");
 
     let needs_build = if !bin_path.exists() {
-        eprintln!("[TestcartridgeTest] Binary not found, will build");
+        eprintln!("[TestcartridgeTest] Binary not found at {:?}, will build", bin_path);
         true
     } else {
         testcartridge_needs_rebuild(&bin_path)
@@ -194,8 +214,9 @@ fn testcartridge_bin() -> PathBuf {
 
     if !bin_path.exists() {
         panic!(
-            "testcartridge binary not found at {:?} after build attempt",
-            bin_path
+            "testcartridge binary not found at {:?} after build attempt (CARGO_TARGET_DIR={:?})",
+            bin_path,
+            env::var("CARGO_TARGET_DIR").ok()
         );
     }
 
@@ -309,7 +330,8 @@ async fn test889_execute_single_edge_dag() {
     let result = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         cap_registry,
@@ -356,7 +378,8 @@ async fn test888_execute_edge1_to_edge2_chain() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         cap_registry,
@@ -403,7 +426,8 @@ async fn test887_execute_with_file_input() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -446,7 +470,8 @@ async fn test952_execute_large_payload() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -498,7 +523,8 @@ async fn test951_fan_in_pattern() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -648,7 +674,8 @@ async fn test946_four_machine() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -704,7 +731,8 @@ async fn test945_five_machine() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),
@@ -760,7 +788,8 @@ async fn test944_six_machine() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         initial_inputs,
         dev_binaries,
         create_test_cap_registry(),

@@ -12,6 +12,7 @@
 //!   <supporting_files>
 //! ```
 
+use crate::bifaci::cartridge_repo::CartridgeChannel;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -26,12 +27,23 @@ pub enum CartridgeInstallSource {
 
 /// Install-context metadata stored in `cartridge.json` inside each cartridge
 /// version directory.
+///
+/// `channel` is part of the install's identity. A release `v1.0.0` and
+/// a nightly `v1.0.0` are different artifacts that happen to share id
+/// and version strings — the directory path doesn't carry channel
+/// (cartridges live at `{name}/{version}/`), so the channel must be
+/// recorded in cartridge.json when the .pkg installer writes it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CartridgeJson {
     /// Cartridge name (e.g., "pdfcartridge").
     pub name: String,
     /// Version string (e.g., "0.168.411").
     pub version: String,
+    /// Distribution channel. The .pkg installer (pkg.sh) writes this
+    /// based on which channel was passed at publish time. Required —
+    /// no default; reading a cartridge.json without `channel` is a
+    /// publish-pipeline bug we want to surface.
+    pub channel: CartridgeChannel,
     /// Relative path from the version directory to the executable entry point.
     /// For single-binary cartridges this is just the binary filename.
     /// For directory cartridges it may be a nested path.
@@ -243,8 +255,9 @@ mod tests {
             entry: "pdfcartridge".to_string(),
             installed_at: "2026-04-12T10:00:00Z".to_string(),
             installed_from: CartridgeInstallSource::Registry,
+            channel: CartridgeChannel::Release,
             source_url:
-                "https://machinefabric.com/api/cartridges/packages/pdfcartridge-0.168.411.pkg"
+                "https://cartridges.machinefabric.com/release/pdfcartridge/0.168.411/pdfcartridge-0.168.411.pkg"
                     .to_string(),
             package_sha256: "abc123".to_string(),
             package_size: 12345,
@@ -256,6 +269,56 @@ mod tests {
         assert_eq!(parsed.version, "0.168.411");
         assert_eq!(parsed.entry, "pdfcartridge");
         assert_eq!(parsed.installed_from, CartridgeInstallSource::Registry);
+        assert_eq!(parsed.channel, CartridgeChannel::Release);
+    }
+
+    // TEST1243b: Channel round-trips correctly. A nightly cartridge.json
+    // must deserialize back to the Nightly variant — channels are
+    // independent namespaces, conflating them would be a real bug.
+    #[test]
+    fn test1243b_channel_roundtrip_nightly() {
+        let cj = CartridgeJson {
+            name: "pdfcartridge".to_string(),
+            version: "0.168.411".to_string(),
+            entry: "pdfcartridge".to_string(),
+            installed_at: "2026-04-12T10:00:00Z".to_string(),
+            installed_from: CartridgeInstallSource::Registry,
+            channel: CartridgeChannel::Nightly,
+            source_url: "https://cartridges.machinefabric.com/nightly/pdfcartridge/0.168.411/pdfcartridge-0.168.411.pkg".to_string(),
+            package_sha256: "abc123".to_string(),
+            package_size: 12345,
+        };
+        let json = serde_json::to_string(&cj).unwrap();
+        // Wire form is lowercase (matches CartridgeChannel's
+        // serde rename_all = "lowercase"). Verify the literal is in
+        // there so the .pkg installer's jq output is compatible.
+        assert!(
+            json.contains("\"channel\":\"nightly\""),
+            "expected channel='nightly' in serialized form, got: {}",
+            json
+        );
+        let parsed: CartridgeJson = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.channel, CartridgeChannel::Nightly);
+    }
+
+    // TEST1243c: Reading a cartridge.json without `channel` is a hard
+    // error. We never assume a default — that would let an
+    // unrecognized install silently masquerade as release.
+    #[test]
+    fn test1243c_missing_channel_fails_to_parse() {
+        let json = r#"{
+            "name": "pdfcartridge",
+            "version": "0.168.411",
+            "entry": "pdfcartridge",
+            "installed_at": "2026-04-12T10:00:00Z",
+            "installed_from": "registry"
+        }"#;
+        let result: Result<CartridgeJson, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "cartridge.json without `channel` must fail to parse, got: {:?}",
+            result
+        );
     }
 
     // TEST1244: Dev-installed cartridge metadata omits registry-only package fields when serialized.
@@ -267,6 +330,7 @@ mod tests {
             entry: "testcartridge".to_string(),
             installed_at: "2026-04-12T10:00:00Z".to_string(),
             installed_from: CartridgeInstallSource::Dev,
+            channel: CartridgeChannel::Nightly,
             source_url: String::new(),
             package_sha256: String::new(),
             package_size: 0,
@@ -288,6 +352,7 @@ mod tests {
             entry: "nonexistent_binary".to_string(),
             installed_at: "2026-04-12T10:00:00Z".to_string(),
             installed_from: CartridgeInstallSource::Dev,
+            channel: CartridgeChannel::Nightly,
             source_url: String::new(),
             package_sha256: String::new(),
             package_size: 0,
@@ -315,6 +380,7 @@ mod tests {
             entry: "../escaped_binary".to_string(),
             installed_at: "2026-04-12T10:00:00Z".to_string(),
             installed_from: CartridgeInstallSource::Dev,
+            channel: CartridgeChannel::Nightly,
             source_url: String::new(),
             package_sha256: String::new(),
             package_size: 0,
@@ -343,6 +409,7 @@ mod tests {
             entry: "mycartridge".to_string(),
             installed_at: "2026-04-12T10:00:00Z".to_string(),
             installed_from: CartridgeInstallSource::Bundle,
+            channel: CartridgeChannel::Release,
             source_url: String::new(),
             package_sha256: String::new(),
             package_size: 0,

@@ -381,6 +381,7 @@ fn build_manifest() -> CapManifest {
     CapManifest::new(
         "testcartridge".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
+        capdag::CartridgeChannel::from_build_env(env!("MFR_CARTRIDGE_CHANNEL")),
         "Integration test cartridge for stream multiplexing protocol verification".to_string(),
         vec![capdag::CapGroup {
             name: "test-caps".to_string(),

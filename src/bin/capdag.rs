@@ -4,7 +4,7 @@
 
 use capdag::machine::parse_machine_with_node_names;
 use capdag::orchestrator::{execute_dag, parse_machine_to_cap_dag, NodeData};
-use capdag::{CapProgressFn, CapRegistry};
+use capdag::{CapProgressFn, CapRegistry, CartridgeChannel};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -12,6 +12,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
+
+/// Distribution channel of this `capdag` build. Compile-time constant —
+/// `MFR_CARTRIDGE_CHANNEL` is set by `dx cartridge build --release` /
+/// `--nightly`, which the build wrapper exports for every cargo
+/// invocation in the workspace. A release build of the binary can only
+/// orchestrate release cartridges, and a nightly build only nightly —
+/// channels never cross.
+const BUILD_CHANNEL: CartridgeChannel =
+    CartridgeChannel::from_build_env(env!("MFR_CARTRIDGE_CHANNEL"));
 
 /// Expand dev binary path - supports single file or directory of executables
 fn expand_dev_binary_path(path: &str) -> Vec<PathBuf> {
@@ -372,7 +381,7 @@ async fn main() {
     let cartridge_dir = home.join(".capdag").join("cartridges");
 
     // Registry URL
-    let registry_url = "https://machinefabric.com/api/cartridges".to_string();
+    let registry_url = "https://cartridges.machinefabric.com/manifest".to_string();
 
     // Load argument values file
     let node_values: HashMap<String, HashMap<String, serde_json::Value>> =
@@ -424,6 +433,7 @@ async fn main() {
             &graph,
             cartridge_dir.clone(),
             registry_url.clone(),
+            BUILD_CHANNEL,
             initial_inputs,
             dev_binaries.clone(),
             registry.clone(),

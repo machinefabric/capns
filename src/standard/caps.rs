@@ -1,7 +1,7 @@
 //! Standard capability definitions with arguments
 //!
 //! This module provides the standard capability definitions used across
-//! all MACINA providers, including their formal argument specifications.
+//! all MACHFAB providers, including their formal argument specifications.
 //! These definitions should match the TOML definitions in capgraph/src/
 
 use crate::urn::media_urn::{
@@ -480,7 +480,7 @@ pub fn make_multiple_decisions_urn(lang_code: &str) -> CapUrn {
 }
 
 // -----------------------------------------------------------------------------
-// MACINA-SPECIFIC TASK URN BUILDERS
+// MACHFAB-SPECIFIC TASK URN BUILDERS
 // -----------------------------------------------------------------------------
 // Note: These are legitimate task capabilities for document analysis workflows.
 // They represent phases of document processing, NOT tool wrappers.

@@ -317,13 +317,24 @@ fn topological_sort_groups(groups: &[EdgeGroup]) -> Result<Vec<usize>, Execution
 /// Manages cartridge discovery, download, and caching.
 pub struct CartridgeManager {
     cartridge_repo: CartridgeRepo,
+    /// Channel-partitioned root: cartridges install under
+    /// `{cartridge_dir}/{channel}/{cartridge_id}/{version}/`.
     cartridge_dir: PathBuf,
     registry_url: String,
+    /// Channel this manager is operating in. The orchestrator can only
+    /// install/run cartridges that match its channel — release builds
+    /// never touch nightly artefacts and vice versa.
+    channel: crate::bifaci::cartridge_repo::CartridgeChannel,
     dev_cartridges: HashMap<PathBuf, CapManifest>,
 }
 
 impl CartridgeManager {
-    pub fn new(cartridge_dir: PathBuf, registry_url: String, dev_binaries: Vec<PathBuf>) -> Self {
+    pub fn new(
+        cartridge_dir: PathBuf,
+        registry_url: String,
+        channel: crate::bifaci::cartridge_repo::CartridgeChannel,
+        dev_binaries: Vec<PathBuf>,
+    ) -> Self {
         use crate::bifaci::cartridge_json::CartridgeJson;
 
         // Resolve dev paths: directories with cartridge.json → resolve entry point.
@@ -378,12 +389,19 @@ impl CartridgeManager {
             cartridge_repo: CartridgeRepo::new(3600),
             cartridge_dir,
             registry_url,
+            channel,
             dev_cartridges: resolved
                 .into_iter()
                 .map(|p| {
                     (
                         p,
-                        CapManifest::new(String::new(), String::new(), String::new(), Vec::new()),
+                        CapManifest::new(
+                            String::new(),
+                            String::new(),
+                            crate::bifaci::cartridge_repo::CartridgeChannel::Release,
+                            String::new(),
+                            Vec::new(),
+                        ),
                     )
                 })
                 .collect(),
@@ -539,9 +557,12 @@ impl CartridgeManager {
             return Ok(path);
         }
 
-        // Look for an existing installed cartridge in the versioned directory layout:
-        // {cartridge_dir}/{cartridge_id}/{version}/cartridge.json
-        let name_dir = self.cartridge_dir.join(cartridge_id);
+        // Look for an existing installed cartridge in the channel-partitioned
+        // versioned layout: {cartridge_dir}/{channel}/{cartridge_id}/{version}/cartridge.json
+        let name_dir = self
+            .cartridge_dir
+            .join(self.channel.as_str())
+            .join(cartridge_id);
         if name_dir.is_dir() {
             if let Some(entry_point) = self.find_latest_installed_entry_point(&name_dir) {
                 return Ok(entry_point);
@@ -563,6 +584,18 @@ impl CartridgeManager {
             }
             match crate::bifaci::cartridge_json::CartridgeJson::read_from_dir(&version_dir) {
                 Ok(cj) => {
+                    // Hard mismatch — never run a cartridge from a different
+                    // channel even if it landed under our channel's tree.
+                    if cj.channel != self.channel {
+                        tracing::warn!(
+                            "Skipping cartridge at {:?}: cartridge.json channel '{}' \
+                             does not match orchestrator channel '{}'",
+                            version_dir,
+                            cj.channel,
+                            self.channel
+                        );
+                        continue;
+                    }
                     let entry_point = cj.resolve_entry_point(&version_dir);
                     versions.push((cj.version, entry_point));
                 }
@@ -596,10 +629,13 @@ impl CartridgeManager {
     async fn verify_cartridge_integrity(&self, cartridge_id: &str) -> Result<(), ExecutionError> {
         let cartridge_info = self
             .cartridge_repo
-            .get_cartridge(cartridge_id)
+            .get_cartridge(self.channel, cartridge_id)
             .await
             .ok_or_else(|| ExecutionError::CartridgeNotFound {
-                cap_urn: format!("Cartridge {} not found in registry", cartridge_id),
+                cap_urn: format!(
+                    "Cartridge {} not found in {} registry",
+                    cartridge_id, self.channel
+                ),
             })?;
 
         if cartridge_info.team_id.is_empty() || cartridge_info.signed_at.is_empty() {
@@ -620,10 +656,13 @@ impl CartridgeManager {
     async fn download_cartridge(&self, cartridge_id: &str) -> Result<PathBuf, ExecutionError> {
         let cartridge_info = self
             .cartridge_repo
-            .get_cartridge(cartridge_id)
+            .get_cartridge(self.channel, cartridge_id)
             .await
             .ok_or_else(|| ExecutionError::CartridgeNotFound {
-                cap_urn: format!("Cartridge {} not found in registry", cartridge_id),
+                cap_urn: format!(
+                    "Cartridge {} not found in {} registry",
+                    cartridge_id, self.channel
+                ),
             })?;
 
         if cartridge_info.team_id.is_empty() || cartridge_info.signed_at.is_empty() {
@@ -649,11 +688,10 @@ impl CartridgeManager {
 
         let package = &build.package;
 
-        let base_url = self
-            .registry_url
-            .trim_end_matches("/api/cartridges")
-            .trim_end_matches('/');
-        let download_url = format!("{}/cartridges/packages/{}", base_url, package.name);
+        // The v5 manifest carries the absolute R2 URL on the package itself.
+        // No URL derivation: if the manifest's URL is wrong, we want to fail
+        // hard against the URL the publisher actually committed to.
+        let download_url = package.url.as_str();
 
         tracing::info!(
             "Downloading cartridge {} v{} ({}) from {}",
@@ -663,7 +701,7 @@ impl CartridgeManager {
             download_url
         );
 
-        let response = reqwest::get(&download_url).await.map_err(|e| {
+        let response = reqwest::get(download_url).await.map_err(|e| {
             ExecutionError::CartridgeDownloadFailed(format!("Download failed: {}", e))
         })?;
 
@@ -693,9 +731,11 @@ impl CartridgeManager {
             )));
         }
 
-        // Create versioned directory layout
+        // Channel-partitioned versioned layout:
+        // {cartridge_dir}/{channel}/{cartridge_id}/{version}/{binary} + cartridge.json
         let version_dir = self
             .cartridge_dir
+            .join(self.channel.as_str())
             .join(cartridge_id)
             .join(&cartridge_info.version);
         fs::create_dir_all(&version_dir)?;
@@ -712,6 +752,7 @@ impl CartridgeManager {
         let cj = crate::CartridgeJson {
             name: cartridge_id.to_string(),
             version: cartridge_info.version.clone(),
+            channel: self.channel,
             entry: binary_name.to_string(),
             installed_at: {
                 use std::time::SystemTime;
@@ -721,7 +762,7 @@ impl CartridgeManager {
                 format!("{}Z", now.as_secs())
             },
             installed_from: crate::CartridgeInstallSource::Registry,
-            source_url: download_url,
+            source_url: download_url.to_string(),
             package_sha256: package.sha256.clone(),
             package_size: package.size,
         };
@@ -868,9 +909,13 @@ impl ExecutionContext {
     /// The ExecutionContext manages cleanup of these resources.
     ///
     /// # Arguments
+    /// * `channel` - Distribution channel of every cartridge in this batch.
+    ///   Channel partitions identity, so all cartridges that a single host
+    ///   serves must share a channel.
     /// * `cartridges` - Vec of (binary_path, cap_urns) to register with the host
     pub async fn add_cartridge_host(
         &mut self,
+        channel: crate::bifaci::cartridge_repo::CartridgeChannel,
         cartridges: Vec<(PathBuf, Vec<String>)>,
     ) -> Result<usize, ExecutionError> {
         // Create socket pairs:
@@ -882,7 +927,7 @@ impl ExecutionContext {
         // --- CartridgeHostRuntime (async, in tokio task) ---
         let mut host = CartridgeHostRuntime::new();
         for (path, caps) in &cartridges {
-            host.register_cartridge(path, caps);
+            host.register_cartridge(path, channel, caps);
         }
 
         let (host_read, host_write) = host_sock.into_split();
@@ -1279,6 +1324,7 @@ pub async fn execute_dag(
     graph: &ResolvedGraph,
     cartridge_dir: PathBuf,
     registry_url: String,
+    channel: crate::bifaci::cartridge_repo::CartridgeChannel,
     initial_inputs: HashMap<String, NodeData>,
     dev_binaries: Vec<PathBuf>,
     cap_registry: Arc<CapRegistry>,
@@ -1288,7 +1334,8 @@ pub async fn execute_dag(
     tracing::debug!(target: "execute_dag", "Starting...");
 
     // 1. Initialize cartridge manager and discover/download all needed cartridges
-    let mut cartridge_manager = CartridgeManager::new(cartridge_dir, registry_url, dev_binaries);
+    let mut cartridge_manager =
+        CartridgeManager::new(cartridge_dir, registry_url, channel, dev_binaries);
     cartridge_manager.init().await?;
     tracing::debug!(target: "execute_dag", "Cartridge manager initialized");
 
@@ -1305,7 +1352,7 @@ pub async fn execute_dag(
     tracing::debug!(target: "execute_dag", "Creating execution context...");
     let mut ctx = ExecutionContext::new(cap_registry).await?;
     tracing::debug!(target: "execute_dag", "Adding cartridge host...");
-    ctx.add_cartridge_host(cartridges).await?;
+    ctx.add_cartridge_host(channel, cartridges).await?;
     tracing::debug!(target: "execute_dag", "Cartridge host added");
 
     // 3. Resolve initial inputs to raw bytes and set on nodes

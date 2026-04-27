@@ -709,7 +709,8 @@ async fn ensure_model_downloaded(model_spec: &str, modelcartridge_bin: &PathBuf)
     match execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         vec![modelcartridge_bin.clone()],
         standard_registry(),
@@ -796,7 +797,8 @@ async fn test1069_pdf_document_intelligence() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -849,7 +851,8 @@ async fn test1070_pdf_thumbnail_to_image_embedding() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -905,7 +908,8 @@ async fn test881_pdf_full_intelligence_pipeline() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -961,7 +965,8 @@ async fn test1071_text_document_intelligence() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1008,7 +1013,8 @@ async fn test1072_multi_format_document_processing() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1065,7 +1071,8 @@ async fn test885_model_plus_dimensions() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1114,7 +1121,8 @@ async fn test884_model_availability_plus_status() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1165,7 +1173,8 @@ async fn test883_text_embedding() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1218,7 +1227,8 @@ async fn test882_candle_describe_image() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1265,7 +1275,8 @@ async fn test1032_audio_transcription() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1309,7 +1320,8 @@ async fn test1034_pdf_complete_analysis() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1374,7 +1386,8 @@ async fn test1035_model_full_inspection() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1446,7 +1459,8 @@ async fn test1037_two_format_full_analysis() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1513,7 +1527,8 @@ async fn test1038_model_plus_pdf_combined() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1583,7 +1598,8 @@ async fn test1040_three_cartridge_pipeline() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1708,7 +1724,8 @@ async fn test1041_txt_document_intelligence() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1750,7 +1767,8 @@ async fn test1042_rst_document_intelligence() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1791,7 +1809,8 @@ async fn test1043_log_document_intelligence() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1848,7 +1867,8 @@ async fn test1044_all_text_formats_intelligence() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1906,7 +1926,8 @@ async fn test1046_model_list_models() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -1957,7 +1978,8 @@ async fn test1048_gguf_embeddings_dimensions() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2011,7 +2033,8 @@ async fn test1049_gguf_llm_model_info() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2061,7 +2084,8 @@ async fn test1050_gguf_llm_vocab() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2115,7 +2139,8 @@ async fn test1051_gguf_model_info_plus_vocab() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2176,7 +2201,8 @@ async fn test1052_gguf_llm_inference() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2230,7 +2256,8 @@ async fn test1053_gguf_llm_inference_constrained() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2284,7 +2311,8 @@ async fn test1054_gguf_generate_embeddings() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2340,7 +2368,8 @@ async fn test1057_gguf_describe_image() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2392,7 +2421,8 @@ async fn test1058_pdf_thumbnail_to_gguf_vision() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2461,7 +2491,8 @@ async fn test1059_gguf_all_llm_ops() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2541,7 +2572,8 @@ async fn test1060_mlx_generate_text() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2586,7 +2618,8 @@ async fn test1061_mlx_describe_image() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2634,7 +2667,8 @@ async fn test1062_mlx_generate_embeddings() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2679,7 +2713,8 @@ async fn test1063_mlx_embeddings_dimensions() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2719,7 +2754,8 @@ async fn test1064_model_download() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2771,7 +2807,8 @@ async fn test1066_pdf_to_thumbnail_to_describe_to_embed() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2826,7 +2863,8 @@ async fn test984_pdf_thumbnail_to_gguf_describe_fanin() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2874,7 +2912,8 @@ async fn test985_audio_transcribe_to_embed() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2925,7 +2964,8 @@ async fn test986_pdf_fanout_with_chain() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -2987,7 +3027,8 @@ async fn test987_multi_format_parallel_chains() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -3040,7 +3081,8 @@ async fn test988_deep_chain_with_parallel() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -3103,7 +3145,8 @@ async fn test989_five_cartridge_chain() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),
@@ -3167,7 +3210,8 @@ async fn test990_all_text_formats_to_image_embeds() {
     let outputs = execute_dag(
         &graph,
         cartridge_dir,
-        "https://machinefabric.com/api/cartridges".to_string(),
+        "https://cartridges.machinefabric.com/manifest".to_string(),
+        capdag::CartridgeChannel::Release,
         inputs,
         dev_bins,
         standard_registry(),

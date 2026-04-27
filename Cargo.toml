@@ -45,8 +45,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [package]
 authors = ["https://github.com/machinefabric"]
-description = "Core cap URN and definition system for MACINA plugins"
+description = "Core cap URN and definition system for MACHFAB plugins"
 edition = "2021"
 license = "MIT"
 name = "capdag"
-version = "0.388.3505"
+version = "0.389.3547"

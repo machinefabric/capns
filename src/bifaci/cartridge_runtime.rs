@@ -3457,114 +3457,6 @@ impl CartridgeRuntime {
         }
     }
 
-    /// Read file(s) for file-path arguments and return bytes.
-    ///
-    /// This method implements automatic file-path to bytes conversion when:
-    /// - arg.media_urn is "media:file-path" or "media:file-path-array"
-    /// - arg has a stdin source (indicating bytes are the canonical type)
-    ///
-    /// # Arguments
-    /// * `path_value` - File path string (single path or JSON array of path patterns)
-    /// * `is_array` - True if media:file-path-array (read multiple files with glob expansion)
-    ///
-    /// # Returns
-    /// - For single file: Vec<u8> containing raw file bytes
-    /// - For array: CBOR-encoded array of file bytes (each element is one file's contents)
-    ///
-    /// # Errors
-    /// Returns RuntimeError::Io if file cannot be read with clear error message.
-    fn read_file_path_to_bytes(
-        &self,
-        path_value: &str,
-        is_array: bool,
-    ) -> Result<Option<Vec<u8>>, RuntimeError> {
-        if is_array {
-            // Parse JSON array of path patterns
-            let path_patterns: Vec<String> = serde_json::from_str(path_value)
-                .map_err(|e| RuntimeError::Cli(format!(
-                    "Failed to parse file-path-array: expected JSON array of path patterns, got '{}': {}",
-                    path_value, e
-                )))?;
-
-            // Expand globs and collect all file paths
-            let mut all_files = Vec::new();
-            for pattern in &path_patterns {
-                // Check if this is a literal path (no glob metacharacters) or a glob pattern
-                let is_glob =
-                    pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
-
-                if !is_glob {
-                    // Literal path - verify it exists and is a file
-                    let path = std::path::Path::new(pattern);
-                    if !path.exists() {
-                        return Err(RuntimeError::Io(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("Failed to read file '{}' from file-path-array: No such file or directory", pattern)
-                        )));
-                    }
-                    if path.is_file() {
-                        all_files.push(path.to_path_buf());
-                    }
-                    // Skip directories silently for consistency with glob behavior
-                } else {
-                    // Glob pattern - expand it
-                    let paths = glob::glob(pattern).map_err(|e| {
-                        RuntimeError::Cli(format!("Invalid glob pattern '{}': {}", pattern, e))
-                    })?;
-
-                    for path_result in paths {
-                        let path = path_result.map_err(|e| {
-                            RuntimeError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("Glob error: {}", e),
-                            ))
-                        })?;
-
-                        // Only include files (skip directories)
-                        if path.is_file() {
-                            all_files.push(path);
-                        }
-                    }
-                }
-            }
-
-            // Read each file sequentially (streaming construction - don't load all at once)
-            let mut files_data = Vec::new();
-            for path in &all_files {
-                let bytes = std::fs::read(path).map_err(|e| {
-                    RuntimeError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "Failed to read file '{}' from file-path-array: {}",
-                            path.display(),
-                            e
-                        ),
-                    ))
-                })?;
-                files_data.push(ciborium::Value::Bytes(bytes));
-            }
-
-            // Encode as CBOR array
-            let cbor_array = ciborium::Value::Array(files_data);
-            let mut cbor_bytes = Vec::new();
-            ciborium::into_writer(&cbor_array, &mut cbor_bytes).map_err(|e| {
-                RuntimeError::Serialize(format!("Failed to encode CBOR array: {}", e))
-            })?;
-
-            Ok(Some(cbor_bytes))
-        } else {
-            // Single file path - read and return raw bytes
-            let bytes = std::fs::read(path_value).map_err(|e| {
-                RuntimeError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to read file '{}': {}", path_value, e),
-                ))
-            })?;
-
-            Ok(Some(bytes))
-        }
-    }
-
     /// Print help message showing all available subcommands.
     fn print_help(&self, manifest: &CapManifest) {
         let stderr = std::io::stderr();
@@ -4629,6 +4521,7 @@ mod tests {
         CapManifest::new(
             name.to_string(),
             version.to_string(),
+            crate::bifaci::cartridge_repo::CartridgeChannel::Release,
             description.to_string(),
             vec![crate::CapGroup {
                 name: "default".to_string(),
@@ -4641,10 +4534,10 @@ mod tests {
     /// Test manifest JSON with identity and a test cap.
     /// Uses cap_groups format. The test cap URN "cap:op=test" has no in/out tags;
     /// CapUrn defaults both to media: (wildcard), which is valid.
-    const TEST_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:op=test","title":"Test","command":"test"}]}]}"#;
+    const TEST_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","channel":"release","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:op=test","title":"Test","command":"test"}]}]}"#;
 
     /// Valid manifest with proper in/out specs for tests that need parsed CapManifest
-    const VALID_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}],"adapter_urns":[]}]}"#;
+    const VALID_MANIFEST: &str = r#"{"name":"TestCartridge","version":"1.0.0","channel":"release","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:","title":"Identity","command":"identity"},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}],"adapter_urns":[]}]}"#;
 
     // TEST248: Test register_op and find_handler by exact cap URN
     #[test]

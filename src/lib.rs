@@ -84,10 +84,11 @@ pub use bifaci::manifest::*;
 // Re-export ops crate types used by Op-based handlers
 pub use async_trait::async_trait;
 pub use bifaci::cartridge_repo::{
-    CartridgeBuild, CartridgeDistributionInfo, CartridgeInfo, CartridgePackageInfo,
-    CartridgeRegistry, CartridgeRegistryEntry, CartridgeRegistryResponse, CartridgeRepo,
-    CartridgeRepoError, CartridgeSuggestion, CartridgeVersionData, RegistryArgSource, RegistryCap,
-    RegistryCapArg, RegistryCapGroup, RegistryCapOutput,
+    CartridgeBuild, CartridgeChannel, CartridgeChannelEntries, CartridgeDistributionInfo,
+    CartridgeInfo, CartridgePackageInfo, CartridgeRegistry, CartridgeRegistryChannels,
+    CartridgeRegistryEntry, CartridgeRegistryResponse, CartridgeRepo, CartridgeRepoError,
+    CartridgeSuggestion, CartridgeVersionData, RegistryArgSource, RegistryCap, RegistryCapArg,
+    RegistryCapGroup, RegistryCapOutput,
 };
 pub use ops::{DryContext, Op, OpError, OpMetadata, OpResult, WetContext};
 

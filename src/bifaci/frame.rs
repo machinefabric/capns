@@ -1172,7 +1172,7 @@ mod tests {
     #[test]
     fn test181_hello_frame_with_manifest() {
         let manifest_json =
-            r#"{"name":"TestCartridge","version":"1.0.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity"}]}]}"#;
+            r#"{"name":"TestCartridge","version":"1.0.0","channel":"release","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity"}]}]}"#;
         let frame = Frame::hello_with_manifest(
             &Limits {
                 max_frame: 1_000_000,
@@ -1632,7 +1632,7 @@ mod tests {
     // TEST401: Verify relay_notify factory stores manifest and limits, and accessors extract them
     #[test]
     fn test401_relay_notify_frame() {
-        let manifest = br#"{"name":"Test","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}]}]}"#;
+        let manifest = br#"{"name":"Test","version":"1.0","channel":"release","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test"}]}]}"#;
         let limits = Limits {
             max_frame: 2_000_000,
             max_chunk: 128_000,
@@ -2900,7 +2900,7 @@ mod tests {
     fn test521_relay_notify_cbor_roundtrip() {
         use crate::bifaci::io::{decode_frame, encode_frame};
 
-        let manifest = br#"{"name":"Test","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=\"media:void\";op=convert;out=\"media:image\"","title":"Convert","command":"convert"}]}]}"#;
+        let manifest = br#"{"name":"Test","version":"1.0","channel":"release","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=\"media:void\";op=convert;out=\"media:image\"","title":"Convert","command":"convert"}]}]}"#;
         let limits = Limits {
             max_frame: 3_000_000,
             max_chunk: 256_000,
@@ -3011,7 +3011,7 @@ mod tests {
 
         // Create a large manifest (simulating many caps)
         let mut large_manifest = String::from(
-            r#"{"name":"Large","version":"1.0","description":"Large test","cap_groups":[{"name":"default","caps":["#,
+            r#"{"name":"Large","version":"1.0","channel":"release","description":"Large test","cap_groups":[{"name":"default","caps":["#,
         );
         // First cap is identity (required)
         large_manifest.push_str(

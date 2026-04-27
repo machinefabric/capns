@@ -36,7 +36,7 @@ fn null_as_empty_string<'de, D: Deserializer<'de>>(
 }
 
 // =============================================================================
-// Registry wire schema (v4.0)
+// Registry wire schema (v5.0)
 //
 // These types deserialize the JSON returned by /api/cartridges (and the
 // canonical source `cartridges/registry.json`). The wire mixes camelCase
@@ -44,7 +44,98 @@ fn null_as_empty_string<'de, D: Deserializer<'de>>(
 // the snake_case keys are the schema names — we name them explicitly with
 // `#[serde(rename = "…")]` rather than letting the global `rename_all`
 // rule transform them.
+//
+// Schema v5.0 adds release/nightly channel partitioning. Both channels
+// are always present (possibly empty) so consumers never need conditional
+// fallbacks. Each channel has its own `cartridges` map and per-cartridge
+// `latestVersion`.
 // =============================================================================
+
+/// Distribution channel a cartridge entry belongs to. Top-level partition
+/// of the registry. The wire form is the lowercase string the registry
+/// uses for keys under `channels.`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CartridgeChannel {
+    /// User-facing builds. Promoted via the publish script's `--release`.
+    Release,
+    /// In-flight builds. Default for the publish scripts.
+    Nightly,
+}
+
+impl CartridgeChannel {
+    /// Wire-form key string ("release" / "nightly").
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CartridgeChannel::Release => "release",
+            CartridgeChannel::Nightly => "nightly",
+        }
+    }
+
+    /// Parse the wire-form string ("release" / "nightly") at runtime.
+    /// Used by hosts that read the channel out of cartridge.json /
+    /// dictionary payloads — anything else is a hard error so a
+    /// typo never silently masquerades as a known channel.
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "release" => Ok(CartridgeChannel::Release),
+            "nightly" => Ok(CartridgeChannel::Nightly),
+            other => Err(format!(
+                "invalid CartridgeChannel '{}'; expected 'release' or 'nightly'",
+                other
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for CartridgeChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Parse a channel string in a `const` context. Used by cartridge
+/// `build_manifest()` to convert `env!("MFR_CARTRIDGE_CHANNEL")` into
+/// a `CartridgeChannel` at compile time. Compile-time `panic!` is the
+/// right behaviour: a cartridge built without the env set or with a
+/// typo is a build-system bug we want to fail before the binary ever
+/// runs. Use:
+/// ```ignore
+/// const CHANNEL: CartridgeChannel =
+///     capdag::CartridgeChannel::from_build_env(env!("MFR_CARTRIDGE_CHANNEL"));
+/// ```
+impl CartridgeChannel {
+    pub const fn from_build_env(s: &str) -> CartridgeChannel {
+        // const fn comparison: byte-by-byte equality.
+        if const_eq(s, "release") {
+            CartridgeChannel::Release
+        } else if const_eq(s, "nightly") {
+            CartridgeChannel::Nightly
+        } else {
+            panic!(
+                "MFR_CARTRIDGE_CHANNEL must be 'release' or 'nightly'; \
+                 build the cartridge with `dx cartridge build --release` or \
+                 `--nightly` so the env var is set"
+            );
+        }
+    }
+}
+
+const fn const_eq(a: &str, b: &str) -> bool {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    if ab.len() != bb.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < ab.len() {
+        if ab[i] != bb[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 /// One cap as it appears inside a `cap_group` in the registry response.
 ///
@@ -125,6 +216,11 @@ pub struct CartridgePackageInfo {
 ///
 /// Top-level fields are camelCased on the wire; `cap_groups` is the only
 /// snake_case field at this level and is named explicitly.
+///
+/// `channel` is set by the registry transformer when flattening the
+/// channel-partitioned registry into the API response — every entry
+/// reports which channel it lives in so consumers can render the
+/// release/nightly distinction without re-deriving it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CartridgeInfo {
@@ -157,6 +253,10 @@ pub struct CartridgeInfo {
     /// All available versions (newest first)
     #[serde(default)]
     pub available_versions: Vec<String>,
+    /// Channel this entry belongs to. Set by the transformer; consumers
+    /// must not synthesize this field — it comes from the registry's
+    /// `channels` partitioning.
+    pub channel: CartridgeChannel,
 }
 
 /// The cartridge registry response from the API (flat format)
@@ -173,8 +273,12 @@ pub struct CartridgeBuild {
     pub package: CartridgeDistributionInfo,
 }
 
-/// A cartridge version's data (v4.0 schema).
+/// A cartridge version's data (v5.0 schema).
 /// Each version has one or more platform-specific builds.
+///
+/// `notes_url` is the absolute R2 URL of the version's release-notes
+/// Markdown file, when one was uploaded at publish time. Optional —
+/// cartridges historically did not ship per-version notes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CartridgeVersionData {
@@ -184,19 +288,24 @@ pub struct CartridgeVersionData {
     #[serde(default)]
     pub min_app_version: String,
     pub builds: Vec<CartridgeBuild>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_url: Option<String>,
 }
 
-/// Distribution file info (package)
+/// Distribution file info (package). `url` is the absolute R2 URL of
+/// the package — every consumer downloads from that URL directly.
+/// There is no derived URL pattern any more.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CartridgeDistributionInfo {
     pub name: String,
     pub sha256: String,
     pub size: u64,
+    pub url: String,
 }
 
-/// A cartridge entry in the v4.0 source-of-truth registry (nested
-/// `cartridges/{id}` map). The transformer in `CartridgeRepoServer`
-/// produces a `CartridgeInfo` from each entry.
+/// A cartridge entry in the source-of-truth registry (nested
+/// `channels.<channel>.cartridges.{id}` map). The transformer in
+/// `CartridgeRepoServer` produces a `CartridgeInfo` from each entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CartridgeRegistryEntry {
@@ -219,16 +328,42 @@ pub struct CartridgeRegistryEntry {
     pub versions: HashMap<String, CartridgeVersionData>,
 }
 
-/// The v4.0 cartridge registry (nested schema)
+/// One channel's cartridges map. Always present in the parent
+/// `CartridgeRegistry.channels`, possibly empty.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CartridgeChannelEntries {
+    #[serde(default)]
+    pub cartridges: HashMap<String, CartridgeRegistryEntry>,
+}
+
+/// Per-channel partitioning of the registry. Each channel is a
+/// distinct namespace — a cartridge id can exist independently in
+/// release and nightly with potentially different versions and
+/// metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CartridgeRegistryChannels {
+    /// User-facing release channel.
+    pub release: CartridgeChannelEntries,
+    /// In-flight nightly channel.
+    pub nightly: CartridgeChannelEntries,
+}
+
+/// The v5.0 cartridge registry (channel-partitioned schema). Both
+/// `release` and `nightly` are always present (possibly empty) so
+/// every consumer can iterate them without conditional fallbacks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CartridgeRegistry {
     pub schema_version: String,
     pub last_updated: String,
-    pub cartridges: HashMap<String, CartridgeRegistryEntry>,
+    pub channels: CartridgeRegistryChannels,
 }
 
-/// A cartridge suggestion for a missing cap
+/// A cartridge suggestion for a missing cap. `channel` reports which
+/// channel the suggesting cartridge lives in so the UI can show the
+/// release/nightly distinction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CartridgeSuggestion {
     pub cartridge_id: String,
@@ -239,14 +374,26 @@ pub struct CartridgeSuggestion {
     pub latest_version: String,
     pub repo_url: String,
     pub page_url: String,
+    pub channel: CartridgeChannel,
+}
+
+/// Composite key — a cartridge id is unique within a channel but can
+/// appear in both channels at the same time. `(channel, id)` is the
+/// authoritative cache key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CartridgeKey {
+    channel: CartridgeChannel,
+    id: String,
 }
 
 /// Cached cartridge repository data
 struct CartridgeRepoCache {
-    /// All cartridges indexed by cartridge ID
-    cartridges: HashMap<String, CartridgeInfo>,
-    /// Cap URN to cartridge IDs that provide it
-    cap_to_cartridges: HashMap<String, Vec<String>>,
+    /// All cartridges indexed by `(channel, id)`.
+    cartridges: HashMap<CartridgeKey, CartridgeInfo>,
+    /// Cap URN (canonical normalized form) → list of cartridges that
+    /// provide it. Each entry references a `(channel, id)` pair so the
+    /// suggestion path can preserve channel provenance.
+    cap_to_cartridges: HashMap<String, Vec<CartridgeKey>>,
     /// When the cache was last updated
     last_updated: Instant,
     /// The repo URL this cache is from
@@ -320,7 +467,16 @@ impl CartridgeRepo {
         self.offline_flag.store(offline, Ordering::Relaxed);
     }
 
-    /// Fetch cartridge registry from a URL
+    /// Fetch the v5.0 channel-partitioned cartridge manifest from a URL
+    /// and flatten it via `CartridgeRepoServer` into the
+    /// `CartridgeRegistryResponse` shape the cache expects (one
+    /// `CartridgeInfo` per `(channel, id)` pair, channel set on each).
+    ///
+    /// 404 is treated as "no cartridges published yet" — equivalent to
+    /// an empty manifest. Any other non-success status, network failure,
+    /// JSON-parse error, or schema validation error surfaces as a hard
+    /// `CartridgeRepoError`. There is no fallback to a stale cached
+    /// shape — the manifest is the source of truth.
     async fn fetch_registry(&self, repo_url: &str) -> Result<CartridgeRegistryResponse> {
         if self.offline_flag.load(Ordering::Relaxed) {
             return Err(CartridgeRepoError::NetworkBlocked(format!(
@@ -332,51 +488,71 @@ impl CartridgeRepo {
             CartridgeRepoError::HttpError(format!("Failed to fetch from {}: {}", repo_url, e))
         })?;
 
+        if response.status().as_u16() == 404 {
+            // Manifest not published yet. Return an empty response so
+            // the cache reflects "no cartridges available" without
+            // poisoning future syncs.
+            return Ok(CartridgeRegistryResponse {
+                cartridges: Vec::new(),
+            });
+        }
         if !response.status().is_success() {
             return Err(CartridgeRepoError::StatusError(response.status().as_u16()));
         }
 
-        let registry: CartridgeRegistryResponse = response.json().await.map_err(|e| {
+        let manifest: CartridgeRegistry = response.json().await.map_err(|e| {
             CartridgeRepoError::ParseError(format!("Failed to parse from {}: {}", repo_url, e))
         })?;
 
-        Ok(registry)
+        // Flatten via the server transformer so `channel` is set on
+        // every CartridgeInfo and schema validation runs once at the
+        // entry point rather than smeared across the cache.
+        let server = CartridgeRepoServer::new(manifest)?;
+        server.get_cartridges()
     }
 
     /// Update cache from a registry response.
     ///
-    /// The cap-URN → cartridge-IDs index uses the *normalized* form of each
-    /// declared URN as the key (parse via `CapUrn::from_string`, then take
+    /// The flat response wrapper carries `channel` on every entry (set
+    /// by the transformer when flattening v5.0's channel-partitioned
+    /// schema). The cache key is `(channel, id)` so the same id can
+    /// coexist in release and nightly with separate metadata/versions.
+    ///
+    /// The cap-URN → cartridges index uses the *normalized* form of each
+    /// declared URN as the key (parse via `CapUrn::from_string`, then
     /// `to_string()`). Two URNs that are textually different but
-    /// canonically identical (e.g. tag-order variants) collapse into the
-    /// same bucket. A cap URN that fails to parse is a registry corruption
-    /// and is propagated as `ParseError` — there is no fallback that
-    /// silently inserts the malformed string.
+    /// canonically identical collapse into the same bucket. A cap URN
+    /// that fails to parse is a registry corruption — propagated as
+    /// `ParseError` rather than silently inserting the malformed
+    /// string, per the no-fallback regime.
     fn update_cache(
         caches: &mut HashMap<String, CartridgeRepoCache>,
         repo_url: &str,
         registry: CartridgeRegistryResponse,
     ) -> Result<()> {
         use crate::urn::cap_urn::CapUrn;
-        let mut cartridges: HashMap<String, CartridgeInfo> = HashMap::new();
-        let mut cap_to_cartridges: HashMap<String, Vec<String>> = HashMap::new();
+        let mut cartridges: HashMap<CartridgeKey, CartridgeInfo> = HashMap::new();
+        let mut cap_to_cartridges: HashMap<String, Vec<CartridgeKey>> = HashMap::new();
 
         for cartridge_info in registry.cartridges {
-            let cartridge_id = cartridge_info.id.clone();
+            let key = CartridgeKey {
+                channel: cartridge_info.channel,
+                id: cartridge_info.id.clone(),
+            };
             for cap in cartridge_info.iter_caps() {
                 let parsed = CapUrn::from_string(&cap.urn).map_err(|e| {
                     CartridgeRepoError::ParseError(format!(
-                        "cartridge {}: invalid cap URN '{}': {}",
-                        cartridge_id, cap.urn, e
+                        "cartridge {} ({}): invalid cap URN '{}': {}",
+                        key.id, key.channel, cap.urn, e
                     ))
                 })?;
                 let normalized = parsed.to_string();
                 cap_to_cartridges
                     .entry(normalized)
                     .or_default()
-                    .push(cartridge_id.clone());
+                    .push(key.clone());
             }
-            cartridges.insert(cartridge_id, cartridge_info);
+            cartridges.insert(key, cartridge_info);
         }
 
         caches.insert(
@@ -427,14 +603,18 @@ impl CartridgeRepo {
     /// `cap_urn` is parsed via `CapUrn::from_string`; the parsed-and-
     /// re-serialized form is the canonical key used to look up the
     /// cap-to-cartridges index. Inside each candidate cartridge we walk
-    /// its groups via `iter_caps()` and match on `is_equivalent` so
-    /// caps declared in a different tag order still resolve.
+    /// its groups via `iter_caps()` and match on `conforms_to` so the
+    /// requested cap (treated as the pattern) is checked against the
+    /// declared cap (the provider): cap dispatch is order-theoretic,
+    /// not string-equality, and the `op` tag has no functional role —
+    /// only `in` and `out` are semantically meaningful, encoded by the
+    /// parsed `CapUrn` predicates.
     pub async fn get_suggestions_for_cap(&self, cap_urn: &str) -> Vec<CartridgeSuggestion> {
         use crate::urn::cap_urn::CapUrn;
         let caches = self.caches.read().await;
         let mut suggestions = Vec::new();
 
-        let parsed = match CapUrn::from_string(cap_urn) {
+        let requested = match CapUrn::from_string(cap_urn) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(
@@ -445,19 +625,27 @@ impl CartridgeRepo {
                 return Vec::new();
             }
         };
-        let normalized = parsed.to_string();
+        let normalized = requested.to_string();
 
         for cache in caches.values() {
-            let Some(cartridge_ids) = cache.cap_to_cartridges.get(&normalized) else {
+            let Some(cartridge_keys) = cache.cap_to_cartridges.get(&normalized) else {
                 continue;
             };
-            for cartridge_id in cartridge_ids {
-                let Some(cartridge) = cache.cartridges.get(cartridge_id) else {
+            for key in cartridge_keys {
+                let Some(cartridge) = cache.cartridges.get(key) else {
                     continue;
                 };
+                // Cap dispatch is the partial-order question "does the
+                // declared cap conform to the requested pattern?". A
+                // declared cap that is more specific than (or equivalent
+                // to) the requested pattern is a valid provider. We use
+                // `is_equivalent` here because suggestion lookup is on
+                // exact-match URNs (the cap-index key is the normalized
+                // requested URN); upstream dispatch sites that perform
+                // pattern matching use `accepts`/`conforms_to`.
                 let Some(cap_info) = cartridge.iter_caps().find(|c| {
                     CapUrn::from_string(&c.urn)
-                        .map(|c_parsed| c_parsed.is_equivalent(&parsed))
+                        .map(|c_parsed| c_parsed.is_equivalent(&requested))
                         .unwrap_or(false)
                 }) else {
                     continue;
@@ -468,7 +656,7 @@ impl CartridgeRepo {
                     cartridge.page_url.clone()
                 };
                 suggestions.push(CartridgeSuggestion {
-                    cartridge_id: cartridge_id.clone(),
+                    cartridge_id: key.id.clone(),
                     cartridge_name: cartridge.name.clone(),
                     cartridge_description: cartridge.description.clone(),
                     cap_urn: normalized.clone(),
@@ -476,6 +664,7 @@ impl CartridgeRepo {
                     latest_version: cartridge.version.clone(),
                     repo_url: cache.repo_url.clone(),
                     page_url,
+                    channel: key.channel,
                 });
             }
         }
@@ -483,14 +672,16 @@ impl CartridgeRepo {
         suggestions
     }
 
-    /// Get all available cartridges from all repos
-    pub async fn get_all_cartridges(&self) -> Vec<(String, CartridgeInfo)> {
+    /// Get all available cartridges from all repos. Returns
+    /// `(channel, id, info)` so consumers can render the channel
+    /// distinction without looking it up separately.
+    pub async fn get_all_cartridges(&self) -> Vec<(CartridgeChannel, String, CartridgeInfo)> {
         let caches = self.caches.read().await;
         let mut all_cartridges = Vec::new();
 
         for cache in caches.values() {
-            for (cartridge_id, cartridge_info) in &cache.cartridges {
-                all_cartridges.push((cartridge_id.clone(), cartridge_info.clone()));
+            for (key, cartridge_info) in &cache.cartridges {
+                all_cartridges.push((key.channel, key.id.clone(), cartridge_info.clone()));
             }
         }
 
@@ -524,12 +715,23 @@ impl CartridgeRepo {
         false
     }
 
-    /// Get cartridge info by ID
-    pub async fn get_cartridge(&self, cartridge_id: &str) -> Option<CartridgeInfo> {
+    /// Get cartridge info by `(channel, id)`. Channel is required because
+    /// the same id can independently exist in release and nightly with
+    /// distinct version sets and metadata — there is no implicit
+    /// fallback that picks one over the other.
+    pub async fn get_cartridge(
+        &self,
+        channel: CartridgeChannel,
+        cartridge_id: &str,
+    ) -> Option<CartridgeInfo> {
         let caches = self.caches.read().await;
+        let key = CartridgeKey {
+            channel,
+            id: cartridge_id.to_string(),
+        };
 
         for cache in caches.values() {
-            if let Some(cartridge) = cache.cartridges.get(cartridge_id) {
+            if let Some(cartridge) = cache.cartridges.get(&key) {
                 return Some(cartridge.clone());
             }
         }
@@ -566,16 +768,14 @@ pub struct CartridgeRepoServer {
 }
 
 impl CartridgeRepoServer {
-    /// Create a new server instance from v3.0 registry
+    /// Create a new server instance from a v5.0 channel-partitioned registry.
     pub fn new(registry: CartridgeRegistry) -> Result<Self> {
-        // Validate schema version - fail hard
-        if registry.schema_version != "4.0" {
+        if registry.schema_version != "5.0" {
             return Err(CartridgeRepoError::ParseError(format!(
-                "Unsupported registry schema version: {}. Required: 4.0",
+                "Unsupported registry schema version: {}. Required: 5.0",
                 registry.schema_version
             )));
         }
-
         Ok(Self { registry })
     }
 
@@ -628,77 +828,106 @@ impl CartridgeRepoServer {
         std::cmp::Ordering::Equal
     }
 
-    /// Build changelog map from versions
-    fn build_changelog_map(
-        versions: &HashMap<String, CartridgeVersionData>,
-    ) -> HashMap<String, Vec<String>> {
-        let mut changelog = HashMap::new();
-        for (version, data) in versions {
-            if !data.changelog.is_empty() {
-                changelog.insert(version.clone(), data.changelog.clone());
-            }
-        }
-        changelog
+    /// Walk both channels and emit a `(channel, id, entry)` tuple for
+    /// every cartridge entry, in iteration order. Used by the
+    /// transform/search/lookup helpers.
+    fn iter_entries(
+        &self,
+    ) -> impl Iterator<Item = (CartridgeChannel, &String, &CartridgeRegistryEntry)> {
+        let release = self
+            .registry
+            .channels
+            .release
+            .cartridges
+            .iter()
+            .map(|(id, e)| (CartridgeChannel::Release, id, e));
+        let nightly = self
+            .registry
+            .channels
+            .nightly
+            .cartridges
+            .iter()
+            .map(|(id, e)| (CartridgeChannel::Nightly, id, e));
+        release.chain(nightly)
     }
 
-    /// Transform registry to flat cartridge array
+    /// Transform a single channel-entry into a flat `CartridgeInfo`. Fails
+    /// hard if the entry's `latestVersion` is not present in `versions`,
+    /// or if the latest version has no valid build.
+    fn entry_to_cartridge_info(
+        channel: CartridgeChannel,
+        id: &str,
+        entry: &CartridgeRegistryEntry,
+    ) -> Result<CartridgeInfo> {
+        let latest_version = &entry.latest_version;
+        let version_data = entry.versions.get(latest_version).ok_or_else(|| {
+            CartridgeRepoError::ParseError(format!(
+                "Cartridge {} ({}): latestVersion {} not found in versions",
+                id, channel, latest_version
+            ))
+        })?;
+        Self::validate_version_data(id, latest_version, version_data)?;
+
+        let mut available_versions: Vec<String> = entry.versions.keys().cloned().collect();
+        available_versions.sort_by(|a, b| Self::compare_versions(b, a));
+
+        Ok(CartridgeInfo {
+            id: id.to_string(),
+            name: entry.name.clone(),
+            version: latest_version.clone(),
+            description: entry.description.clone(),
+            author: entry.author.clone(),
+            team_id: entry.team_id.clone(),
+            signed_at: version_data.release_date.clone(),
+            min_app_version: if !version_data.min_app_version.is_empty() {
+                version_data.min_app_version.clone()
+            } else {
+                entry.min_app_version.clone()
+            },
+            page_url: entry.page_url.clone(),
+            categories: entry.categories.clone(),
+            tags: entry.tags.clone(),
+            cap_groups: entry.cap_groups.clone(),
+            versions: entry.versions.clone(),
+            available_versions,
+            channel,
+        })
+    }
+
+    /// Transform the registry to a flat array of `CartridgeInfo`,
+    /// preserving channel provenance on every entry.
     pub fn transform_to_cartridge_array(&self) -> Result<Vec<CartridgeInfo>> {
         let mut result = Vec::new();
-
-        for (id, entry) in &self.registry.cartridges {
-            let latest_version = &entry.latest_version;
-            let version_data = entry.versions.get(latest_version).ok_or_else(|| {
-                CartridgeRepoError::ParseError(format!(
-                    "Cartridge {}: latest version {} not found in versions",
-                    id, latest_version
-                ))
-            })?;
-
-            // Validate required fields - fail hard
-            Self::validate_version_data(id, latest_version, version_data)?;
-
-            // Get all versions sorted descending
-            let mut available_versions: Vec<String> = entry.versions.keys().cloned().collect();
-            available_versions.sort_by(|a, b| Self::compare_versions(b, a));
-
-            result.push(CartridgeInfo {
-                id: id.clone(),
-                name: entry.name.clone(),
-                version: latest_version.clone(),
-                description: entry.description.clone(),
-                author: entry.author.clone(),
-                team_id: entry.team_id.clone(),
-                signed_at: version_data.release_date.clone(),
-                min_app_version: if !version_data.min_app_version.is_empty() {
-                    version_data.min_app_version.clone()
-                } else {
-                    entry.min_app_version.clone()
-                },
-                page_url: entry.page_url.clone(),
-                categories: entry.categories.clone(),
-                tags: entry.tags.clone(),
-                cap_groups: entry.cap_groups.clone(),
-                versions: entry.versions.clone(),
-                available_versions,
-            });
+        for (channel, id, entry) in self.iter_entries() {
+            result.push(Self::entry_to_cartridge_info(channel, id, entry)?);
         }
-
         Ok(result)
     }
 
-    /// Get all cartridges (API response format)
+    /// Get all cartridges (API response format) — both channels.
     pub fn get_cartridges(&self) -> Result<CartridgeRegistryResponse> {
         let cartridges = self.transform_to_cartridge_array()?;
         Ok(CartridgeRegistryResponse { cartridges })
     }
 
-    /// Get cartridge by ID
-    pub fn get_cartridge_by_id(&self, id: &str) -> Result<Option<CartridgeInfo>> {
-        let all = self.transform_to_cartridge_array()?;
-        Ok(all.into_iter().find(|p| p.id == id))
+    /// Get cartridge by `(channel, id)`. Channel is required because
+    /// the same id can independently exist in both channels.
+    pub fn get_cartridge_by_id(
+        &self,
+        channel: CartridgeChannel,
+        id: &str,
+    ) -> Result<Option<CartridgeInfo>> {
+        let entries = match channel {
+            CartridgeChannel::Release => &self.registry.channels.release.cartridges,
+            CartridgeChannel::Nightly => &self.registry.channels.nightly.cartridges,
+        };
+        match entries.get(id) {
+            None => Ok(None),
+            Some(entry) => Self::entry_to_cartridge_info(channel, id, entry).map(Some),
+        }
     }
 
-    /// Search cartridges by free-text query.
+    /// Search cartridges by free-text query across both channels.
     ///
     /// Matches the query against cartridge name, description, tags, and
     /// cap titles. Cap URNs themselves are NOT substring-matched: a cap
@@ -723,7 +952,7 @@ impl CartridgeRepoServer {
             .collect())
     }
 
-    /// Get cartridges by category
+    /// Get cartridges by category — both channels.
     pub fn get_cartridges_by_category(&self, category: &str) -> Result<Vec<CartridgeInfo>> {
         let all = self.transform_to_cartridge_array()?;
         Ok(all
@@ -734,30 +963,40 @@ impl CartridgeRepoServer {
 
     /// Get cartridges that provide a specific cap.
     ///
-    /// `cap_urn` is parsed via `CapUrn::from_string`; each candidate
-    /// cartridge cap is parsed too and matched via `is_equivalent` so
-    /// caps declared in any tag order resolve. A malformed input URN is
-    /// a `ParseError` — there is no fallback that compares the raw
-    /// strings.
+    /// The requested URN is parsed via `CapUrn::from_string`; each
+    /// declared cartridge cap is parsed too and matched via
+    /// `conforms_to`: cap dispatch is the partial-order question
+    /// "does the declared cap conform to (i.e. refine, equal, or
+    /// be more specific than) the requested pattern?". The `op` tag
+    /// has no functional role in matching — only the parsed predicate
+    /// machinery is used, never string comparison. A malformed input
+    /// URN is a `ParseError`; a malformed declared URN in the registry
+    /// is also propagated rather than silently dropped.
     pub fn get_cartridges_by_cap(&self, cap_urn: &str) -> Result<Vec<CartridgeInfo>> {
         use crate::urn::cap_urn::CapUrn;
-        let parsed = CapUrn::from_string(cap_urn).map_err(|e| {
+        let requested = CapUrn::from_string(cap_urn).map_err(|e| {
             CartridgeRepoError::ParseError(format!(
                 "get_cartridges_by_cap: invalid cap URN '{}': {}",
                 cap_urn, e
             ))
         })?;
         let all = self.transform_to_cartridge_array()?;
-        Ok(all
-            .into_iter()
-            .filter(|p| {
-                p.iter_caps().any(|c| {
-                    CapUrn::from_string(&c.urn)
-                        .map(|c_parsed| c_parsed.is_equivalent(&parsed))
-                        .unwrap_or(false)
-                })
-            })
-            .collect())
+        let mut matched = Vec::new();
+        for cart in all {
+            for cap in cart.iter_caps() {
+                let declared = CapUrn::from_string(&cap.urn).map_err(|e| {
+                    CartridgeRepoError::ParseError(format!(
+                        "cartridge {} ({}): invalid declared cap URN '{}': {}",
+                        cart.id, cart.channel, cap.urn, e
+                    ))
+                })?;
+                if declared.conforms_to(&requested) {
+                    matched.push(cart.clone());
+                    break;
+                }
+            }
+        }
+        Ok(matched)
     }
 }
 
@@ -780,8 +1019,10 @@ mod tests {
                     name: pkg_name.to_string(),
                     sha256: "abc123".to_string(),
                     size: 1000,
+                    url: format!("https://cartridges.machinefabric.com/{}", pkg_name),
                 },
             }],
+            notes_url: None,
         }
     }
 
@@ -809,6 +1050,15 @@ mod tests {
         name: &str,
         cap_groups: Vec<RegistryCapGroup>,
     ) -> CartridgeInfo {
+        build_cartridge_info_in(CartridgeChannel::Release, id, name, cap_groups)
+    }
+
+    fn build_cartridge_info_in(
+        channel: CartridgeChannel,
+        id: &str,
+        name: &str,
+        cap_groups: Vec<RegistryCapGroup>,
+    ) -> CartridgeInfo {
         let pkg = format!("{}-1.0.0.pkg", id);
         let mut versions = HashMap::new();
         versions.insert("1.0.0".to_string(), build_version_data(&pkg));
@@ -827,6 +1077,7 @@ mod tests {
             cap_groups,
             versions,
             available_versions: vec!["1.0.0".to_string()],
+            channel,
         }
     }
 
@@ -973,7 +1224,8 @@ mod tests {
             "categories": [],
             "tags": [],
             "versions": {},
-            "availableVersions": []
+            "availableVersions": [],
+            "channel": "release"
         }"#;
         let cartridge: CartridgeInfo = serde_json::from_str(json).unwrap();
         assert_eq!(cartridge.id, "pdfcartridge");
@@ -981,6 +1233,7 @@ mod tests {
         assert_eq!(cartridge.cap_groups.len(), 1);
         assert_eq!(cartridge.cap_groups[0].caps.len(), 2);
         assert_eq!(cartridge.iter_caps().count(), 2);
+        assert_eq!(cartridge.channel, CartridgeChannel::Release);
     }
 
     // TEST636: CartridgeInfo with null version/description/author still
@@ -995,7 +1248,8 @@ mod tests {
             "description": null,
             "author": null,
             "cap_groups": [],
-            "versions": {}
+            "versions": {},
+            "channel": "nightly"
         }"#;
         let cartridge: CartridgeInfo = serde_json::from_str(json).unwrap();
         assert_eq!(cartridge.version, "");
@@ -1032,7 +1286,8 @@ mod tests {
                     "categories": [],
                     "tags": [],
                     "versions": {},
-                    "availableVersions": []
+                    "availableVersions": [],
+                    "channel": "release"
                 },
                 {
                     "id": "imagecartridge",
@@ -1055,7 +1310,8 @@ mod tests {
                     "categories": [],
                     "tags": [],
                     "versions": {},
-                    "availableVersions": []
+                    "availableVersions": [],
+                    "channel": "nightly"
                 }
             ],
             "total": 2,
@@ -1125,29 +1381,46 @@ mod tests {
     // CartridgeRepoServer end-to-end tests on the v4.0 nested registry.
     // ----------------------------------------------------------------------
 
+    /// Build a v5.0 registry placing every entry under the `release`
+    /// channel. The `nightly` channel is left empty — tests that need a
+    /// mixed-channel state use `build_registry_in_channels` directly.
     fn build_registry(entries: Vec<(&str, CartridgeRegistryEntry)>) -> CartridgeRegistry {
-        let mut cartridges = HashMap::new();
-        for (id, entry) in entries {
-            cartridges.insert(id.to_string(), entry);
+        build_registry_in_channels(entries, vec![])
+    }
+
+    fn build_registry_in_channels(
+        release: Vec<(&str, CartridgeRegistryEntry)>,
+        nightly: Vec<(&str, CartridgeRegistryEntry)>,
+    ) -> CartridgeRegistry {
+        let mut release_map = HashMap::new();
+        for (id, entry) in release {
+            release_map.insert(id.to_string(), entry);
+        }
+        let mut nightly_map = HashMap::new();
+        for (id, entry) in nightly {
+            nightly_map.insert(id.to_string(), entry);
         }
         CartridgeRegistry {
-            schema_version: "4.0".to_string(),
+            schema_version: "5.0".to_string(),
             last_updated: "2026-02-07".to_string(),
-            cartridges,
+            channels: CartridgeRegistryChannels {
+                release: CartridgeChannelEntries { cartridges: release_map },
+                nightly: CartridgeChannelEntries { cartridges: nightly_map },
+            },
         }
     }
 
-    // TEST323: CartridgeRepoServer requires schema 4.0 and rejects 2.0.
+    // TEST323: CartridgeRepoServer requires schema 5.0 and rejects older.
     #[test]
     fn test323_cartridge_repo_server_validate_registry() {
         let server = CartridgeRepoServer::new(build_registry(vec![]));
         assert!(server.is_ok());
 
         let mut bad = build_registry(vec![]);
-        bad.schema_version = "2.0".to_string();
+        bad.schema_version = "4.0".to_string();
         let result = CartridgeRepoServer::new(bad);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("4.0"));
+        assert!(result.unwrap_err().to_string().contains("5.0"));
     }
 
     // TEST324: CartridgeRepoServer transforms a v4.0 entry into a flat
@@ -1184,9 +1457,10 @@ mod tests {
         assert_eq!(response.cartridges[0].id, "testcartridge");
     }
 
-    // TEST326: get_cartridge_by_id returns Some for a known id, None for
-    // an unknown id (string lookup against the registry's id key, not
-    // against any URN).
+    // TEST326: get_cartridge_by_id requires a channel and returns Some
+    // for a known (channel, id), None otherwise. The same id looked up
+    // in the wrong channel must miss — channels are independent
+    // namespaces.
     #[test]
     fn test326_cartridge_repo_server_get_cartridge_by_id() {
         let entry = build_registry_entry(
@@ -1194,8 +1468,49 @@ mod tests {
             vec![build_cap_group("g", vec![build_cap("cap:in=media:;out=media:", "Identity", "identity")], vec![])],
         );
         let server = CartridgeRepoServer::new(build_registry(vec![("testcartridge", entry)])).unwrap();
-        assert!(server.get_cartridge_by_id("testcartridge").unwrap().is_some());
-        assert!(server.get_cartridge_by_id("nonexistent").unwrap().is_none());
+        assert!(server.get_cartridge_by_id(CartridgeChannel::Release, "testcartridge").unwrap().is_some());
+        assert!(server.get_cartridge_by_id(CartridgeChannel::Release, "nonexistent").unwrap().is_none());
+        // Looked up in the wrong channel — id exists only in release
+        // (build_registry's default channel) but the nightly side is
+        // empty. Channel partitioning is the whole point.
+        assert!(server.get_cartridge_by_id(CartridgeChannel::Nightly, "testcartridge").unwrap().is_none());
+    }
+
+    // TEST326b: A cartridge with the same id can independently exist in
+    // both channels. Each lookup must return the channel-specific entry.
+    #[test]
+    fn test326b_get_cartridge_by_id_channel_isolation() {
+        let mut release_entry = build_registry_entry(
+            "Foo (release)",
+            vec![build_cap_group("g", vec![build_cap("cap:in=media:;out=media:", "Identity", "identity")], vec![])],
+        );
+        release_entry.versions.clear();
+        release_entry.versions.insert("1.0.0".to_string(), build_version_data("foo-1.0.0.pkg"));
+        release_entry.latest_version = "1.0.0".to_string();
+
+        let mut nightly_entry = build_registry_entry(
+            "Foo (nightly)",
+            vec![build_cap_group("g", vec![build_cap("cap:in=media:;out=media:", "Identity", "identity")], vec![])],
+        );
+        nightly_entry.versions.clear();
+        nightly_entry.versions.insert("2.0.0".to_string(), build_version_data("foo-2.0.0.pkg"));
+        nightly_entry.latest_version = "2.0.0".to_string();
+
+        let registry = build_registry_in_channels(
+            vec![("foocartridge", release_entry)],
+            vec![("foocartridge", nightly_entry)],
+        );
+        let server = CartridgeRepoServer::new(registry).unwrap();
+
+        let r = server.get_cartridge_by_id(CartridgeChannel::Release, "foocartridge").unwrap().unwrap();
+        assert_eq!(r.name, "Foo (release)");
+        assert_eq!(r.version, "1.0.0");
+        assert_eq!(r.channel, CartridgeChannel::Release);
+
+        let n = server.get_cartridge_by_id(CartridgeChannel::Nightly, "foocartridge").unwrap().unwrap();
+        assert_eq!(n.name, "Foo (nightly)");
+        assert_eq!(n.version, "2.0.0");
+        assert_eq!(n.channel, CartridgeChannel::Nightly);
     }
 
     // TEST327: search_cartridges matches against name/description/tags
@@ -1284,8 +1599,9 @@ mod tests {
     // CartridgeRepo (client/cache) tests.
     // ----------------------------------------------------------------------
 
-    // TEST330: update_cache populates the cartridge map and the cap-to-
-    // cartridge index keyed by normalized URNs.
+    // TEST330: update_cache populates the cartridge map keyed by
+    // (channel, id) and the cap-to-cartridge index keyed by normalized
+    // URNs.
     #[tokio::test]
     async fn test330_cartridge_repo_client_update_cache() {
         let repo = CartridgeRepo::new(3600);
@@ -1304,8 +1620,16 @@ mod tests {
         CartridgeRepo::update_cache(&mut caches, "https://example.com/cartridges", registry)
             .expect("update_cache must succeed for a well-formed registry");
         drop(caches);
-        let cartridge = repo.get_cartridge("testcartridge").await;
+        let cartridge = repo
+            .get_cartridge(CartridgeChannel::Release, "testcartridge")
+            .await;
         assert!(cartridge.is_some());
+        assert_eq!(cartridge.unwrap().channel, CartridgeChannel::Release);
+        // Same id in nightly is absent — channels are independent.
+        assert!(repo
+            .get_cartridge(CartridgeChannel::Nightly, "testcartridge")
+            .await
+            .is_none());
     }
 
     // TEST331: get_suggestions_for_cap returns a suggestion when the
@@ -1343,15 +1667,20 @@ mod tests {
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].cartridge_id, "pdfcartridge");
         assert_eq!(suggestions[0].cap_title, "Disbind PDF");
+        // Channel must propagate from cache to suggestion — UI needs it
+        // to render the release/nightly distinction without re-deriving.
+        assert_eq!(suggestions[0].channel, CartridgeChannel::Release);
     }
 
-    // TEST332: get_cartridge returns the cached entry for a known id and
-    // None for an unknown id.
+    // TEST332: get_cartridge requires a (channel, id) pair and returns
+    // the cached entry for known pairs, None otherwise. The same id in
+    // the wrong channel must miss.
     #[tokio::test]
     async fn test332_cartridge_repo_client_get_cartridge() {
         let repo = CartridgeRepo::new(3600);
         let registry = CartridgeRegistryResponse {
-            cartridges: vec![build_cartridge_info(
+            cartridges: vec![build_cartridge_info_in(
+                CartridgeChannel::Nightly,
                 "testcartridge",
                 "Test Cartridge",
                 vec![build_cap_group(
@@ -1366,8 +1695,18 @@ mod tests {
             .expect("update_cache must succeed");
         drop(caches);
 
-        assert!(repo.get_cartridge("testcartridge").await.is_some());
-        assert!(repo.get_cartridge("nonexistent").await.is_none());
+        assert!(repo
+            .get_cartridge(CartridgeChannel::Nightly, "testcartridge")
+            .await
+            .is_some());
+        assert!(repo
+            .get_cartridge(CartridgeChannel::Release, "testcartridge")
+            .await
+            .is_none());
+        assert!(repo
+            .get_cartridge(CartridgeChannel::Nightly, "nonexistent")
+            .await
+            .is_none());
     }
 
     // TEST333: get_all_available_caps returns the deduplicated set of

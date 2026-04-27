@@ -3,6 +3,7 @@
 //! This module defines the unified manifest interface with standardized cap-based declarations.
 //! This replaces the separate ProviderManifest and CartridgeManifest types with a single canonical format.
 
+use crate::bifaci::cartridge_repo::CartridgeChannel;
 use crate::standard::caps::CAP_IDENTITY;
 use crate::urn::cap_urn::CapUrn;
 use crate::Cap;
@@ -27,7 +28,14 @@ pub struct CapGroup {
     pub adapter_urns: Vec<String>,
 }
 
-/// Unified cap manifest for --manifest output
+/// Unified cap manifest for --manifest output.
+///
+/// `(name, version, channel)` is the cartridge's full identity. The
+/// channel is reported by the cartridge process during HELLO so the
+/// host can verify the cartridge it's about to attach matches what
+/// the install context (cartridge.json) declared. Mismatches at
+/// either end are caught early instead of silently merging release
+/// and nightly installs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapManifest {
     /// Component name
@@ -35,6 +43,10 @@ pub struct CapManifest {
 
     /// Component version
     pub version: String,
+
+    /// Distribution channel the cartridge was built for.
+    /// (release / nightly). Required.
+    pub channel: CartridgeChannel,
 
     /// Component description
     pub description: String,
@@ -54,11 +66,21 @@ pub struct CapManifest {
 }
 
 impl CapManifest {
-    /// Create a new cap manifest with cap groups
-    pub fn new(name: String, version: String, description: String, cap_groups: Vec<CapGroup>) -> Self {
+    /// Create a new cap manifest with cap groups.
+    /// `channel` is required — the cartridge must declare which
+    /// channel it was built for so the install context (cartridge.json)
+    /// and the cartridge's self-report agree.
+    pub fn new(
+        name: String,
+        version: String,
+        channel: CartridgeChannel,
+        description: String,
+        cap_groups: Vec<CapGroup>,
+    ) -> Self {
         Self {
             name,
             version,
+            channel,
             description,
             cap_groups,
             author: None,
@@ -151,14 +173,61 @@ mod tests {
         let manifest = CapManifest::new(
             "TestComponent".to_string(),
             "0.1.0".to_string(),
+            CartridgeChannel::Release,
             "A test component for validation".to_string(),
             vec![default_group(vec![cap])],
         );
 
         assert_eq!(manifest.name, "TestComponent");
+        assert_eq!(manifest.channel, CartridgeChannel::Release);
         assert_eq!(manifest.cap_groups.len(), 1);
         assert_eq!(manifest.all_caps().len(), 1);
         assert!(manifest.author.is_none());
+    }
+
+    // TEST148b: A manifest's channel round-trips through serde and the
+    // serialized form uses the canonical lowercase wire word
+    // ("release" / "nightly"). A missing or unrecognized channel is
+    // a hard parse error — no defaults.
+    #[test]
+    fn test148b_cap_manifest_channel_roundtrip() {
+        let urn = CapUrn::from_string(&test_urn("op=extract;target=metadata")).unwrap();
+        let cap = Cap::new(urn, "Extract Metadata".to_string(), "extract-metadata".to_string());
+
+        let manifest = CapManifest::new(
+            "TestComponent".to_string(),
+            "0.1.0".to_string(),
+            CartridgeChannel::Nightly,
+            "Channel round-trip".to_string(),
+            vec![default_group(vec![cap])],
+        );
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(
+            json.contains("\"channel\":\"nightly\""),
+            "expected lowercase wire form, got: {}",
+            json
+        );
+
+        let parsed: CapManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.channel, CartridgeChannel::Nightly);
+
+        // No-channel JSON must fail to parse.
+        let no_channel = r#"{"name":"X","version":"1.0.0","description":"x","cap_groups":[]}"#;
+        let result: Result<CapManifest, _> = serde_json::from_str(no_channel);
+        assert!(
+            result.is_err(),
+            "manifest without `channel` must fail to parse, got: {:?}",
+            result
+        );
+
+        // Bogus channel string must fail.
+        let bogus = r#"{"name":"X","version":"1.0.0","channel":"staging","description":"x","cap_groups":[]}"#;
+        let result: Result<CapManifest, _> = serde_json::from_str(bogus);
+        assert!(
+            result.is_err(),
+            "manifest with channel='staging' must fail to parse, got: {:?}",
+            result
+        );
     }
 
     // TEST149: Author field
@@ -170,6 +239,7 @@ mod tests {
         let manifest = CapManifest::new(
             "TestComponent".to_string(),
             "0.1.0".to_string(),
+            CartridgeChannel::Release,
             "A test component".to_string(),
             vec![default_group(vec![cap])],
         )
@@ -194,6 +264,7 @@ mod tests {
         let manifest = CapManifest::new(
             "TestComponent".to_string(),
             "0.1.0".to_string(),
+            CartridgeChannel::Release,
             "A test component".to_string(),
             vec![default_group(vec![cap])],
         )
@@ -231,6 +302,7 @@ mod tests {
         let manifest = CapManifest::new(
             "MultiCapComponent".to_string(),
             "1.0.0".to_string(),
+            CartridgeChannel::Release,
             "Component with multiple caps".to_string(),
             vec![default_group(vec![cap1, cap2])],
         );
@@ -248,6 +320,7 @@ mod tests {
         let manifest = CapManifest::new(
             "EmptyComponent".to_string(),
             "1.0.0".to_string(),
+            CartridgeChannel::Release,
             "Component with no caps".to_string(),
             vec![],
         );
@@ -268,6 +341,7 @@ mod tests {
         let manifest = CapManifest::new(
             "ValidatorComponent".to_string(),
             "1.0.0".to_string(),
+            CartridgeChannel::Release,
             "File validation component".to_string(),
             vec![default_group(vec![cap])],
         );
@@ -289,6 +363,7 @@ mod tests {
                 CapManifest::new(
                     self.name.clone(),
                     "1.0.0".to_string(),
+                    CartridgeChannel::Release,
                     "Test component".to_string(),
                     self.cap_groups.clone(),
                 )
@@ -316,6 +391,7 @@ mod tests {
         let manifest = CapManifest::new(
             "TestCartridge".to_string(),
             "1.0.0".to_string(),
+            CartridgeChannel::Release,
             "Test".to_string(),
             vec![default_group(vec![cap])],
         );
@@ -330,6 +406,7 @@ mod tests {
         let manifest = CapManifest::new(
             "TestCartridge".to_string(),
             "1.0.0".to_string(),
+            CartridgeChannel::Release,
             "Test".to_string(),
             vec![default_group(vec![cap])],
         );
@@ -353,6 +430,7 @@ mod tests {
         let manifest = CapManifest::new(
             "TestCartridge".to_string(),
             "1.0.0".to_string(),
+            CartridgeChannel::Release,
             "Test".to_string(),
             vec![group],
         );

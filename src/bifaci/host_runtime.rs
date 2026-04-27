@@ -321,8 +321,15 @@ struct ManagedCartridge {
 impl ManagedCartridge {
     /// Create a registered cartridge from a binary path (probe-based discovery).
     /// Identity is computed from the binary's name and content hash.
-    fn new_registered_binary(path: PathBuf, known_caps: Vec<String>) -> Self {
-        let installed_identity = installed_cartridge_identity_from_binary(&path);
+    /// `channel` must be supplied by the caller — the filename
+    /// alone cannot tell us which channel a standalone-binary install
+    /// belongs to, and inferring would silently merge release/nightly.
+    fn new_registered_binary(
+        path: PathBuf,
+        channel: crate::bifaci::cartridge_repo::CartridgeChannel,
+        known_caps: Vec<String>,
+    ) -> Self {
+        let installed_identity = installed_cartridge_identity_from_binary(&path, channel);
         Self {
             path,
             cartridge_dir: None,
@@ -359,6 +366,7 @@ impl ManagedCartridge {
         entry_point: PathBuf,
         cartridge_dir: PathBuf,
         id: String,
+        channel: crate::bifaci::cartridge_repo::CartridgeChannel,
         version: String,
         known_caps: Vec<String>,
     ) -> Self {
@@ -367,6 +375,7 @@ impl ManagedCartridge {
                 Ok(sha256) => (
                     Some(InstalledCartridgeIdentity {
                         id,
+                        channel,
                         version,
                         sha256,
                         attachment_error: None,
@@ -396,6 +405,7 @@ impl ManagedCartridge {
                     (
                         Some(InstalledCartridgeIdentity {
                             id,
+                            channel,
                             version,
                             sha256: String::new(),
                             attachment_error: Some(err),
@@ -492,36 +502,23 @@ impl ManagedCartridge {
                 existing.attachment_error = Some(error);
             }
             None => {
-                // Derive an identity from the binary path.
-                //
-                // Callers (`spawn_cartridge`, via `record_attachment_error`)
-                // hold a non-empty `self.path` that has passed executability
-                // / file-existence checks. The `file_stem -> UTF-8 -> parse`
-                // chain therefore must succeed — any failure here signals a
-                // broken invariant, not a user-facing condition to paper over.
-                let stem = self
-                    .path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "BUG: cartridge binary path '{}' has no UTF-8 file stem",
-                            self.path.display()
-                        )
-                    });
-                let (id, version) = parse_installed_cartridge_name(stem).unwrap_or_else(|| {
-                    panic!(
-                        "BUG: cartridge binary name '{}' does not follow '<name>-<version>' convention",
-                        stem
-                    )
-                });
-                self.installed_identity = Some(InstalledCartridgeIdentity {
-                    id,
-                    version,
-                    sha256: String::new(),
-                    attachment_error: Some(error),
-                    runtime_stats: None,
-                });
+                // Reaching this branch means a HELLO failed against a
+                // cartridge whose registration path didn't supply an
+                // `InstalledCartridgeIdentity`. In production both
+                // `new_registered_binary` and `new_registered_dir`
+                // synthesize an identity at construction time, so the
+                // only legitimate path here is an ad-hoc test attach
+                // via `new_attached` — which never reaches the engine's
+                // RelayNotify aggregate. Panic loudly: silently
+                // synthesizing an identity without channel info would
+                // collapse the release/nightly distinction at the
+                // wire boundary.
+                panic!(
+                    "BUG: record_attachment_error fired on a cartridge without an \
+                     InstalledCartridgeIdentity (path '{}'). Channels are part of \
+                     identity; we never synthesize one without channel info.",
+                    self.path.display()
+                );
             }
         }
     }
@@ -543,7 +540,12 @@ fn parse_installed_cartridge_name(name: &str) -> Option<(String, String)> {
 
 /// Compute identity for a standalone binary cartridge (probe-based discovery path).
 /// Parses id and version from the binary filename, hashes the binary content.
-fn installed_cartridge_identity_from_binary(path: &Path) -> Option<InstalledCartridgeIdentity> {
+/// `channel` is supplied by the caller — the filename does not carry
+/// it and we never silently default a value.
+fn installed_cartridge_identity_from_binary(
+    path: &Path,
+    channel: crate::bifaci::cartridge_repo::CartridgeChannel,
+) -> Option<InstalledCartridgeIdentity> {
     let name = path.file_stem()?.to_str()?;
     let (id, version) = parse_installed_cartridge_name(name)?;
     let bytes = std::fs::read(path).ok()?;
@@ -552,6 +554,7 @@ fn installed_cartridge_identity_from_binary(path: &Path) -> Option<InstalledCart
     let sha256 = format!("{:x}", hasher.finalize());
     Some(InstalledCartridgeIdentity {
         id,
+        channel,
         version,
         sha256,
         attachment_error: None,
@@ -638,11 +641,20 @@ impl CartridgeHostRuntime {
     /// The cartridge is not spawned until a REQ arrives for one of its known caps.
     /// The `known_caps` are provisional — they allow routing before HELLO.
     /// After spawn + HELLO, the real caps from the manifest replace them.
-    pub fn register_cartridge(&mut self, path: &Path, known_caps: &[String]) {
+    /// `channel` is part of the install's identity and must be
+    /// supplied by the caller — the binary path alone does not tell
+    /// us which channel a standalone-binary install belongs to.
+    pub fn register_cartridge(
+        &mut self,
+        path: &Path,
+        channel: crate::bifaci::cartridge_repo::CartridgeChannel,
+        known_caps: &[String],
+    ) {
         let cartridge_idx = self.cartridges.len();
         self.cartridges
             .push(ManagedCartridge::new_registered_binary(
                 path.to_path_buf(),
+                channel,
                 known_caps.to_vec(),
             ));
         for cap in known_caps {
@@ -653,12 +665,17 @@ impl CartridgeHostRuntime {
     /// Register a directory-based cartridge for on-demand spawning.
     ///
     /// The `version_dir` must contain a valid `cartridge.json` with an entry point.
-    /// Identity is computed from the directory tree hash.
+    /// Identity is computed from the directory tree hash. `channel`
+    /// must come from `cartridge.json:channel` — never inferred. It
+    /// propagates through `InstalledCartridgeIdentity` to the engine's
+    /// RelayNotify so consumers preserve the release/nightly
+    /// distinction end-to-end.
     pub fn register_cartridge_dir(
         &mut self,
         entry_point: &Path,
         version_dir: &Path,
         id: &str,
+        channel: crate::bifaci::cartridge_repo::CartridgeChannel,
         version: &str,
         known_caps: &[String],
     ) {
@@ -667,6 +684,7 @@ impl CartridgeHostRuntime {
             entry_point.to_path_buf(),
             version_dir.to_path_buf(),
             id.to_string(),
+            channel,
             version.to_string(),
             known_caps.to_vec(),
         ));
@@ -2398,7 +2416,7 @@ mod tests {
     #[test]
     fn test480_parse_caps_rejects_manifest_without_identity() {
         // JSON-valid manifest, missing CAP_IDENTITY → Incompatible.
-        let manifest = r#"{"name":"Test","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"Test","version":"1.0","channel":"release","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
         let result = parse_caps_from_manifest(manifest.as_bytes());
         let err = result.expect_err("Manifest without CAP_IDENTITY must be rejected");
         assert!(
@@ -2433,7 +2451,7 @@ mod tests {
         );
 
         // Valid manifest WITH CAP_IDENTITY must succeed.
-        let manifest_ok = r#"{"name":"Test","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest_ok = r#"{"name":"Test","version":"1.0","channel":"release","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
         let result_ok = parse_caps_from_manifest(manifest_ok.as_bytes());
         let caps = result_ok.expect("Manifest with CAP_IDENTITY must be accepted");
         assert_eq!(caps.len(), 2, "Must parse both caps");
@@ -2652,6 +2670,7 @@ mod tests {
         let mut runtime = CartridgeHostRuntime::new();
         runtime.register_cartridge(
             Path::new("/usr/bin/test-cartridge"),
+            crate::bifaci::cartridge_repo::CartridgeChannel::Release,
             &[
                 "cap:in=\"media:void\";op=convert;out=\"media:void\"".to_string(),
                 "cap:in=\"media:void\";op=analyze;out=\"media:void\"".to_string(),
@@ -2685,6 +2704,7 @@ mod tests {
         let mut runtime2 = CartridgeHostRuntime::new();
         runtime2.register_cartridge(
             Path::new("/usr/bin/test"),
+            crate::bifaci::cartridge_repo::CartridgeChannel::Release,
             &["cap:in=\"media:void\";op=test;out=\"media:void\"".to_string()],
         );
         // Cartridge registered but not running — capabilities still empty
@@ -2697,9 +2717,27 @@ mod tests {
     // TEST415: REQ for known cap triggers spawn attempt (verified by expected spawn error for non-existent binary)
     #[tokio::test]
     async fn test415_req_for_known_cap_triggers_spawn() {
+        // Production install layout: a versioned cartridge directory
+        // containing cartridge.json (which carries the channel) plus an
+        // entry-point binary. Point at a non-executable file so spawn
+        // fails — that exercises the "REQ → spawn attempt → spawn
+        // failure" path on a cartridge with a real installed identity.
+        let cartridge_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            cartridge_dir.path().join("cartridge.json"),
+            r#"{"name":"test","version":"0.0.1","channel":"release","entry":"bin","installed_at":"2026-01-01T00:00:00Z","installed_from":"dev"}"#,
+        )
+        .unwrap();
+        let entry_point = cartridge_dir.path().join("bin");
+        std::fs::write(&entry_point, b"not an executable").unwrap();
+
         let mut runtime = CartridgeHostRuntime::new();
-        runtime.register_cartridge(
-            Path::new("/nonexistent/cartridge/binary"),
+        runtime.register_cartridge_dir(
+            &entry_point,
+            cartridge_dir.path(),
+            "test",
+            crate::bifaci::cartridge_repo::CartridgeChannel::Release,
+            "0.0.1",
             &["cap:in=\"media:void\";op=test;out=\"media:void\"".to_string()],
         );
 
@@ -2738,17 +2776,19 @@ mod tests {
             seq.remove(&FlowKey::from_frame(&req));
         });
 
-        // Run the runtime — should attempt to spawn, fail (binary doesn't exist)
+        // Run the runtime — should attempt to spawn, fail (entry-point
+        // file exists but isn't executable)
         let result = runtime
             .run(runtime_read_half, runtime_write_half, || vec![])
             .await;
 
-        // The spawn failure is an Io error for the non-existent binary
-        assert!(result.is_err(), "Should fail because binary doesn't exist");
+        assert!(result.is_err(), "Should fail because entry point is not executable");
         let err = result.unwrap_err();
         let err_str = format!("{}", err);
         assert!(
-            err_str.contains("nonexistent") || err_str.contains("spawn"),
+            err_str.to_lowercase().contains("spawn")
+                || err_str.contains("permission")
+                || err_str.contains("Exec"),
             "Error should mention spawn failure, got: {}",
             err_str
         );
@@ -2759,7 +2799,7 @@ mod tests {
     // TEST416: Attach cartridge performs HELLO handshake, extracts manifest, updates capabilities
     #[tokio::test]
     async fn test416_attach_cartridge_handshake_updates_capabilities() {
-        let manifest = r#"{"name":"Test","version":"1.0","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"Test","version":"1.0","channel":"release","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (cartridge_to_runtime, runtime_from_cartridge) = UnixStream::pair().unwrap();
@@ -2813,8 +2853,8 @@ mod tests {
     // TEST417: Route REQ to correct cartridge by cap_urn (with two attached cartridges)
     #[tokio::test]
     async fn test417_route_req_to_correct_cartridge() {
-        let manifest_a = r#"{"name":"CartridgeA","version":"1.0","description":"Cartridge A","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
-        let manifest_b = r#"{"name":"CartridgeB","version":"1.0","description":"Cartridge B","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=analyze;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest_a = r#"{"name":"CartridgeA","version":"1.0","channel":"release","description":"Cartridge A","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=convert;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest_b = r#"{"name":"CartridgeB","version":"1.0","channel":"release","description":"Cartridge B","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=analyze;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Create two cartridge pipe pairs (tokio sockets)
         let (pa_to_rt, rt_from_pa) = UnixStream::pair().unwrap();
@@ -2973,7 +3013,7 @@ mod tests {
     // TEST419: Cartridge HEARTBEAT handled locally (not forwarded to relay)
     #[tokio::test]
     async fn test419_cartridge_heartbeat_handled_locally() {
-        let manifest = r#"{"name":"HBCartridge","version":"1.0","description":"Heartbeat cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=hb;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"HBCartridge","version":"1.0","channel":"release","description":"Heartbeat cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=hb;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -3048,7 +3088,7 @@ mod tests {
     // TEST420: Cartridge non-HELLO/non-HB frames forwarded to relay (pass-through)
     #[tokio::test]
     async fn test420_cartridge_frames_forwarded_to_relay() {
-        let manifest = r#"{"name":"FwdCartridge","version":"1.0","description":"Forward cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=fwd;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"FwdCartridge","version":"1.0","channel":"release","description":"Forward cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=fwd;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -3213,7 +3253,7 @@ mod tests {
     // is present on those frames.
     #[tokio::test]
     async fn test418_route_continuation_frames_by_req_id() {
-        let manifest = r#"{"name":"ContCartridge","version":"1.0","description":"Continuation cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=cont;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"ContCartridge","version":"1.0","channel":"release","description":"Continuation cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=cont;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -3375,7 +3415,7 @@ mod tests {
     // TEST421: Cartridge death updates capability list (caps removed)
     #[tokio::test]
     async fn test421_cartridge_death_updates_capabilities() {
-        let manifest = r#"{"name":"Dying","version":"1.0","description":"Dying cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"Dying","version":"1.0","channel":"release","description":"Dying cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -3467,7 +3507,7 @@ mod tests {
     // TEST422: Cartridge death sends ERR for all pending requests via relay
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test422_cartridge_death_sends_err_for_pending_requests() {
-        let manifest = r#"{"name":"DieCartridge","version":"1.0","description":"Die cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"DieCartridge","version":"1.0","channel":"release","description":"Die cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=die;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -3558,8 +3598,8 @@ mod tests {
     // TEST423: Multiple cartridges registered with distinct caps route independently
     #[tokio::test]
     async fn test423_multiple_cartridges_route_independently() {
-        let manifest_a = r#"{"name":"PA","version":"1.0","description":"Cartridge A","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
-        let manifest_b = r#"{"name":"PB","version":"1.0","description":"Cartridge B","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest_a = r#"{"name":"PA","version":"1.0","channel":"release","description":"Cartridge A","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=alpha;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest_b = r#"{"name":"PB","version":"1.0","channel":"release","description":"Cartridge B","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=beta;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge A (tokio sockets)
         let (pa_to_rt, rt_from_pa) = UnixStream::pair().unwrap();
@@ -3751,7 +3791,7 @@ mod tests {
     // TEST424: Concurrent requests to the same cartridge are handled independently
     #[tokio::test]
     async fn test424_concurrent_requests_to_same_cartridge() {
-        let manifest = r#"{"name":"ConcCartridge","version":"1.0","description":"Concurrent cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=conc;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"ConcCartridge","version":"1.0","channel":"release","description":"Concurrent cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=conc;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -3914,6 +3954,7 @@ mod tests {
         let mut runtime = CartridgeHostRuntime::new();
         runtime.register_cartridge(
             Path::new("/test"),
+            crate::bifaci::cartridge_repo::CartridgeChannel::Release,
             &["cap:in=\"media:void\";op=known;out=\"media:void\"".to_string()],
         );
         assert!(runtime
@@ -3931,7 +3972,7 @@ mod tests {
     // TEST485: attach_cartridge completes identity verification with working cartridge
     #[tokio::test]
     async fn test485_attach_cartridge_identity_verification_succeeds() {
-        let manifest = r#"{"name":"IdentityTest","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"IdentityTest","version":"1.0","channel":"release","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=test;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -3970,7 +4011,7 @@ mod tests {
     // TEST486: attach_cartridge rejects cartridge that fails identity verification
     #[tokio::test]
     async fn test486_attach_cartridge_identity_verification_fails() {
-        let manifest = r#"{"name":"BrokenIdentity","version":"1.0","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"BrokenIdentity","version":"1.0","channel":"release","description":"Test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair (tokio sockets)
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -4021,7 +4062,7 @@ mod tests {
             "cap:".to_string(), // identity
             "cap:in=\"media:pdf\";op=thumbnail;out=\"media:image;png\"".to_string(),
         ];
-        runtime.register_cartridge(std::path::Path::new("/fake/cartridge"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/cartridge"), crate::bifaci::cartridge_repo::CartridgeChannel::Release, &known_caps);
 
         // Verify known_caps are in cap_table
         assert_eq!(runtime.cap_table.len(), 2);
@@ -4063,8 +4104,8 @@ mod tests {
             "cap:in=\"media:image\";op=ocr;out=\"media:text\"".to_string(),
         ];
 
-        runtime.register_cartridge(std::path::Path::new("/fake/cartridge1"), &known_caps_1);
-        runtime.register_cartridge(std::path::Path::new("/fake/cartridge2"), &known_caps_2);
+        runtime.register_cartridge(std::path::Path::new("/fake/cartridge1"), crate::bifaci::cartridge_repo::CartridgeChannel::Release, &known_caps_1);
+        runtime.register_cartridge(std::path::Path::new("/fake/cartridge2"), crate::bifaci::cartridge_repo::CartridgeChannel::Release, &known_caps_2);
 
         // Both cartridges are NOT running, but their known_caps should be advertised
         runtime.rebuild_capabilities(None);
@@ -4094,7 +4135,7 @@ mod tests {
             "cap:".to_string(),
             "cap:in=\"media:void\";op=broken;out=\"media:void\"".to_string(),
         ];
-        runtime.register_cartridge(std::path::Path::new("/fake/broken"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/broken"), crate::bifaci::cartridge_repo::CartridgeChannel::Release, &known_caps);
 
         // Manually mark it as hello_failed (simulating HELLO handshake failure)
         runtime.cartridges[0].hello_failed = true;
@@ -4134,7 +4175,7 @@ mod tests {
     #[tokio::test]
     async fn test664_running_cartridge_uses_manifest_caps() {
         // Manifest with different caps than known_caps
-        let manifest = r#"{"name":"Test","version":"1.0","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=uppercase;out=\"media:text\"","title":"Uppercase","command":"uppercase","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"Test","version":"1.0","channel":"release","description":"Test cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=uppercase;out=\"media:text\"","title":"Uppercase","command":"uppercase","args":[]}],"adapter_urns":[]}]}"#;
 
         // Create socket pairs (runtime side and cartridge side)
         let (rt_sock, cartridge_sock) = UnixStream::pair().unwrap();
@@ -4160,7 +4201,7 @@ mod tests {
             "cap:".to_string(),
             "cap:in=\"media:pdf\";op=extract;out=\"media:text\"".to_string(),
         ];
-        runtime.register_cartridge(std::path::Path::new("/fake/path"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/path"), crate::bifaci::cartridge_repo::CartridgeChannel::Release, &known_caps);
 
         // Now attach the actual cartridge (which sends different manifest)
         // This simulates what happens when a registered cartridge spawns
@@ -4194,7 +4235,7 @@ mod tests {
     #[tokio::test]
     async fn test665_cap_table_mixed_running_and_non_running() {
         // Set up a running cartridge
-        let manifest = r#"{"name":"Running","version":"1.0","description":"Running cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=running-op;out=\"media:text\"","title":"RunningOp","command":"running","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"Running","version":"1.0","channel":"release","description":"Running cartridge","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:text\";op=running-op;out=\"media:text\"","title":"RunningOp","command":"running","args":[]}],"adapter_urns":[]}]}"#;
 
         // Create socket pairs (runtime side and cartridge side)
         let (rt_sock, cartridge_sock) = UnixStream::pair().unwrap();
@@ -4222,7 +4263,7 @@ mod tests {
             "cap:".to_string(),
             "cap:in=\"media:pdf\";op=not-running-op;out=\"media:text\"".to_string(),
         ];
-        runtime.register_cartridge(std::path::Path::new("/fake/not-running"), &known_caps);
+        runtime.register_cartridge(std::path::Path::new("/fake/not-running"), crate::bifaci::cartridge_repo::CartridgeChannel::Release, &known_caps);
 
         // Update cap table
         runtime.update_cap_table();
@@ -4276,7 +4317,7 @@ mod tests {
         let (r_read, r_write) = runtime_sock.into_split();
         let (p_read, p_write) = cartridge_sock.into_split();
 
-        let manifest = r#"{"name":"SnapCartridge","version":"1.0","description":"Snapshot test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=snap;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"SnapCartridge","version":"1.0","channel":"release","description":"Snapshot test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=snap;out=\"media:void\"","title":"Test","command":"test","args":[]}],"adapter_urns":[]}]}"#;
 
         let cartridge_handle = tokio::spawn(async move {
             let (_reader, _writer) =
@@ -4335,7 +4376,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "OOM death detection for attached cartridges not yet implemented"]
     async fn test1254_oom_kill_sends_err_with_oom_killed_code() {
-        let manifest = r#"{"name":"OomCartridge","version":"1.0","description":"OOM test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=oom;out=\"media:void\"","title":"OOM","command":"oom","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"OomCartridge","version":"1.0","channel":"release","description":"OOM test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=oom;out=\"media:void\"","title":"OOM","command":"oom","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();
@@ -4462,7 +4503,7 @@ mod tests {
     // TEST1255: App-exit shutdowns suppress ERR frames and close cleanly without noise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test1255_app_exit_suppresses_err_frames() {
-        let manifest = r#"{"name":"ExitCartridge","version":"1.0","description":"Exit test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=exit;out=\"media:void\"","title":"Exit","command":"exit","args":[]}],"adapter_urns":[]}]}"#;
+        let manifest = r#"{"name":"ExitCartridge","version":"1.0","channel":"release","description":"Exit test","cap_groups":[{"name":"default","caps":[{"urn":"cap:in=media:;out=media:","title":"Identity","command":"identity","args":[]},{"urn":"cap:in=\"media:void\";op=exit;out=\"media:void\"","title":"Exit","command":"exit","args":[]}],"adapter_urns":[]}]}"#;
 
         // Cartridge pipe pair
         let (p_to_rt, rt_from_p) = UnixStream::pair().unwrap();

@@ -216,9 +216,18 @@ impl CartridgeRuntimeStats {
     }
 }
 
+/// Identity of an installed cartridge as known to the bifaci protocol.
+///
+/// `(channel, id)` is the install's full identity. The same id can
+/// independently be installed in both channels with different versions
+/// and metadata; the channel is sourced from `cartridge.json:channel`
+/// (written by the .pkg installer when the cartridge was published)
+/// and round-trips out to every consumer that needs to render or act
+/// on installed cartridges.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct InstalledCartridgeIdentity {
     pub id: String,
+    pub channel: crate::bifaci::cartridge_repo::CartridgeChannel,
     pub version: String,
     pub sha256: String,
     /// Present when the cartridge failed attachment (manifest, handshake,
