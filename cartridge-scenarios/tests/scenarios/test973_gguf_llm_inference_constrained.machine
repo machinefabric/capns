@@ -1,2 +1,0 @@
-[llm_inference_constrained cap:constrained;gguf;in="media:llm-generation-request;json;record";llm;ml-model;op=llm_inference_constrained;out="media:llm-text-stream;ndjson"]
-[request_input -> llm_inference_constrained -> generation]

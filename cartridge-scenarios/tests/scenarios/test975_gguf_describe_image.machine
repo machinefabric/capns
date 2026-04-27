@@ -1,2 +1,0 @@
-[describe_image cap:gguf;in="media:image;png";ml-model;op=describe_image;out="media:image-description;textable";vision]
-[image_input -> describe_image -> description]

@@ -1,2 +1,0 @@
-[list-models cap:in="media:model-repo;textable;record";op=list-models;out="media:model-list;textable;record"]
-[repo_input -> list-models -> model_list]

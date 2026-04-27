@@ -1,4 +1,0 @@
-[generate_thumbnail cap:in=media:pdf;op=render_page_image;out="media:image;png"]
-[disbind cap:in=media:pdf;op=disbind;out="media:page;textable"]
-[pdf_input -> generate_thumbnail -> thumbnail]
-[pdf_input -> disbind -> pages]

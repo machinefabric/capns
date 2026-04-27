@@ -1,2 +1,0 @@
-[convert cap:in="media:ogg;audio";op=convert_audio;out="media:flac;audio"]
-[input -> convert -> output]

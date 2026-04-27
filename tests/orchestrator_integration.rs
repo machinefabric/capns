@@ -70,7 +70,7 @@ fn testcartridge_dir() -> PathBuf {
     PathBuf::from(&manifest_dir)
         .parent()
         .expect("No parent dir")
-        .join("capdag")
+        .join("machfab-tests")
         .join("testcartridge")
 }
 

@@ -1,2 +1,0 @@
-[transcribe cap:candle;in="media:audio;wav;speech";ml-model;op=transcribe;out="media:transcription;textable;record"]
-[audio_input -> transcribe -> transcription]

@@ -1,8 +1,0 @@
-This is a test document for MachineFabric automation testing.
-
-It contains sample text that can be used for:
-- Text embedding generation
-- Decision making tests
-- Transformation chain tests
-
-The quick brown fox jumps over the lazy dog.
