@@ -51,7 +51,7 @@ pub use cardinality::{
 pub use collection_input::{CapInputCollection, CollectionFile};
 pub use executor::MachineExecutor;
 pub use live_cap_graph::{
-    LiveCapGraph, LiveMachinePlanEdge, LiveMachinePlanEdgeType, PathFindingEvent,
+    LiveCapFab, LiveMachinePlanEdge, LiveMachinePlanEdgeType, PathFindingEvent,
     ReachableTargetInfo, Strand, StrandStep, StrandStepType,
 };
 pub use plan::{

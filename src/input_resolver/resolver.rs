@@ -85,7 +85,7 @@ pub fn discriminate_candidates_by_validation(
                                 // the candidate (don't eliminate based on broken rule).
                                 tracing::error!(
                                     "Media spec '{}' has invalid validation pattern '{}' — \
-                                     fix the TOML definition in capgraph/src/media",
+                                     fix the TOML definition in capfab/src/media",
                                     urn,
                                     pattern
                                 );

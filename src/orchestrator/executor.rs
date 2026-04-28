@@ -884,7 +884,7 @@ impl ExecutionContext {
     /// `add_cartridge_host()` to add masters before executing caps.
     ///
     /// Requires a CapRegistry for the RelaySwitch to use when building
-    /// the LiveCapGraph for path finding queries.
+    /// the LiveCapFab for path finding queries.
     pub async fn new(cap_registry: Arc<CapRegistry>) -> Result<Self, ExecutionError> {
         let switch = RelaySwitch::new(vec![], cap_registry)
             .await

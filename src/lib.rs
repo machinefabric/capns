@@ -149,7 +149,7 @@ pub use planner::{
     InputCardinality,
     InputStructure,
     // Live cap graph (unified path finding)
-    LiveCapGraph,
+    LiveCapFab,
     LiveMachinePlanEdge,
     // Executor
     MachineExecutor,

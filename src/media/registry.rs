@@ -503,7 +503,7 @@ impl MediaUrnRegistry {
         index.get(&ext_lower).cloned().ok_or_else(|| {
             MediaRegistryError::ExtensionNotFound(format!(
                 "No media spec registered for extension '{}'. \
-                Ensure the media spec is defined in capgraph/src/media/ with an 'extension' field.",
+                Ensure the media spec is defined in capfab/src/media/ with an 'extension' field.",
                 extension
             ))
         })
@@ -948,7 +948,7 @@ mod tests {
         let (registry, _temp_dir) = registry_with_temp_cache().await;
         registry.install_standard_specs_sync().unwrap();
 
-        // All media URNs used as cap outputs (from capgraph/src/caps/*.toml out= fields).
+        // All media URNs used as cap outputs (from capfab/src/caps/*.toml out= fields).
         // If you add a new cap, add its output URN here.
         let cap_output_urns = [
             "media:textable",
@@ -987,7 +987,7 @@ mod tests {
 
         assert!(
             missing.is_empty(),
-            "Cap output media specs missing file extensions — fix the TOML in capgraph/src/media/:\n  {}",
+            "Cap output media specs missing file extensions — fix the TOML in capfab/src/media/:\n  {}",
             missing.join("\n  ")
         );
     }
@@ -999,7 +999,7 @@ mod tests {
         let (registry, _temp_dir) = registry_with_temp_cache().await;
         registry.install_standard_specs_sync().unwrap();
 
-        // Media URNs used as cap inputs (from capgraph/src/caps/*.toml in= fields)
+        // Media URNs used as cap inputs (from capfab/src/caps/*.toml in= fields)
         // that represent user-facing file types. Excludes model-spec variants
         // (internal engine types) and abstract types.
         let cap_input_urns = [
@@ -1034,7 +1034,7 @@ mod tests {
 
         assert!(
             missing.is_empty(),
-            "Cap input media specs missing file extensions — fix the TOML in capgraph/src/media/:\n  {}",
+            "Cap input media specs missing file extensions — fix the TOML in capfab/src/media/:\n  {}",
             missing.join("\n  ")
         );
     }

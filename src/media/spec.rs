@@ -577,7 +577,7 @@ pub async fn resolve_media_urn(
             // Registry lookup failed (not in cache, online unreachable or not found)
             // Log and continue to error
             tracing::warn!(
-                "Media URN '{}' not found in registry: {} - ensure it's defined in capgraph/src/media/",
+                "Media URN '{}' not found in registry: {} - ensure it's defined in capfab/src/media/",
                 media_urn, e
             );
         }

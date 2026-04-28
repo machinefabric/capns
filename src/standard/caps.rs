@@ -2,7 +2,7 @@
 //!
 //! This module provides the standard capability definitions used across
 //! all MACHFAB providers, including their formal argument specifications.
-//! These definitions should match the TOML definitions in capgraph/src/
+//! These definitions should match the TOML definitions in capfab/src/
 
 use crate::urn::media_urn::{
     MEDIA_AVAILABILITY_OUTPUT,
@@ -441,7 +441,7 @@ pub fn disbind_urn(input_media: &str) -> CapUrn {
 /// Takes text content as its data-flow input and a caller-supplied JSON
 /// schema (via `--schema`), runs schema-constrained LLM generation, returns
 /// a JSON object guaranteed to validate against the schema. See
-/// `capgraph/src/caps/generate-json-en.toml` for the full contract.
+/// `capfab/src/caps/generate-json-en.toml` for the full contract.
 pub fn generate_json_urn(lang_code: &str) -> CapUrn {
     CapUrnBuilder::new()
         .tag("op", "generate_json")

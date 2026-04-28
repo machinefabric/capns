@@ -66,7 +66,7 @@ This specification defines the semantic foundations, runtime protocol, execution
 | 15.1 | [Orchestrator](./15.1-ORCHESTRATOR.md) | Machine notation parsing, DAG construction | 11 |
 | 15.2 | [Execution](./15.2-EXECUTION.md) | execute_dag, execute_fanin, topological sort | 15.3 |
 | 15.3 | [Progress Mapping](./15.3-PROGRESS-MAPPING.md) | Deterministic progress subdivision | — |
-| 15.4 | [Planner](./15.4-PLANNER.md) | Path finding, LiveCapGraph, MachinePlan | 15.1 |
+| 15.4 | [Planner](./15.4-PLANNER.md) | Path finding, LiveCapFab, MachinePlan | 15.1 |
 
 ### Cartridge Development (16)
 

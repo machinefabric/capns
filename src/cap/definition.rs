@@ -1406,7 +1406,7 @@ mod tests {
     // round-trip must preserve every character — including newlines,
     // backticks, double quotes, and Unicode — because consumers (info
     // panels, capdag.com, etc.) render it directly. JSON.stringify on the
-    // capgraph side and the Rust serializer on this side must agree on
+    // capfab side and the Rust serializer on this side must agree on
     // escaping; this test fails hard if they don't.
     #[test]
     fn test1127_cap_documentation_round_trip_with_markdown_body() {
@@ -1470,13 +1470,13 @@ mod tests {
         assert!(deserialized.get_documentation().is_none());
     }
 
-    // TEST1129: A JSON document produced by capgraph (the canonical source)
+    // TEST1129: A JSON document produced by capfab (the canonical source)
     // with a `documentation` field must deserialize into a Cap with the
     // body intact. Models the actual on-disk shape — not a synthetic
     // round-trip — to catch a mismatch between the JSON schema and the
     // Rust struct field naming.
     #[test]
-    fn test1129_cap_documentation_parses_from_capgraph_json() {
+    fn test1129_cap_documentation_parses_from_capfab_json() {
         // Build JSON via serde_json::json! so we don't have to fight raw
         // string escaping rules — the URN value contains both backslashes
         // and embedded double quotes.
@@ -1489,7 +1489,7 @@ mod tests {
             "metadata": {}
         })
         .to_string();
-        let cap: Cap = serde_json::from_str(&json).expect("must parse capgraph-shaped JSON");
+        let cap: Cap = serde_json::from_str(&json).expect("must parse capfab-shaped JSON");
         assert_eq!(cap.get_documentation(), Some("## Heading\n\nbody text"));
         assert_eq!(cap.cap_description.as_deref(), Some("short"));
     }

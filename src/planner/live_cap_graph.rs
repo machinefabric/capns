@@ -1,8 +1,8 @@
-//! LiveCapGraph — Precomputed capability graph for path finding
+//! LiveCapFab — Precomputed capability graph for path finding
 //!
 //! This module provides a live, incrementally-updated graph of capabilities
 //! for efficient path finding and reachability queries. Unlike MachinePlanBuilder
-//! which rebuilds the graph for each query, LiveCapGraph maintains a persistent
+//! which rebuilds the graph for each query, LiveCapFab maintains a persistent
 //! graph structure that is updated when capabilities change.
 //!
 //! ## Design Principles
@@ -122,7 +122,7 @@ pub struct LiveMachinePlanEdge {
 /// to `TaggedUrn`'s structural `(prefix, tags-BTreeMap)`
 /// identity). No index key is ever a flat URN string.
 #[derive(Debug)]
-pub struct LiveCapGraph {
+pub struct LiveCapFab {
     /// Cap edges only — cardinality transitions are synthesized during traversal
     edges: Vec<LiveMachinePlanEdge>,
     /// Index: from_spec → edge indices.
@@ -308,7 +308,7 @@ impl Strand {
 // IMPLEMENTATION
 // =============================================================================
 
-impl LiveCapGraph {
+impl LiveCapFab {
     /// Create a new empty capability graph.
     pub fn new() -> Self {
         Self {
@@ -347,7 +347,7 @@ impl LiveCapGraph {
         tracing::debug!(
             edge_count = self.edges.len(),
             node_count = self.nodes.len(),
-            "[LiveCapGraph] Synced from {} caps",
+            "[LiveCapFab] Synced from {} caps",
             caps.len()
         );
     }
@@ -371,7 +371,7 @@ impl LiveCapGraph {
             Err(e) => {
                 tracing::error!(
                     error = %e,
-                    "[LiveCapGraph] Failed to get cached caps from registry"
+                    "[LiveCapFab] Failed to get cached caps from registry"
                 );
                 return;
             }
@@ -379,7 +379,7 @@ impl LiveCapGraph {
 
         tracing::info!(
             registry_cap_count = all_caps.len(),
-            "[LiveCapGraph] Got caps from registry"
+            "[LiveCapFab] Got caps from registry"
         );
 
         let mut matched_count = 0;
@@ -394,7 +394,7 @@ impl LiveCapGraph {
                     tracing::error!(
                         cap_urn = cap_urn_str,
                         error = %e,
-                        "[LiveCapGraph] Cartridge reported invalid cap URN - this is a bug in the cartridge"
+                        "[LiveCapFab] Cartridge reported invalid cap URN - this is a bug in the cartridge"
                     );
                     continue;
                 }
@@ -426,7 +426,7 @@ impl LiveCapGraph {
                     tracing::error!(
                         cap_urn = %cap_urn,
                         cap_urn_raw = cap_urn_str,
-                        "[LiveCapGraph] REJECTED: cartridge reported cap URN has no equivalent \
+                        "[LiveCapFab] REJECTED: cartridge reported cap URN has no equivalent \
                         in the registry. Every cap a cartridge provides must have a matching \
                         registry definition. Either the cartridge is advertising an unknown \
                         capability or the registry is missing a cap definition for this URN. \
@@ -443,7 +443,7 @@ impl LiveCapGraph {
             identity_count,
             rejected_count,
             total_urns = cap_urns.len(),
-            "[LiveCapGraph] Synced from cap URNs"
+            "[LiveCapFab] Synced from cap URNs"
         );
     }
 
@@ -458,7 +458,7 @@ impl LiveCapGraph {
                 cap_urn = %cap.urn,
                 in_spec = in_spec_str,
                 out_spec = out_spec_str,
-                "[LiveCapGraph] Skipping cap with empty spec"
+                "[LiveCapFab] Skipping cap with empty spec"
             );
             return;
         }
@@ -480,7 +480,7 @@ impl LiveCapGraph {
                     cap_urn = %cap.urn,
                     in_spec = in_spec_str,
                     error = %e,
-                    "[LiveCapGraph] Failed to parse in_spec, skipping cap"
+                    "[LiveCapFab] Failed to parse in_spec, skipping cap"
                 );
                 return;
             }
@@ -493,7 +493,7 @@ impl LiveCapGraph {
                     cap_urn = %cap.urn,
                     out_spec = out_spec_str,
                     error = %e,
-                    "[LiveCapGraph] Failed to parse out_spec, skipping cap"
+                    "[LiveCapFab] Failed to parse out_spec, skipping cap"
                 );
                 return;
             }
@@ -1172,7 +1172,7 @@ impl LiveCapGraph {
     }
 }
 
-impl Default for LiveCapGraph {
+impl Default for LiveCapFab {
     fn default() -> Self {
         Self::new()
     }
@@ -1254,7 +1254,7 @@ mod tests {
     // TEST1150: Adding one cap creates one edge and makes its output reachable in one step.
     #[test]
     fn test1150_add_cap_and_basic_traversal() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let cap = make_test_cap(
             "media:pdf",
@@ -1299,7 +1299,7 @@ mod tests {
             "list and singular should NOT be equivalent (reverse check)"
         );
 
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Add cap: pdf -> result (singular)
         let cap1 = make_test_cap(
@@ -1363,7 +1363,7 @@ mod tests {
     // TEST1152: Path finding returns the expected two-cap chain through an intermediate media type.
     #[test]
     fn test1152_multi_step_path() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // pdf -> extracted-text
         let cap1 = make_test_cap("media:pdf", "media:extracted-text", "extract", "Extract");
@@ -1392,7 +1392,7 @@ mod tests {
     // TEST1153: Repeated path searches return the same path order for the same graph and target.
     #[test]
     fn test1153_deterministic_ordering() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Two paths to the same target with different specificities
         let cap1 = make_test_cap(
@@ -1439,7 +1439,7 @@ mod tests {
     // TEST1154: Syncing from caps replaces the existing graph contents with the new cap set.
     #[test]
     fn test1154_sync_from_caps() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let caps = vec![
             make_test_cap("media:pdf", "media:extracted-text", "op1", "Op1"),
@@ -1475,7 +1475,7 @@ mod tests {
     // Verifies that paths through intermediate nodes are found correctly
     #[test]
     fn test772_find_paths_finds_multi_step_paths() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let cap1 = make_test_cap("media:a", "media:b", "step1", "A to B");
         let cap2 = make_test_cap("media:b", "media:c", "step2", "B to C");
@@ -1506,7 +1506,7 @@ mod tests {
     // Verifies that pathfinding returns no paths when target is unreachable
     #[test]
     fn test773_find_paths_returns_empty_when_no_path() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Only add cap A->B, not B->C
         let cap1 = make_test_cap("media:a", "media:b", "step1", "A to B");
@@ -1528,7 +1528,7 @@ mod tests {
     // cardinality variants (list versions via Collect)
     #[test]
     fn test774_get_reachable_targets_finds_all_targets() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let cap1 = make_test_cap("media:a", "media:b", "step1", "A to B");
         let cap2 = make_test_cap("media:a", "media:d", "step3", "A to D");
@@ -1559,7 +1559,7 @@ mod tests {
     // Verifies that media type compatibility is enforced during pathfinding
     #[test]
     fn test777_type_mismatch_pdf_cap_does_not_match_png_input() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Only add PDF->textable cap
         let pdf_to_text = make_test_cap("media:pdf", "media:textable", "pdf2text", "PDF to Text");
@@ -1581,7 +1581,7 @@ mod tests {
     // Verifies that media type compatibility is enforced during pathfinding
     #[test]
     fn test778_type_mismatch_png_cap_does_not_match_pdf_input() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Only add PNG->thumbnail cap
         let png_to_thumb = make_test_cap(
@@ -1608,7 +1608,7 @@ mod tests {
     // Verifies that PNG and PDF inputs reach different cap targets (not each other's)
     #[test]
     fn test779_get_reachable_targets_respects_type_matching() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let pdf_to_text = make_test_cap("media:pdf", "media:textable", "pdf2text", "PDF to Text");
         let png_to_thumb = make_test_cap(
@@ -1662,7 +1662,7 @@ mod tests {
     // Verifies that paths are only found when all intermediate types are compatible
     #[test]
     fn test781_find_paths_respects_type_chain() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let resize_png = make_test_cap("media:png", "media:resized-png", "resize", "Resize PNG");
         let to_thumb = make_test_cap(
@@ -1702,7 +1702,7 @@ mod tests {
     // item can be processed by disbind individually, then choose.
     #[test]
     fn test788_foreach_only_with_sequence_input() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let disbind = make_test_cap("media:pdf", "media:page;textable", "disbind", "Disbind PDF");
 
@@ -1773,7 +1773,7 @@ mod tests {
         let cap_urns: Vec<String> = vec![disbind.urn.to_string(), choose.urn.to_string()];
 
         // Sync from URNs
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
         graph
             .sync_from_cap_urns(&cap_urns, &Arc::new(registry))
             .await;
@@ -1838,7 +1838,7 @@ mod tests {
     // Verifies that among multiple paths, the shortest is ranked first
     #[test]
     fn test787_find_paths_sorting_prefers_shorter() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Direct path: format-a -> format-c
         let direct = make_test_cap("media:format-a", "media:format-c", "direct", "Direct");
@@ -1939,7 +1939,7 @@ mod tests {
     // With dynamic synthesis, ForEach is available for ANY list source.
     #[test]
     fn test1111_foreach_for_user_provided_list_source() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Cap: textable → decision (accepts singular textable)
         let make_decision = make_test_cap(
@@ -1989,7 +1989,7 @@ mod tests {
     // Reaching a list target type requires the cap itself to output a list type.
     #[test]
     fn test1112_no_collect_in_path_finding() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let summarize = make_test_cap(
             "media:textable",
@@ -2014,7 +2014,7 @@ mod tests {
     // TEST1113: Multi-cap path without Collect — Collect is not synthesized
     #[test]
     fn test1113_multi_cap_path_no_collect() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let disbind = make_test_cap("media:pdf", "media:page;textable", "disbind", "Disbind PDF");
         let summarize = make_test_cap(
@@ -2037,7 +2037,7 @@ mod tests {
     // TEST1114: Graph stores only Cap edges after sync
     #[test]
     fn test1114_graph_stores_only_cap_edges() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         let caps = vec![
             make_test_cap("media:pdf", "media:page;textable", "disbind", "Disbind"),
@@ -2071,7 +2071,7 @@ mod tests {
     // TEST1115: ForEach is synthesized when is_sequence=true AND caps can consume items
     #[test]
     fn test1115_dynamic_foreach_with_is_sequence() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Need a cap that accepts the source type for ForEach to be synthesized
         let cap = make_test_cap(
@@ -2108,7 +2108,7 @@ mod tests {
     // TEST1116: Collect is never synthesized during path finding
     #[test]
     fn test1116_collect_never_synthesized() {
-        let graph = LiveCapGraph::new();
+        let graph = LiveCapFab::new();
 
         let source = MediaUrn::from_string("media:page;textable").unwrap();
 
@@ -2135,7 +2135,7 @@ mod tests {
     // TEST1117: ForEach is NOT synthesized when is_sequence=false
     #[test]
     fn test1117_no_foreach_when_not_sequence() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Even with caps that could consume, ForEach requires is_sequence=true
         let cap = make_test_cap(
@@ -2161,7 +2161,7 @@ mod tests {
     // TEST1118: ForEach not synthesized without cap consumers even with is_sequence=true
     #[test]
     fn test1118_no_foreach_without_cap_consumers() {
-        let graph = LiveCapGraph::new();
+        let graph = LiveCapFab::new();
 
         let source = MediaUrn::from_string("media:textable").unwrap();
         // Empty graph — no caps to consume items
@@ -2265,7 +2265,7 @@ mod tests {
     // A→B and B→A means A is reachable from A (via A→B→A).
     #[test]
     fn test1289_bfs_reachable_includes_source_roundtrip() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // textable → integer (coerce)
         graph.add_cap(&make_test_cap(
@@ -2301,7 +2301,7 @@ mod tests {
     // early return on target hit at wrong depth prevented exploration.
     #[test]
     fn test1290_iddfs_finds_roundtrip_paths() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // textable → integer
         graph.add_cap(&make_test_cap(
@@ -2340,7 +2340,7 @@ mod tests {
     // The ForEach/Collect edges must not block round-trip discovery.
     #[test]
     fn test1291_iddfs_roundtrip_with_sequence() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // textable → integer
         graph.add_cap(&make_test_cap(
@@ -2373,7 +2373,7 @@ mod tests {
     // If BFS says target X is reachable from source X, IDDFS must find at least one path.
     #[test]
     fn test1292_bfs_iddfs_roundtrip_consistency() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Build a small graph: A→B, B→C, C→A
         graph.add_cap(&make_test_cap("media:a", "media:b", "a_to_b", "A to B"));
@@ -2407,7 +2407,7 @@ mod tests {
     // Identity-only round trips (no real transformation) must be excluded.
     #[test]
     fn test1293_roundtrip_requires_cap_steps() {
-        let mut graph = LiveCapGraph::new();
+        let mut graph = LiveCapFab::new();
 
         // Only one direction — no round trip possible
         graph.add_cap(&make_test_cap("media:a", "media:b", "a_to_b", "A to B"));

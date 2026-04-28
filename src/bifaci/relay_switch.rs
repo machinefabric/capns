@@ -56,7 +56,7 @@
 use crate::bifaci::frame::{FlowKey, Frame, FrameType, Limits, MessageId, SeqAssigner};
 use crate::bifaci::io::{identity_nonce, CborError, FrameReader, FrameWriter};
 use crate::cap::registry::CapRegistry;
-use crate::planner::live_cap_graph::{LiveCapGraph, ReachableTargetInfo, Strand};
+use crate::planner::live_cap_graph::{LiveCapFab, ReachableTargetInfo, Strand};
 use crate::urn::media_urn::MediaUrn;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -353,7 +353,7 @@ pub struct RelaySwitch {
     /// RID → XID mapping for engine-initiated requests (so continuation frames can find their XID)
     rid_to_xid: RwLock<HashMap<MessageId, MessageId>>,
     /// Precomputed capability graph for path finding and reachability queries
-    live_cap_graph: RwLock<LiveCapGraph>,
+    live_cap_graph: RwLock<LiveCapFab>,
     /// Cap registry for looking up Cap definitions
     cap_registry: Arc<CapRegistry>,
     /// Stop flag for the persistent background drain pump. Set by `Drop`
@@ -385,7 +385,7 @@ impl RelaySwitch {
     /// Performs handshake with all masters and builds initial capability table.
     ///
     /// The cap_registry is used to look up Cap definitions for building the
-    /// LiveCapGraph for path finding and reachability queries.
+    /// LiveCapFab for path finding and reachability queries.
     pub async fn new(
         sockets: Vec<UnixStream>,
         cap_registry: Arc<CapRegistry>,
@@ -667,7 +667,7 @@ impl RelaySwitch {
             frame_tx,
             xid_counter,
             rid_to_xid: RwLock::new(HashMap::new()),
-            live_cap_graph: RwLock::new(LiveCapGraph::new()),
+            live_cap_graph: RwLock::new(LiveCapFab::new()),
             cap_registry,
             background_pump_stop: Arc::new(AtomicBool::new(false)),
             background_pump_handle: std::sync::Mutex::new(None),
@@ -773,7 +773,7 @@ impl RelaySwitch {
 
     /// Get all reachable targets from a source media URN.
     ///
-    /// Uses the prebuilt LiveCapGraph for efficient BFS traversal.
+    /// Uses the prebuilt LiveCapFab for efficient BFS traversal.
     /// Results are sorted by (min_path_length, display_name).
     pub async fn get_reachable_targets(
         &self,
@@ -2596,7 +2596,7 @@ impl RelaySwitch {
                 }
             }
 
-            // Rebuild the LiveCapGraph with the new set of available caps
+            // Rebuild the LiveCapFab with the new set of available caps
             let mut graph = self.live_cap_graph.write().await;
             graph
                 .sync_from_cap_urns(&all_caps, &self.cap_registry)
