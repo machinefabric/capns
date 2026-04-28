@@ -148,7 +148,7 @@ pub use planner::{
     // Shape (cardinality + structure)
     InputCardinality,
     InputStructure,
-    // Live cap graph (unified path finding)
+    // Live capfab (unified path finding)
     LiveCapFab,
     LiveMachinePlanEdge,
     // Executor

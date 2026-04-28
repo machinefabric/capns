@@ -4,7 +4,7 @@
 //! - Plan construction from pre-computed paths (via `build_plan_from_path`)
 //! - Argument analysis for slot presentation
 //!
-//! NOTE: Path finding has been moved to `LiveCapGraph`. Use `LiveCapGraph` for
+//! NOTE: Path finding has been moved to `LiveCapFab`. Use `LiveCapFab` for
 //! `get_reachable_targets()` and `find_paths_to_exact_target()`, then pass the
 //! resulting `Strand` to `build_plan_from_path()` here.
 
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use super::argument_binding::{ArgumentBinding, ArgumentBindings};
 use super::cardinality::InputCardinality;
-use super::live_cap_graph::Strand;
+use super::live_cap_fab::Strand;
 use super::plan::{ExecutionNodeType, MachineNode, MachinePlan, MachinePlanEdge};
 use super::PlannerError;
 use crate::{Cap, CapRegistry, MediaUrn, MediaUrnRegistry, MediaValidation};
@@ -24,7 +24,7 @@ type PlannerResult<T> = Result<T, PlannerError>;
 
 /// Builder for creating cap execution plans.
 ///
-/// NOTE: Path finding methods have been moved to `LiveCapGraph`.
+/// NOTE: Path finding methods have been moved to `LiveCapFab`.
 /// This builder handles plan construction from pre-computed paths.
 pub struct MachinePlanBuilder {
     /// Cap registry for looking up cap definitions
@@ -83,7 +83,7 @@ impl MachinePlanBuilder {
     /// Build a plan from a pre-defined path.
     /// Looks up cap definitions to find file-path argument names by media URN type.
     ///
-    /// Takes a `Strand` from LiveCapGraph which uses typed URNs.
+    /// Takes a `Strand` from LiveCapFab which uses typed URNs.
     /// Handles both capability steps and cardinality transition steps (ForEach/Collect).
     ///
     /// ForEach/Collect pairs define iteration boundaries:
@@ -96,7 +96,7 @@ impl MachinePlanBuilder {
         path: &Strand,
         input_cardinality: InputCardinality,
     ) -> PlannerResult<MachinePlan> {
-        use super::live_cap_graph::StrandStepType;
+        use super::live_cap_fab::StrandStepType;
 
         let mut plan = MachinePlan::new(name);
 
@@ -494,9 +494,9 @@ impl MachinePlanBuilder {
     /// Find ForEach/Collect ranges in a path.
     /// Returns pairs of (foreach_index, collect_index).
     fn find_foreach_collect_ranges(
-        steps: &[super::live_cap_graph::StrandStep],
+        steps: &[super::live_cap_fab::StrandStep],
     ) -> Vec<(usize, usize)> {
-        use super::live_cap_graph::StrandStepType;
+        use super::live_cap_fab::StrandStepType;
 
         let mut ranges = Vec::new();
         let mut foreach_stack: Vec<usize> = Vec::new();
@@ -520,11 +520,11 @@ impl MachinePlanBuilder {
 }
 
 // NOTE: Path finding methods (find_path, get_reachable_targets, get_reachable_targets_with_metadata,
-// find_all_paths) have been moved to LiveCapGraph. Use LiveCapGraph for path finding and
+// find_all_paths) have been moved to LiveCapFab. Use LiveCapFab for path finding and
 // build_plan_from_path for plan construction.
 //
 // The old string-based ReachableTargetInfo, StrandStep, Strand types have been
-// replaced by the typed versions in live_cap_graph.rs.
+// replaced by the typed versions in live_cap_fab.rs.
 
 // =============================================================================
 // ARGUMENT ANALYSIS FOR SLOT PRESENTATION
@@ -596,7 +596,7 @@ pub struct PathArgumentRequirements {
 impl MachinePlanBuilder {
     /// Analyze argument requirements for a path.
     ///
-    /// Takes the new typed `Strand` from `live_cap_graph` which uses
+    /// Takes the new typed `Strand` from `live_cap_fab` which uses
     /// typed `MediaUrn` and `CapUrn` values.
     ///
     /// Only Cap steps have arguments to analyze. ForEach/Collect steps
@@ -1261,9 +1261,9 @@ mod tests {
     // ==========================================================================
     // URN CANONICALIZATION TESTS
     // ==========================================================================
-    // NOTE: Path finding tests (TEST770-787) have been moved to live_cap_graph.rs
-    // as path finding is now handled by LiveCapGraph, not MachinePlanBuilder.
-    // Availability filtering (TEST770-776) is now implicit in LiveCapGraph sync.
+    // NOTE: Path finding tests (TEST770-787) have been moved to live_cap_fab.rs
+    // as path finding is now handled by LiveCapFab, not MachinePlanBuilder.
+    // Availability filtering (TEST770-776) is now implicit in LiveCapFab sync.
     // Path coherence scoring (TEST782-787) has been removed from the architecture.
 
     // TEST1100: Tests that CapUrn normalizes media URN tags to canonical order
