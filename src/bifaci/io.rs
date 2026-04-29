@@ -460,6 +460,39 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Write a length-prefixed CBOR frame to a sync writer.
+///
+/// Used by the cartridge writer thread, which runs on a plain `std::thread`
+/// so Metal/GCD cannot steal it from tokio's thread pool.
+pub fn write_frame_sync<W: std::io::Write>(
+    writer: &mut W,
+    frame: &Frame,
+    limits: &Limits,
+) -> Result<(), CborError> {
+    let bytes = encode_frame(frame)?;
+
+    if bytes.len() > limits.max_frame {
+        return Err(CborError::FrameTooLarge {
+            size: bytes.len(),
+            max: limits.max_frame,
+        });
+    }
+
+    if bytes.len() > MAX_FRAME_HARD_LIMIT {
+        return Err(CborError::FrameTooLarge {
+            size: bytes.len(),
+            max: MAX_FRAME_HARD_LIMIT,
+        });
+    }
+
+    let len = bytes.len() as u32;
+    writer.write_all(&len.to_be_bytes())?;
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+
+    Ok(())
+}
+
 /// Read a length-prefixed CBOR frame from an async reader
 ///
 /// Returns Ok(None) on clean EOF, Err(UnexpectedEof) on partial read.

@@ -523,6 +523,20 @@ pub struct Cap {
 
     /// Registration attribution - who registered this capability and when
     pub registered_by: Option<RegisteredBy>,
+
+    /// Architectures (HuggingFace `config.json` `model_type` values) the
+    /// cap can run. Drives cap-aware UI filtering: model pickers and
+    /// search wizards forward this list to modelcartridge so users only
+    /// see runnable models. Empty means the cap accepts any
+    /// architecture (or has no model dependency).
+    pub supported_model_types: Vec<String>,
+
+    /// Default model spec literal used when the cap is invoked without
+    /// an explicit model-spec argument. Persisted as the unaltered
+    /// input form — modelcartridge applies any architecture-driven
+    /// filter adjustments at download time without changing this
+    /// identity. Empty means the cap has no default model.
+    pub default_model_spec: Option<String>,
 }
 
 impl Serialize for Cap {
@@ -571,6 +585,14 @@ impl Serialize for Cap {
             state.serialize_field("registered_by", &self.registered_by)?;
         }
 
+        if !self.supported_model_types.is_empty() {
+            state.serialize_field("supported_model_types", &self.supported_model_types)?;
+        }
+
+        if self.default_model_spec.is_some() {
+            state.serialize_field("default_model_spec", &self.default_model_spec)?;
+        }
+
         state.end()
     }
 }
@@ -596,6 +618,10 @@ impl<'de> Deserialize<'de> for Cap {
             output: Option<CapOutput>,
             metadata_json: Option<serde_json::Value>,
             registered_by: Option<RegisteredBy>,
+            #[serde(default)]
+            supported_model_types: Vec<String>,
+            #[serde(default)]
+            default_model_spec: Option<String>,
         }
 
         let registry_cap = CapRegistry::deserialize(deserializer)?;
@@ -620,6 +646,8 @@ impl<'de> Deserialize<'de> for Cap {
             output: registry_cap.output,
             metadata_json: registry_cap.metadata_json,
             registered_by: registry_cap.registered_by,
+            supported_model_types: registry_cap.supported_model_types,
+            default_model_spec: registry_cap.default_model_spec,
         })
     }
 }
@@ -639,6 +667,8 @@ impl Cap {
             output: None,
             metadata_json: None,
             registered_by: None,
+            supported_model_types: Vec::new(),
+            default_model_spec: None,
         }
     }
 
@@ -661,6 +691,8 @@ impl Cap {
             output: None,
             metadata_json: None,
             registered_by: None,
+            supported_model_types: Vec::new(),
+            default_model_spec: None,
         }
     }
 
@@ -683,6 +715,8 @@ impl Cap {
             output: None,
             metadata_json: None,
             registered_by: None,
+            supported_model_types: Vec::new(),
+            default_model_spec: None,
         }
     }
 
@@ -706,6 +740,8 @@ impl Cap {
             output: None,
             metadata_json: None,
             registered_by: None,
+            supported_model_types: Vec::new(),
+            default_model_spec: None,
         }
     }
 
@@ -723,6 +759,8 @@ impl Cap {
             output: None,
             metadata_json: None,
             registered_by: None,
+            supported_model_types: Vec::new(),
+            default_model_spec: None,
         }
     }
 
@@ -750,6 +788,8 @@ impl Cap {
             output,
             metadata_json,
             registered_by: None,
+            supported_model_types: Vec::new(),
+            default_model_spec: None,
         }
     }
 

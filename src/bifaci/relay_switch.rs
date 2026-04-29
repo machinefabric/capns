@@ -1246,7 +1246,7 @@ impl RelaySwitch {
             )));
         }
 
-        let mut caps_payload = notify_frame
+        let caps_payload = notify_frame
             .relay_notify_manifest()
             .ok_or_else(|| {
                 RelaySwitchError::Protocol(format!(
@@ -1256,7 +1256,21 @@ impl RelaySwitch {
             })?
             .to_vec();
 
+        // Diagnostic — what did the master announce in its initial
+        // RelayNotify? This pins down whether an apparently-empty
+        // installed_cartridges aggregate downstream is because the
+        // master sent zero, or because we lost the data later.
+        let mut caps_payload = caps_payload;
         let mut payload = parse_relay_notify_payload(&caps_payload)?;
+        tracing::info!(
+            target: "relay_switch",
+            master_idx = master_idx,
+            cap_count = payload.caps.len(),
+            installed_count = payload.installed_cartridges.len(),
+            installed_ids = ?payload.installed_cartridges.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            "[RelaySwitch] add_master: received initial RelayNotify"
+        );
+
         let mut caps = payload.caps.clone();
         let mut limits = notify_frame.relay_notify_limits().unwrap_or_default();
 
@@ -1270,7 +1284,25 @@ impl RelaySwitch {
         // no handler chain to probe. The master still joins: its
         // `installed_cartridges` carries attachment-error entries the UI
         // needs to surface.
+        //
+        // The probe is wrapped in a hard timeout. Cold-starting the
+        // first cartridge that handles `cap:` (identity) — typically
+        // ~2-3s for a Rust binary, longer for Swift cartridges with
+        // sandbox-deferred init — used to silently extend
+        // `add_master` indefinitely, and during that window the
+        // master was invisible to `rebuild_capabilities` (it isn't
+        // pushed to `self.masters` until after identity returns). The
+        // engine's `installed_cartridges` aggregate stayed empty for
+        // the whole probe window, the gRPC bridge connected and saw
+        // 0 cartridges, and the Mac client's UI reported "no
+        // cartridges installed" until something else happened to
+        // trigger a rebuild. With the timeout, identity failure / hang
+        // surfaces as a hard error with a typed message — exposed,
+        // not hidden.
+        const IDENTITY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+        let mut identity_failure: Option<String> = None;
         if !payload.caps.is_empty() {
+            let probe_started_at = std::time::Instant::now();
             let xid = MessageId::Uint(self.xid_counter.fetch_add(1, Ordering::SeqCst) + 1);
 
             use crate::standard::caps::CAP_IDENTITY;
@@ -1279,136 +1311,172 @@ impl RelaySwitch {
             let req_id = MessageId::new_uuid();
             let stream_id = "identity-verify".to_string();
 
-            let mut req = Frame::req(req_id.clone(), CAP_IDENTITY, vec![], "application/cbor");
-            req.routing_id = Some(xid.clone());
-            seq_assigner.assign(&mut req);
-            socket_writer.write(&req).await.map_err(|e| {
-                RelaySwitchError::Protocol(format!(
-                    "new master {}: identity send failed: {}",
-                    master_idx, e
-                ))
-            })?;
-
-            let mut ss = Frame::stream_start(
-                req_id.clone(),
-                stream_id.clone(),
-                "media:".to_string(),
-                None,
-            );
-            ss.routing_id = Some(xid.clone());
-            seq_assigner.assign(&mut ss);
-            socket_writer.write(&ss).await.map_err(|e| {
-                RelaySwitchError::Protocol(format!(
-                    "new master {}: identity send failed: {}",
-                    master_idx, e
-                ))
-            })?;
-
-            let checksum = Frame::compute_checksum(&nonce);
-            let mut chunk = Frame::chunk(
-                req_id.clone(),
-                stream_id.clone(),
-                0,
-                nonce.clone(),
-                0,
-                checksum,
-            );
-            chunk.routing_id = Some(xid.clone());
-            seq_assigner.assign(&mut chunk);
-            socket_writer.write(&chunk).await.map_err(|e| {
-                RelaySwitchError::Protocol(format!(
-                    "new master {}: identity send failed: {}",
-                    master_idx, e
-                ))
-            })?;
-
-            let mut se = Frame::stream_end(req_id.clone(), stream_id, 1);
-            se.routing_id = Some(xid.clone());
-            seq_assigner.assign(&mut se);
-            socket_writer.write(&se).await.map_err(|e| {
-                RelaySwitchError::Protocol(format!(
-                    "new master {}: identity send failed: {}",
-                    master_idx, e
-                ))
-            })?;
-
-            let mut end = Frame::end(req_id.clone(), None);
-            end.routing_id = Some(xid.clone());
-            seq_assigner.assign(&mut end);
-            socket_writer.write(&end).await.map_err(|e| {
-                RelaySwitchError::Protocol(format!(
-                    "new master {}: identity send failed: {}",
-                    master_idx, e
-                ))
-            })?;
-
-            seq_assigner.remove(&FlowKey {
-                rid: req_id.clone(),
-                xid: Some(xid.clone()),
-            });
-
-            // Read response
-            let mut accumulated = Vec::new();
-            loop {
-                let frame = socket_reader
-                    .read()
+            // Wrap the probe so any failure is captured as a typed
+            // attachment-error message rather than aborting master
+            // registration. We still log the precise failure mode loudly
+            // — silent fallbacks hide the real problem — but the master
+            // still joins so its installed_cartridges are visible to the
+            // inventory aggregate.
+            let probe_result: Result<(), String> = async {
+                let mut req = Frame::req(req_id.clone(), CAP_IDENTITY, vec![], "application/cbor");
+                req.routing_id = Some(xid.clone());
+                seq_assigner.assign(&mut req);
+                socket_writer
+                    .write(&req)
                     .await
-                    .map_err(|e| {
-                        RelaySwitchError::Protocol(format!(
-                            "new master {}: identity read failed: {}",
-                            master_idx, e
-                        ))
-                    })?
-                    .ok_or_else(|| {
-                        RelaySwitchError::Protocol(format!(
-                            "new master {}: closed during identity verification",
-                            master_idx
-                        ))
-                    })?;
+                    .map_err(|e| format!("identity send failed (REQ): {}", e))?;
 
-                match frame.frame_type {
-                    FrameType::RelayNotify => {
-                        if let Some(manifest) = frame.relay_notify_manifest() {
-                            caps_payload = manifest.to_vec();
-                            payload = parse_relay_notify_payload(&caps_payload)?;
-                            caps = payload.caps.clone();
+                let mut ss = Frame::stream_start(
+                    req_id.clone(),
+                    stream_id.clone(),
+                    "media:".to_string(),
+                    None,
+                );
+                ss.routing_id = Some(xid.clone());
+                seq_assigner.assign(&mut ss);
+                socket_writer
+                    .write(&ss)
+                    .await
+                    .map_err(|e| format!("identity send failed (StreamStart): {}", e))?;
+
+                let checksum = Frame::compute_checksum(&nonce);
+                let mut chunk = Frame::chunk(
+                    req_id.clone(),
+                    stream_id.clone(),
+                    0,
+                    nonce.clone(),
+                    0,
+                    checksum,
+                );
+                chunk.routing_id = Some(xid.clone());
+                seq_assigner.assign(&mut chunk);
+                socket_writer
+                    .write(&chunk)
+                    .await
+                    .map_err(|e| format!("identity send failed (Chunk): {}", e))?;
+
+                let mut se = Frame::stream_end(req_id.clone(), stream_id.clone(), 1);
+                se.routing_id = Some(xid.clone());
+                seq_assigner.assign(&mut se);
+                socket_writer
+                    .write(&se)
+                    .await
+                    .map_err(|e| format!("identity send failed (StreamEnd): {}", e))?;
+
+                let mut end = Frame::end(req_id.clone(), None);
+                end.routing_id = Some(xid.clone());
+                seq_assigner.assign(&mut end);
+                socket_writer
+                    .write(&end)
+                    .await
+                    .map_err(|e| format!("identity send failed (End): {}", e))?;
+
+                seq_assigner.remove(&FlowKey {
+                    rid: req_id.clone(),
+                    xid: Some(xid.clone()),
+                });
+
+                // Read response — bounded by the global probe timeout
+                // so a hung cold-start never blocks master
+                // registration.
+                let mut accumulated = Vec::new();
+                loop {
+                    let elapsed = probe_started_at.elapsed();
+                    let remaining = IDENTITY_PROBE_TIMEOUT
+                        .checked_sub(elapsed)
+                        .unwrap_or(std::time::Duration::ZERO);
+                    if remaining.is_zero() {
+                        return Err(format!(
+                            "identity verification timed out after {:?} — host did not echo nonce within the probe window. Cartridge cold-start exceeded the timeout or the identity-handler cap is unresponsive.",
+                            IDENTITY_PROBE_TIMEOUT
+                        ));
+                    }
+                    let frame = match tokio::time::timeout(remaining, socket_reader.read()).await {
+                        Ok(read_result) => read_result
+                            .map_err(|e| format!("identity read failed: {}", e))?
+                            .ok_or_else(|| {
+                                "closed during identity verification".to_string()
+                            })?,
+                        Err(_) => {
+                            return Err(format!(
+                                "identity verification timed out after {:?} waiting for next frame.",
+                                IDENTITY_PROBE_TIMEOUT
+                            ));
                         }
-                        if let Some(l) = frame.relay_notify_limits() {
-                            limits = l;
+                    };
+
+                    match frame.frame_type {
+                        FrameType::RelayNotify => {
+                            if let Some(manifest) = frame.relay_notify_manifest() {
+                                caps_payload = manifest.to_vec();
+                                payload = parse_relay_notify_payload(&caps_payload)
+                                    .map_err(|e| format!("RelayNotify reparse failed: {}", e))?;
+                                caps = payload.caps.clone();
+                            }
+                            if let Some(l) = frame.relay_notify_limits() {
+                                limits = l;
+                            }
+                        }
+                        FrameType::StreamStart => {}
+                        FrameType::Chunk => {
+                            if let Some(payload) = frame.payload {
+                                accumulated.extend_from_slice(&payload);
+                            }
+                        }
+                        FrameType::StreamEnd => {}
+                        FrameType::End => {
+                            if accumulated != nonce {
+                                return Err(format!(
+                                    "identity payload mismatch (expected {} bytes, got {})",
+                                    nonce.len(),
+                                    accumulated.len()
+                                ));
+                            }
+                            break;
+                        }
+                        FrameType::Err => {
+                            let code = frame.error_code().unwrap_or("UNKNOWN").to_string();
+                            let msg = frame.error_message().unwrap_or("no message").to_string();
+                            return Err(format!(
+                                "identity failed: [{}] {}",
+                                code, msg
+                            ));
+                        }
+                        other => {
+                            return Err(format!(
+                                "identity: unexpected frame type {:?}",
+                                other
+                            ));
                         }
                     }
-                    FrameType::StreamStart => {}
-                    FrameType::Chunk => {
-                        if let Some(payload) = frame.payload {
-                            accumulated.extend_from_slice(&payload);
-                        }
-                    }
-                    FrameType::StreamEnd => {}
-                    FrameType::End => {
-                        if accumulated != nonce {
-                            return Err(RelaySwitchError::Protocol(format!(
-                                "new master {}: identity payload mismatch ({} vs {} bytes)",
-                                master_idx,
-                                nonce.len(),
-                                accumulated.len()
-                            )));
-                        }
-                        break;
-                    }
-                    FrameType::Err => {
-                        let code = frame.error_code().unwrap_or("UNKNOWN");
-                        let msg = frame.error_message().unwrap_or("no message");
-                        return Err(RelaySwitchError::Protocol(format!(
-                            "new master {}: identity failed: [{code}] {msg}",
-                            master_idx
-                        )));
-                    }
-                    other => {
-                        return Err(RelaySwitchError::Protocol(format!(
-                            "new master {}: identity: unexpected {:?}",
-                            master_idx, other
-                        )));
-                    }
+                }
+                Ok(())
+            }
+            .await;
+
+            match probe_result {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "relay_switch",
+                        master_idx = master_idx,
+                        elapsed_ms = probe_started_at.elapsed().as_millis() as u64,
+                        "[RelaySwitch] add_master: identity verification succeeded"
+                    );
+                }
+                Err(detail) => {
+                    let elapsed_ms = probe_started_at.elapsed().as_millis() as u64;
+                    let detailed = format!(
+                        "new master {}: {} (after {} ms)",
+                        master_idx, detail, elapsed_ms
+                    );
+                    tracing::error!(
+                        target: "relay_switch",
+                        master_idx = master_idx,
+                        elapsed_ms = elapsed_ms,
+                        error = %detailed,
+                        "[RelaySwitch] add_master: identity verification FAILED — registering master as unhealthy so its installed_cartridges remain visible to the inventory aggregate"
+                    );
+                    identity_failure = Some(detailed);
                 }
             }
         }
@@ -1459,6 +1527,7 @@ impl RelaySwitch {
         });
 
         let cap_count = caps.len();
+        let healthy_at_register = identity_failure.is_none();
         self.masters.write().await.push(MasterConnection {
             socket_writer: Mutex::new(socket_writer),
             seq_assigner: Mutex::new(seq_assigner),
@@ -1466,10 +1535,10 @@ impl RelaySwitch {
             limits: RwLock::new(limits),
             caps: RwLock::new(caps),
             installed_cartridges: RwLock::new(payload.installed_cartridges),
-            healthy: AtomicBool::new(true),
+            healthy: AtomicBool::new(healthy_at_register),
             reader_handle: Some(reader_handle),
             connected_at: Instant::now(),
-            last_error: RwLock::new(None),
+            last_error: RwLock::new(identity_failure.clone()),
         });
 
         // Rebuild tables
@@ -1477,11 +1546,20 @@ impl RelaySwitch {
         self.rebuild_capabilities().await;
         self.rebuild_limits().await;
 
-        info!(
-            master_idx = master_idx,
-            cap_count = cap_count,
-            "[RelaySwitch] Master connected successfully"
-        );
+        if healthy_at_register {
+            info!(
+                master_idx = master_idx,
+                cap_count = cap_count,
+                "[RelaySwitch] Master connected successfully"
+            );
+        } else {
+            tracing::error!(
+                master_idx = master_idx,
+                cap_count = cap_count,
+                error = %identity_failure.as_deref().unwrap_or(""),
+                "[RelaySwitch] Master registered as UNHEALTHY (identity probe failed) — installed_cartridges remain in inventory but the master is not in the routing table"
+            );
+        }
 
         Ok(master_idx)
     }
@@ -2491,6 +2569,21 @@ impl RelaySwitch {
             let healthy = master.healthy.load(Ordering::SeqCst);
             let caps = master.caps.read().await.clone();
             let installed_cartridges = master.installed_cartridges.read().await.clone();
+            // Diagnostic — log per-master inventory at every rebuild
+            // so we can tell from the live log whether an apparent
+            // "0 cartridges" aggregate is because no master has yet
+            // populated its installed list, because masters are
+            // unhealthy and being filtered out, or because their
+            // RelayNotify just hadn't landed in time.
+            tracing::info!(
+                target: "relay_switch",
+                master_idx = idx,
+                healthy = healthy,
+                cap_count = caps.len(),
+                installed_count = installed_cartridges.len(),
+                installed_ids = ?installed_cartridges.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+                "[RelaySwitch] rebuild_capabilities: per-master inventory"
+            );
             caps_by_master.push((idx, healthy, caps));
             installed_cartridges_by_master.push((healthy, installed_cartridges));
         }
@@ -2519,11 +2612,20 @@ impl RelaySwitch {
         // Build manifest as JSON array (same format as RelayNotify payloads)
         *self.aggregate_capabilities.write().await =
             serde_json::to_vec(&all_caps).unwrap_or_default();
+        // Installed-cartridges aggregate is the inventory view — what is
+        // physically installed and known to any master, regardless of
+        // current per-master reachability. We do NOT filter by health
+        // here. The reachability story lives in
+        // `InstalledCartridgeIdentity.runtime_stats.running` (per
+        // cartridge), not in whether the parent master happens to be
+        // unhealthy at this exact tick. Filtering the inventory by
+        // master health caused the "all cartridges disappeared"
+        // symptom on every transient master flap (XPC bridge
+        // reconnect, in-process master restart, RelayNotify race at
+        // startup before the first heartbeat round-trip).
         let mut all_installed_cartridges: Vec<InstalledCartridgeIdentity> = Vec::new();
-        for (healthy, installed_cartridges) in installed_cartridges_by_master {
-            if healthy {
-                all_installed_cartridges.extend(installed_cartridges);
-            }
+        for (_healthy, installed_cartridges) in installed_cartridges_by_master {
+            all_installed_cartridges.extend(installed_cartridges);
         }
         all_installed_cartridges.sort();
         // Identity tuple is `(registry_url, channel, id, version, sha256)`.

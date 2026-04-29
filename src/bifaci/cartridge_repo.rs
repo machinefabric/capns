@@ -524,8 +524,59 @@ impl CartridgeRepo {
             return Err(CartridgeRepoError::StatusError(response.status().as_u16()));
         }
 
-        let manifest: CartridgeRegistry = response.json().await.map_err(|e| {
-            CartridgeRepoError::ParseError(format!("Failed to parse from {}: {}", repo_url, e))
+        // Two-step parse so the error message names the precise failure
+        // (HTTP read, JSON syntax, schema mismatch) and includes a
+        // sample of the body. `response.json()` collapses everything
+        // into "error decoding response body".
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("<missing>")
+            .to_string();
+        let body_bytes = response.bytes().await.map_err(|e| {
+            CartridgeRepoError::HttpError(format!(
+                "Failed to read body from {} (status={}, content-type={}): {}",
+                repo_url, status, content_type, e
+            ))
+        })?;
+        let body_len = body_bytes.len();
+        tracing::info!(
+            target: "cartridge_repo",
+            url = repo_url,
+            status = status.as_u16(),
+            content_type = %content_type,
+            body_len = body_len,
+            "[CartridgeRepo] fetched manifest body"
+        );
+        let manifest: CartridgeRegistry = serde_json::from_slice(&body_bytes).map_err(|e| {
+            // Truncate body sample for log readability but keep enough
+            // to see HTML error pages, schema-drift fields, etc.
+            let preview_max = 1024usize.min(body_len);
+            let preview = String::from_utf8_lossy(&body_bytes[..preview_max]);
+            tracing::error!(
+                target: "cartridge_repo",
+                url = repo_url,
+                status = status.as_u16(),
+                content_type = %content_type,
+                body_len = body_len,
+                error_line = e.line(),
+                error_column = e.column(),
+                error_classify = ?e.classify(),
+                body_preview = %preview,
+                "[CartridgeRepo] manifest JSON parse failed"
+            );
+            CartridgeRepoError::ParseError(format!(
+                "Failed to parse from {} (status={}, content-type={}, body_len={}): {} at line {} col {}",
+                repo_url,
+                status,
+                content_type,
+                body_len,
+                e,
+                e.line(),
+                e.column()
+            ))
         })?;
 
         // Self-referential check: the manifest declares its own URL.

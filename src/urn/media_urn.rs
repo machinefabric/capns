@@ -207,6 +207,30 @@ pub const MEDIA_MODEL_SPEC_CANDLE_TRANSCRIPTION: &str =
 /// Media URN for model repository (input for list-models) - has record marker
 pub const MEDIA_MODEL_REPO: &str = "media:model-repo;record;textable";
 
+/// HuggingFace bearer token, passed as an optional argument to caps that
+/// hit the HuggingFace API. Carries a `secret` tag so UIs and logs can mask
+/// the value.
+pub const MEDIA_HF_TOKEN: &str = "media:hf-token;secret;textable";
+
+/// JSON record carrying `{ "architectures": ["mistral", "llama", ...] }`
+/// used by the `list-compatible-models` cap to filter cached models by
+/// `model_type`.
+pub const MEDIA_MODEL_ARCH_LIST: &str = "media:model-arch-list;json;record;textable";
+
+/// JSON record carrying a [`crate::ModelSearchRequest`] equivalent — query,
+/// limit, sort, cursor, and the optional `architectures` field driving
+/// cap-aware result filtering.
+pub const MEDIA_MODEL_SEARCH_REQUEST: &str = "media:model-search-request;json;record;textable";
+
+/// JSON record carrying a [`crate::ModelSearchResponse`] equivalent.
+pub const MEDIA_MODEL_SEARCH_RESPONSE: &str = "media:model-search-response;json;record;textable";
+
+/// JSON record carrying the dry-run result of `resolve-model-filters` —
+/// the spec, the user filters, the architecture-required additions, and
+/// the resulting effective file list.
+pub const MEDIA_MODEL_FILTER_RESOLUTION: &str =
+    "media:model-filter-resolution;json;record;textable";
+
 /// Helper to build binary media URN with extension
 pub fn binary_media_urn_for_ext(ext: &str) -> String {
     format!("media:binary;ext={}", ext)

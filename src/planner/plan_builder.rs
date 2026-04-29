@@ -578,6 +578,16 @@ pub struct StepArgumentRequirements {
     pub arguments: Vec<ArgumentInfo>,
     /// Arguments that require user input (slots)
     pub slots: Vec<ArgumentInfo>,
+    /// Architecture identifiers (config.json `model_type`) the cap can
+    /// run. Forwarded by the gRPC layer to UI components so model
+    /// pickers only surface compatible models. Empty when the cap
+    /// declares no restriction (i.e., doesn't load a model at all).
+    #[serde(default)]
+    pub supported_model_types: Vec<String>,
+    /// Default model spec literal declared in the cap's capfab toml.
+    /// `None` when the cap has no default model.
+    #[serde(default)]
+    pub default_model_spec: Option<String>,
 }
 
 /// Argument requirements for an entire path
@@ -682,6 +692,8 @@ impl MachinePlanBuilder {
                 title: step.title(),
                 arguments,
                 slots,
+                supported_model_types: cap.supported_model_types.clone(),
+                default_model_spec: cap.default_model_spec.clone(),
             });
 
             cap_step_index += 1;
@@ -1193,6 +1205,8 @@ mod tests {
                     validation: None,
                 }],
                 slots: vec![],
+                supported_model_types: Vec::new(),
+                default_model_spec: None,
             }],
             can_execute_without_input: true,
         };
@@ -1249,6 +1263,8 @@ mod tests {
                     is_sequence: false,
                     validation: None,
                 }],
+                supported_model_types: Vec::new(),
+                default_model_spec: None,
             }],
             can_execute_without_input: false,
         };

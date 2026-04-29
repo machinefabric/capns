@@ -50,7 +50,7 @@ use async_trait::async_trait;
 use ops::{DryContext, Op, OpError, OpMetadata, OpResult, WetContext};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read, Write};
-use std::os::unix::io::FromRawFd;
+use std::os::unix::io::{FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -853,20 +853,18 @@ impl OutputStream {
         self.sender.send(&start_frame)
     }
 
-    /// Run a blocking closure on a dedicated thread while emitting keepalive progress
-    /// frames every 30 seconds.
+    /// Run a blocking closure on a dedicated OS thread while emitting keepalive
+    /// progress frames every 30 seconds from a separate ticker thread.
     ///
-    /// Model loading (GGUF, Candle, etc.) is synchronous FFI that can take minutes
-    /// for large models. The engine's 120s activity timeout kills the task if no
-    /// frames arrive.
+    /// Model loading (GGUF, Candle, Metal, etc.) is synchronous FFI that can take
+    /// minutes for large models. The engine's 120s activity timeout kills the task
+    /// if no frames arrive.
     ///
-    /// The closure runs on `tokio::task::spawn_blocking` (dedicated thread pool),
-    /// freeing the tokio worker thread so the frame writer task can flush keepalive
-    /// frames to stdout. Without this, blocking on the tokio worker prevents the
-    /// writer task from running, and frames queue up but never reach the engine.
-    ///
-    /// Keepalive frames are emitted every 30s via `tokio::time::interval` on the
-    /// async runtime.
+    /// Uses `std::thread::spawn` (not `tokio::task::spawn_blocking`) so that heavy
+    /// FFI — particularly Metal/GCD on macOS which can consume all threads in
+    /// tokio's blocking pool — cannot starve the async runtime or the keepalive
+    /// ticker. The ticker also runs on a plain OS thread so it is immune to tokio
+    /// scheduler pressure.
     pub async fn run_with_keepalive<T: Send + 'static>(
         &self,
         progress: f32,
@@ -878,28 +876,43 @@ impl OutputStream {
         let routing_id = self.routing_id.clone();
         let msg = message.to_string();
 
-        // Spawn the blocking work on the dedicated blocking thread pool
-        let mut join_handle = tokio::task::spawn_blocking(f);
+        // Channel: work thread signals completion to the ticker thread so it stops.
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
 
-        // Emit keepalive frames every 30s while blocking work runs
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        interval.tick().await; // first tick is immediate — skip it
-
-        loop {
-            tokio::select! {
-                biased;
-                result = &mut join_handle => {
-                    // Blocking work completed — return its result
-                    return result.expect("spawn_blocking task panicked");
-                }
-                _ = interval.tick() => {
-                    // Emit keepalive progress frame
-                    let mut frame = Frame::progress(request_id.clone(), progress, &msg);
-                    frame.routing_id = routing_id.clone();
-                    let _ = sender.send(&frame);
+        // Spawn keepalive ticker on a plain OS thread — immune to tokio pool pressure.
+        let ticker_sender = Arc::clone(&sender);
+        let ticker_rid = request_id.clone();
+        let ticker_xid = routing_id.clone();
+        let ticker_msg = msg.clone();
+        std::thread::spawn(move || {
+            loop {
+                // Park for 30s or until done signal arrives.
+                // 5s interval — short enough to survive OS thread suspension under
+                // memory pressure (e.g. Metal loading large models) while still
+                // resetting the engine's 120s activity timer with plenty of margin.
+                match done_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                    Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        let mut frame = Frame::progress(ticker_rid.clone(), progress, &ticker_msg);
+                        frame.routing_id = ticker_xid.clone();
+                        let _ = ticker_sender.send(&frame);
+                    }
                 }
             }
-        }
+        });
+
+        // Run the blocking work on a dedicated OS thread.
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<T>();
+        std::thread::spawn(move || {
+            let result = f();
+            let _ = result_tx.send(result);
+            // Dropping done_tx signals the ticker to stop.
+            drop(done_tx);
+        });
+
+        // Await result without blocking the async runtime.
+        tokio::task::spawn_blocking(move || result_rx.recv().expect("work thread panicked")).await
+            .expect("spawn_blocking join failed")
     }
 
     /// Close the output stream (sends STREAM_END). Idempotent.
@@ -3544,46 +3557,143 @@ impl CartridgeRuntime {
         unsafe {
             libc::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO);
         }
-        let stdout = tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(safe_fd) });
+        // The handshake needs an async writer (so handshake_accept's tokio
+        // I/O works), but after handshake the writer thread takes over with
+        // blocking sync writes. We dup safe_fd to get an independent fd for
+        // the async handshake writer; that fd is closed when the OwnedFd
+        // wrapper drops at end of handshake.
+        //
+        // CRITICAL: tokio::net::unix::pipe::Sender::from_owned_fd flips the
+        // underlying *file description* to O_NONBLOCK. Because dup'd fds
+        // share their file description (and therefore status flags), this
+        // *also* puts safe_fd into non-blocking mode. After we drop the
+        // async sender, blocking sync writes on safe_fd would return
+        // EAGAIN (WouldBlock) on a full pipe — silently breaking the
+        // writer thread. We restore blocking mode on safe_fd below.
+        let handshake_fd = unsafe { libc::dup(safe_fd) };
+        if handshake_fd < 0 {
+            return Err(RuntimeError::Io(std::io::Error::last_os_error()));
+        }
+        let handshake_stdout = tokio::net::unix::pipe::Sender::from_owned_fd(
+            unsafe { OwnedFd::from_raw_fd(handshake_fd) }
+        ).map_err(RuntimeError::Io)?;
 
-        // Use async buffered readers/writers
         let reader = BufReader::new(stdin);
-        let writer = BufWriter::new(stdout);
 
         let mut frame_reader = FrameReader::new(reader);
-        let mut frame_writer = FrameWriter::new(writer);
+        // Handshake uses a temporary async writer on the dup'd fd.
+        let mut hs_async_writer = tokio::io::BufWriter::new(handshake_stdout);
+        let mut hs_frame_writer = FrameWriter::new(&mut hs_async_writer);
 
-        // Perform handshake - send our manifest in the HELLO response
         let negotiated_limits =
-            handshake_accept(&mut frame_reader, &mut frame_writer, &self.manifest_data).await?;
-        frame_reader.set_limits(negotiated_limits);
-        frame_writer.set_limits(negotiated_limits);
+            handshake_accept(&mut frame_reader, &mut hs_frame_writer, &self.manifest_data).await?;
+        frame_reader.set_limits(negotiated_limits.clone());
+        // Flush and drop the async handshake writer; safe_fd stays open for sync writes.
+        drop(hs_frame_writer);
+        hs_async_writer.flush().await.map_err(RuntimeError::Io)?;
+        drop(hs_async_writer);
 
-        // Create output channel - ALL frames (peer requests + responses) go through here
+        // Restore blocking mode on safe_fd. The async pipe::Sender above
+        // set O_NONBLOCK on the shared file description; if we leave it
+        // that way, std::io blocking writes return EAGAIN as soon as the
+        // pipe fills, and the writer thread silently breaks.
+        let flags = unsafe { libc::fcntl(safe_fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(RuntimeError::Io(std::io::Error::last_os_error()));
+        }
+        if flags & libc::O_NONBLOCK != 0 {
+            let rc = unsafe { libc::fcntl(safe_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+            if rc < 0 {
+                return Err(RuntimeError::Io(std::io::Error::last_os_error()));
+            }
+        }
+
+        // Create output channel using std::sync::mpsc so the writer thread is
+        // completely decoupled from tokio. Metal/GCD on macOS can steal all
+        // tokio worker threads during large model loading, freezing tokio tasks
+        // (including tokio::spawn writer tasks and interval timers). A plain
+        // std::thread with blocking I/O is immune to this.
+        let (output_tx_sync, output_rx_sync) = std::sync::mpsc::channel::<Frame>();
+
+        // Wrap in a newtype so existing code that calls output_tx.send() still works.
+        // We bridge tokio::sync::mpsc → std::sync::mpsc via a forwarding task below.
         let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
 
-        // Spawn writer task to drain output channel and write frames to stdout
-        let writer_handle = tokio::spawn(async move {
+        // Forward tokio channel → std channel so async handlers can still use output_tx.
+        let fwd_tx = output_tx_sync.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = output_rx.recv().await {
+                if fwd_tx.send(frame).is_err() { break; }
+            }
+        });
+
+        // Spawn writer thread on a plain OS thread — immune to tokio/Metal/GCD.
+        let writer_limits = negotiated_limits.clone();
+        let writer_handle = std::thread::spawn(move || {
+            let mut writer = std::io::BufWriter::new(unsafe {
+                std::fs::File::from_raw_fd(safe_fd)
+            });
             let mut seq_assigner = SeqAssigner::new();
-            while let Some(mut frame) = output_rx.recv().await {
-                // Assign centralized seq per request ID before writing
+            while let Ok(mut frame) = output_rx_sync.recv() {
                 seq_assigner.assign(&mut frame);
-                if frame_writer.write(&frame).await.is_err() {
+                let ftype = frame.frame_type;
+                if let Err(e) =
+                    crate::bifaci::io::write_frame_sync(&mut writer, &frame, &writer_limits)
+                {
+                    tracing::error!(
+                        target: "cartridge_runtime",
+                        error = %e,
+                        ftype = ?ftype,
+                        "[CartridgeRuntime] writer thread: write_frame_sync failed — exiting writer loop. Cartridge → host frames after this point will be lost."
+                    );
                     break;
                 }
-                // Cleanup seq tracking on terminal frames
-                if matches!(frame.frame_type, FrameType::End | FrameType::Err) {
+                if matches!(ftype, FrameType::End | FrameType::Err) {
                     seq_assigner.remove(&FlowKey::from_frame(&frame));
                 }
-                // Flush when no more frames are queued so the host sees
-                // progress/log frames immediately instead of waiting for
-                // BufWriter's 8KB buffer to fill.
-                if output_rx.is_empty() {
-                    let _ = frame_writer.inner_mut().flush().await;
+                // Flush when no more frames are immediately available so the
+                // host sees progress/log frames without waiting for the
+                // BufWriter to fill. We must NOT consume the next queued
+                // frame here: peek with a zero-cost emptiness check via a
+                // separate try_recv that, when it does pull a frame, must
+                // be processed in the next iteration. To avoid losing the
+                // frame, we only flush when try_recv reports Empty; if it
+                // returns a frame, we re-inject it by handling it inline.
+                match output_rx_sync.try_recv() {
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        if let Err(e) = writer.flush() {
+                            tracing::error!(
+                                target: "cartridge_runtime",
+                                error = %e,
+                                "[CartridgeRuntime] writer thread: flush failed"
+                            );
+                            break;
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Ok(mut next_frame) => {
+                        seq_assigner.assign(&mut next_frame);
+                        let nftype = next_frame.frame_type;
+                        if let Err(e) = crate::bifaci::io::write_frame_sync(
+                            &mut writer,
+                            &next_frame,
+                            &writer_limits,
+                        ) {
+                            tracing::error!(
+                                target: "cartridge_runtime",
+                                error = %e,
+                                ftype = ?nftype,
+                                "[CartridgeRuntime] writer thread: write_frame_sync failed (drained frame) — exiting writer loop."
+                            );
+                            break;
+                        }
+                        if matches!(nftype, FrameType::End | FrameType::Err) {
+                            seq_assigner.remove(&FlowKey::from_frame(&next_frame));
+                        }
+                    }
                 }
             }
-            // CRITICAL: Flush buffered output before exiting!
-            let _ = frame_writer.inner_mut().flush().await;
+            let _ = writer.flush();
         });
 
         // Track pending peer requests (cartridge invoking host caps)
@@ -4014,7 +4124,7 @@ impl CartridgeRuntime {
         let _ = reader_handle.await;
         drop(output_tx);
 
-        let _ = writer_handle.await;
+        let _ = tokio::task::spawn_blocking(move || { let _ = writer_handle.join(); }).await;
 
         for (_, handle) in active_handlers {
             let _ = handle.await;
