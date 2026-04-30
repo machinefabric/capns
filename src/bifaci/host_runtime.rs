@@ -2557,7 +2557,7 @@ mod tests {
     /// register an observer (engine in-process runtime, in-process
     /// host tests, integration tests).
     #[tokio::test]
-    async fn observer_is_optional() {
+    async fn test999_observer_is_optional() {
         let mut runtime = CartridgeHostRuntime::new();
         // Ensure nothing fires when no observer is set and we
         // immediately tear the runtime down.
@@ -2569,7 +2569,7 @@ mod tests {
     /// subsequent lifecycle moment doesn't fire into a torn-down
     /// bridge. Matches the Swift `setObserver(nil)` test.
     #[tokio::test]
-    async fn set_observer_none_clears_previous() {
+    async fn test999_set_observer_none_clears_previous() {
         let observer = Arc::new(RecordingObserver::new());
         let mut runtime = CartridgeHostRuntime::new();
         runtime.set_observer(Some(observer.clone() as Arc<dyn CartridgeHostObserver>));
@@ -2595,7 +2595,7 @@ mod tests {
 
     /// Helper: perform handshake_accept and handle the identity verification REQ.
     /// Returns (FrameReader, FrameWriter) ready for further communication.
-    async fn cartridge_handshake_with_identity<R, W>(
+    async fn test999_cartridge_handshake_with_identity<R, W>(
         from_runtime: R,
         to_runtime: W,
         manifest: &[u8],
