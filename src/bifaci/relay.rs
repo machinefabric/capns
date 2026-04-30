@@ -71,22 +71,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
         R: Send + 'static,
         W: Send + 'static,
     {
-        tracing::info!(
-            "[RelaySlave] run() starting, initial_notify={}",
-            initial_notify.is_some()
-        );
-
         // Send initial RelayNotify if provided
         let max_reorder = if let Some((manifest, limits)) = initial_notify {
-            tracing::info!(
-                "[RelaySlave] sending initial RelayNotify, manifest_len={}",
-                manifest.len()
-            );
             let notify = Frame::relay_notify(manifest, limits);
             socket_write.write(&notify).await?;
             limits.max_reorder_buffer
         } else {
-            tracing::info!("[RelaySlave] no initial_notify, waiting for host to send RelayNotify");
             crate::bifaci::frame::DEFAULT_MAX_REORDER_BUFFER
         };
 
@@ -101,16 +91,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
         let err1 = Arc::clone(&first_error);
         let rs1 = Arc::clone(&resource_state);
         let t1 = tokio::spawn(async move {
-            tracing::info!("[RelaySlave] t1 (socket→local) started");
             let mut reorder = ReorderBuffer::new(max_reorder);
             loop {
                 match socket_read.read().await {
                     Ok(Some(frame)) => {
-                        tracing::debug!(
-                            "[RelaySlave] t1 received from socket: type={:?} id={}",
-                            frame.frame_type,
-                            frame.id
-                        );
                         if frame.frame_type == FrameType::RelayState {
                             if let Some(payload) = frame.payload {
                                 *rs1.lock().unwrap() = payload;
@@ -135,11 +119,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
                                 }
                             }
                             for f in ready_frames {
-                                tracing::debug!(
-                                    "[RelaySlave] t1 forwarding to local: type={:?} id={}",
-                                    f.frame_type,
-                                    f.id
-                                );
                                 if let Err(e) = local_writer.write(&f).await {
                                     tracing::error!("[RelaySlave] t1 local_writer error: {}", e);
                                     let mut guard = err1.lock().await;
@@ -151,10 +130,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
                             }
                         }
                     }
-                    Ok(None) => {
-                        tracing::info!("[RelaySlave] t1 socket closed (EOF)");
-                        return;
-                    }
+                    Ok(None) => return,
                     Err(e) => {
                         tracing::error!("[RelaySlave] t1 socket read error: {}", e);
                         let mut guard = err1.lock().await;
@@ -170,16 +146,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
         // Task 2: local → socket (CartridgeHost sends frames to master)
         let err2 = Arc::clone(&first_error);
         let t2 = tokio::spawn(async move {
-            tracing::info!("[RelaySlave] t2 (local→socket) started");
             let mut reorder = ReorderBuffer::new(max_reorder);
             loop {
                 match local_reader.read().await {
                     Ok(Some(frame)) => {
-                        tracing::debug!(
-                            "[RelaySlave] t2 received from local: type={:?} id={}",
-                            frame.frame_type,
-                            frame.id
-                        );
                         // Forward all frames, including RelayNotify (capability updates)
                         // RelayState is still dropped (deprecated/unused)
                         if frame.frame_type == FrameType::RelayState {
@@ -202,11 +172,6 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
                                 }
                             }
                             for f in ready_frames {
-                                tracing::debug!(
-                                    "[RelaySlave] t2 forwarding to socket: type={:?} id={}",
-                                    f.frame_type,
-                                    f.id
-                                );
                                 if let Err(e) = socket_write.write(&f).await {
                                     tracing::error!("[RelaySlave] t2 socket_write error: {}", e);
                                     let mut guard = err2.lock().await;
@@ -218,10 +183,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> RelaySlave<R, W> {
                             }
                         }
                     }
-                    Ok(None) => {
-                        tracing::info!("[RelaySlave] t2 local side closed (EOF)");
-                        return;
-                    }
+                    Ok(None) => return,
                     Err(e) => {
                         tracing::error!("[RelaySlave] t2 local read error: {}", e);
                         let mut guard = err2.lock().await;

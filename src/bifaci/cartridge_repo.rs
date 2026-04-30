@@ -542,14 +542,6 @@ impl CartridgeRepo {
             ))
         })?;
         let body_len = body_bytes.len();
-        tracing::info!(
-            target: "cartridge_repo",
-            url = repo_url,
-            status = status.as_u16(),
-            content_type = %content_type,
-            body_len = body_len,
-            "[CartridgeRepo] fetched manifest body"
-        );
         let manifest: CartridgeRegistry = serde_json::from_slice(&body_bytes).map_err(|e| {
             // Truncate body sample for log readability but keep enough
             // to see HTML error pages, schema-drift fields, etc.

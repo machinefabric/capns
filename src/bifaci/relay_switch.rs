@@ -612,13 +612,6 @@ impl RelaySwitch {
                 loop {
                     match reader.read().await {
                         Ok(Some(frame)) => {
-                            tracing::debug!(
-                                "[RelaySwitch] master {} reader: {:?} id={:?} xid={:?}",
-                                master_idx,
-                                frame.frame_type,
-                                frame.id,
-                                frame.routing_id
-                            );
                             if tx.send((master_idx, Ok(frame))).is_err() {
                                 tracing::warn!(
                                     "[RelaySwitch] master {} reader: frame_tx closed",
@@ -731,7 +724,6 @@ impl RelaySwitch {
         let weak = Arc::downgrade(self);
         let stop = self.background_pump_stop.clone();
         let handle = tokio::spawn(async move {
-            tracing::info!("[RelaySwitch] background pump started");
             loop {
                 if stop.load(Ordering::Relaxed) {
                     break;
@@ -761,7 +753,6 @@ impl RelaySwitch {
                     }
                 }
             }
-            tracing::info!("[RelaySwitch] background pump exiting");
         });
         *guard = Some(handle);
     }
@@ -942,13 +933,6 @@ impl RelaySwitch {
         frame_with_xid.routing_id = Some(xid);
 
         // Forward to destination
-        tracing::info!(
-            "[RelaySwitch] execute_cap: dispatching to master {} cap='{}' rid={:?} xid={:?}",
-            dest_idx,
-            cap_urn,
-            rid,
-            frame_with_xid.routing_id
-        );
         self.write_to_master_idx(dest_idx, &mut frame_with_xid)
             .await?;
 
@@ -1008,13 +992,6 @@ impl RelaySwitch {
             .write()
             .await
             .insert(rid.clone(), xid.clone());
-
-        tracing::info!(
-            "[RelaySwitch] register_external_request: registered key=({:?}, {:?}) dest_master={}",
-            xid,
-            rid,
-            dest_idx
-        );
 
         Ok((xid, rx))
     }
@@ -1100,15 +1077,6 @@ impl RelaySwitch {
             .await
             .insert(rid.clone(), xid.clone());
 
-        tracing::info!(
-            "[RelaySwitch] register_external_request_for_cartridge: \
-             cartridge='{}' key=({:?}, {:?}) dest_master={}",
-            cartridge_id,
-            xid,
-            rid,
-            dest_idx
-        );
-
         Ok((xid, rx))
     }
 
@@ -1123,13 +1091,7 @@ impl RelaySwitch {
         // Find XID for this RID
         let xid = match self.rid_to_xid.read().await.get(rid).cloned() {
             Some(xid) => xid,
-            None => {
-                tracing::debug!(
-                    "[RelaySwitch] cancel_request: unknown RID {:?} — ignoring",
-                    rid
-                );
-                return;
-            }
+            None => return,
         };
 
         let key = (xid.clone(), rid.clone());
@@ -1139,21 +1101,13 @@ impl RelaySwitch {
             let routing = self.request_routing.read().await;
             match routing.get(&key) {
                 Some(entry) => entry.destination_master_idx,
-                None => {
-                    tracing::debug!(
-                        "[RelaySwitch] cancel_request: no routing for ({:?}, {:?}) — ignoring",
-                        xid,
-                        rid
-                    );
-                    return;
-                }
+                None => return,
             }
         };
 
         // Send Cancel frame to destination
         let mut cancel_frame = Frame::cancel(rid.clone(), force_kill);
         cancel_frame.routing_id = Some(xid.clone());
-        tracing::info!("[RelaySwitch] cancel_request: sending Cancel to master {} rid={:?} xid={:?} force_kill={}", dest_idx, rid, xid, force_kill);
         let _ = self.write_to_master_idx(dest_idx, &mut cancel_frame).await;
 
         // Collect child peer calls for recursive cancel
@@ -1165,11 +1119,7 @@ impl RelaySwitch {
             .unwrap_or_default();
 
         // Recursively cancel children
-        for (child_xid, child_rid) in &children {
-            tracing::info!(
-                "[RelaySwitch] cancel_request: cascading cancel to child peer call rid={:?}",
-                child_rid
-            );
+        for (_child_xid, child_rid) in &children {
             // Use Box::pin for recursive async
             Box::pin(self.cancel_request(child_rid, force_kill)).await;
         }
@@ -1201,12 +1151,6 @@ impl RelaySwitch {
                 .map(|((_, rid), _)| rid.clone())
                 .collect()
         };
-
-        tracing::info!(
-            "[RelaySwitch] cancel_all_requests: cancelling {} external requests, force_kill={}",
-            rids.len(),
-            force_kill
-        );
 
         for rid in &rids {
             self.cancel_request(rid, force_kill).await;
@@ -1262,15 +1206,6 @@ impl RelaySwitch {
         // master sent zero, or because we lost the data later.
         let mut caps_payload = caps_payload;
         let mut payload = parse_relay_notify_payload(&caps_payload)?;
-        tracing::info!(
-            target: "relay_switch",
-            master_idx = master_idx,
-            cap_count = payload.caps.len(),
-            installed_count = payload.installed_cartridges.len(),
-            installed_ids = ?payload.installed_cartridges.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-            "[RelaySwitch] add_master: received initial RelayNotify"
-        );
-
         let mut caps = payload.caps.clone();
         let mut limits = notify_frame.relay_notify_limits().unwrap_or_default();
 
@@ -1455,14 +1390,7 @@ impl RelaySwitch {
             .await;
 
             match probe_result {
-                Ok(()) => {
-                    tracing::info!(
-                        target: "relay_switch",
-                        master_idx = master_idx,
-                        elapsed_ms = probe_started_at.elapsed().as_millis() as u64,
-                        "[RelaySwitch] add_master: identity verification succeeded"
-                    );
-                }
+                Ok(()) => {}
                 Err(detail) => {
                     let elapsed_ms = probe_started_at.elapsed().as_millis() as u64;
                     let detailed = format!(
@@ -1488,15 +1416,6 @@ impl RelaySwitch {
             loop {
                 match reader.read().await {
                     Ok(Some(frame)) => {
-                        if frame.frame_type != crate::bifaci::frame::FrameType::Log {
-                            tracing::debug!(
-                                "[RelaySwitch] master {} reader: {:?} id={:?} xid={:?}",
-                                master_idx,
-                                frame.frame_type,
-                                frame.id,
-                                frame.routing_id
-                            );
-                        }
                         if tx.send((master_idx, Ok(frame))).is_err() {
                             tracing::warn!(
                                 "[RelaySwitch] master {} reader: frame_tx closed",
@@ -1578,13 +1497,6 @@ impl RelaySwitch {
         mut frame: Frame,
         preferred_cap: Option<&str>,
     ) -> Result<(), RelaySwitchError> {
-        tracing::debug!(
-            "[RelaySwitch] send_to_master: {:?} id={:?} cap={:?} xid={:?}",
-            frame.frame_type,
-            frame.id,
-            frame.cap,
-            frame.routing_id
-        );
         match frame.frame_type {
             FrameType::Req => {
                 let cap_urn = frame.cap.as_ref().ok_or_else(|| {
@@ -1868,14 +1780,6 @@ impl RelaySwitch {
         master_idx: usize,
         frame: &mut Frame,
     ) -> Result<(), CborError> {
-        tracing::debug!(
-            "[RelaySwitch] write_to_master_idx_raw: master={} {:?} id={:?} xid={:?}",
-            master_idx,
-            frame.frame_type,
-            frame.id,
-            frame.routing_id
-        );
-
         let masters = self.masters.read().await;
         let master = &masters[master_idx];
 
@@ -1905,14 +1809,6 @@ impl RelaySwitch {
         master_idx: usize,
         frame: &mut Frame,
     ) -> Result<(), CborError> {
-        tracing::debug!(
-            "[RelaySwitch] write_to_master_idx: master={} {:?} id={:?} xid={:?}",
-            master_idx,
-            frame.frame_type,
-            frame.id,
-            frame.routing_id
-        );
-
         let write_result = self.write_to_master_idx_raw(master_idx, frame).await;
 
         match write_result {
@@ -1978,12 +1874,9 @@ impl RelaySwitch {
         let mut matches: Vec<(usize, isize, bool)> = Vec::new(); // (master_idx, signed_distance, is_preferred)
 
         let cap_table = self.cap_table.read().await;
-        tracing::debug!(target: "find_master_for_cap", "Request: {} (specificity={})", cap_urn, request_specificity);
-        tracing::debug!(target: "find_master_for_cap", "Checking {} registered caps", cap_table.len());
         for (registered_cap, master_idx) in cap_table.iter() {
             if let Ok(registered_urn) = crate::CapUrn::from_string(registered_cap) {
                 let dispatchable = registered_urn.is_dispatchable(&request_urn);
-                tracing::debug!(target: "find_master_for_cap", "{} -> dispatchable={}", registered_cap, dispatchable);
                 // Use is_dispatchable: can this provider handle this request?
                 if dispatchable {
                     let specificity = registered_urn.specificity();
@@ -1997,7 +1890,6 @@ impl RelaySwitch {
             }
         }
 
-        tracing::debug!(target: "find_master_for_cap", "Found {} matches", matches.len());
         if matches.is_empty() {
             return None;
         }
@@ -2036,13 +1928,6 @@ impl RelaySwitch {
         source_idx: usize,
         mut frame: Frame,
     ) -> Result<Option<Frame>, RelaySwitchError> {
-        tracing::debug!(
-            "[RelaySwitch] handle_master_frame: from_master={} {:?} id={:?} xid={:?}",
-            source_idx,
-            frame.frame_type,
-            frame.id,
-            frame.routing_id
-        );
         match frame.frame_type {
             FrameType::Req => {
                 let cap_urn = frame.cap.as_ref().ok_or_else(|| {
@@ -2092,14 +1977,6 @@ impl RelaySwitch {
                     .insert(rid.clone(), xid.clone());
 
                 // Record origin (where this request came from)
-                tracing::info!(
-                    "[RelaySwitch] PEER_REQ: master {} → master {} cap='{}' rid={:?} xid={:?}",
-                    source_idx,
-                    dest_idx,
-                    cap_urn,
-                    rid,
-                    xid
-                );
                 self.origin_map
                     .write()
                     .await
@@ -2161,9 +2038,6 @@ impl RelaySwitch {
             | FrameType::End
             | FrameType::Err
             | FrameType::Log => {
-                if frame.frame_type == FrameType::Log {
-                    tracing::debug!(target: "relay_switch", "Routing LOG frame: xid={:?} rid={:?}", frame.routing_id, frame.id);
-                }
                 // Branch based on XID presence to distinguish request vs response direction
                 if frame.routing_id.is_some() {
                     // ========================================
@@ -2186,9 +2060,7 @@ impl RelaySwitch {
                     // Get origin (where request came from)
                     let origin_idx = {
                         let origin = self.origin_map.read().await;
-                        let result = origin.get(&key).copied();
-                        tracing::debug!(target: "relay_switch", "origin_map lookup: key=({:?}, {:?}) result={:?}", xid, rid, result);
-                        result.ok_or_else(|| {
+                        origin.get(&key).copied().ok_or_else(|| {
                             RelaySwitchError::Protocol(format!(
                                 "No origin recorded for request ({:?}, {:?})",
                                 xid, rid
@@ -2206,16 +2078,13 @@ impl RelaySwitch {
                             // Check if there's a response channel registered
                             let tx_opt = {
                                 let channels = self.external_response_channels.read().await;
-                                tracing::debug!("[RelaySwitch] external_response_channels lookup: key=({:?}, {:?}) found={}", xid, rid, channels.contains_key(&key));
                                 channels.get(&key).cloned()
                             };
 
                             if let Some(tx) = tx_opt {
                                 // Send to external response channel (keep XID for now)
                                 let send_result = tx.send(frame.clone());
-                                if frame.frame_type != FrameType::Log {
-                                    tracing::info!("[RelaySwitch] routed {:?} to executor: xid={:?} rid={:?} ok={}", frame.frame_type, xid, rid, send_result.is_ok());
-                                }
+                                let _ = send_result;
 
                                 // Cleanup on terminal frame
                                 if is_terminal {
@@ -2231,7 +2100,6 @@ impl RelaySwitch {
                             } else {
                                 // No response channel (sent via send_to_master, not execute_cap)
                                 // Strip XID and return to caller (final leg)
-                                tracing::info!("[RelaySwitch] NO external_response_channel for key=({:?}, {:?}), returning frame to caller", xid, rid);
                                 frame.routing_id = None;
 
                                 // Cleanup on terminal frame
@@ -2248,16 +2116,7 @@ impl RelaySwitch {
                         }
                         Some(master_idx) => {
                             // Route back to source master — KEEP XID.
-                            if is_terminal {
-                                tracing::info!("[RelaySwitch] PEER_RESP: routing {:?} back to master {} xid={:?} rid={:?}", frame.frame_type, master_idx, xid, rid);
-                            }
                             self.write_to_master_idx(master_idx, &mut frame).await?;
-                            if is_terminal {
-                                tracing::info!(
-                                    "[RelaySwitch] PEER_RESP: write to master {} completed",
-                                    master_idx
-                                );
-                            }
 
                             // Cleanup on terminal frame
                             if is_terminal {
@@ -2324,10 +2183,6 @@ impl RelaySwitch {
                         }
                         None => {
                             // Unknown RID — silently ignore (request may already be completed)
-                            tracing::debug!(
-                                "[RelaySwitch] Cancel for unknown RID {:?} — ignoring",
-                                rid
-                            );
                             return Ok(None);
                         }
                     }
@@ -2339,23 +2194,11 @@ impl RelaySwitch {
                     match routing.get(&key) {
                         Some(entry) => entry.destination_master_idx,
                         None => {
-                            tracing::debug!(
-                                "[RelaySwitch] Cancel for unknown routing ({:?}, {:?}) — ignoring",
-                                xid,
-                                rid
-                            );
                             return Ok(None);
                         }
                     }
                 };
 
-                tracing::info!(
-                    "[RelaySwitch] Routing Cancel from master {} to master {} xid={:?} rid={:?}",
-                    source_idx,
-                    dest_idx,
-                    xid,
-                    rid
-                );
                 self.write_to_master_idx(dest_idx, &mut frame).await?;
                 Ok(None)
             }
@@ -2569,21 +2412,6 @@ impl RelaySwitch {
             let healthy = master.healthy.load(Ordering::SeqCst);
             let caps = master.caps.read().await.clone();
             let installed_cartridges = master.installed_cartridges.read().await.clone();
-            // Diagnostic — log per-master inventory at every rebuild
-            // so we can tell from the live log whether an apparent
-            // "0 cartridges" aggregate is because no master has yet
-            // populated its installed list, because masters are
-            // unhealthy and being filtered out, or because their
-            // RelayNotify just hadn't landed in time.
-            tracing::info!(
-                target: "relay_switch",
-                master_idx = idx,
-                healthy = healthy,
-                cap_count = caps.len(),
-                installed_count = installed_cartridges.len(),
-                installed_ids = ?installed_cartridges.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-                "[RelaySwitch] rebuild_capabilities: per-master inventory"
-            );
             caps_by_master.push((idx, healthy, caps));
             installed_cartridges_by_master.push((healthy, installed_cartridges));
         }
@@ -2640,11 +2468,6 @@ impl RelaySwitch {
                 && left.version == right.version
                 && left.sha256 == right.sha256
         });
-        tracing::info!(
-            target: "relay_switch",
-            installed_cartridges = ?all_installed_cartridges,
-            "RelaySwitch rebuilt installed cartridges"
-        );
         let prior_installed = self.aggregate_installed_cartridges.read().await.clone();
         *self.aggregate_installed_cartridges.write().await = all_installed_cartridges.clone();
         // Publish to subscribers only when the snapshot actually changed —

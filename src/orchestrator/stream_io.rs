@@ -490,12 +490,7 @@ pub async fn collect_terminal_output(
                         if let Some(ref mut w) = writer {
                             w.on_stream_end().await?;
                         }
-                        tracing::info!(
-                            "[pipeline] terminal cap='{}' writer={} response_len={}",
-                            cap_urn,
-                            has_writer,
-                            response_chunks.len()
-                        );
+                        let _ = has_writer;
                         return Ok((response_chunks, is_sequence, terminal_meta));
                     }
                     FrameType::Err => {

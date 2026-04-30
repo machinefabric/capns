@@ -1004,14 +1004,6 @@ impl CartridgeHostRuntime {
         outbound_tx: &mpsc::UnboundedSender<Frame>,
         resource_fn: &(impl Fn() -> Vec<u8> + Send),
     ) -> Result<(), AsyncHostError> {
-        tracing::debug!(target: "host_runtime", "handle_relay_frame: {:?} xid={:?} rid={:?}", frame.frame_type, frame.routing_id, frame.id);
-        tracing::debug!(
-            "[CartridgeHostRuntime] handle_relay_frame: {:?} id={:?} cap={:?} xid={:?}",
-            frame.frame_type,
-            frame.id,
-            frame.cap,
-            frame.routing_id
-        );
         match frame.frame_type {
             FrameType::Req => {
                 // PATH C: REQ coming FROM relay
@@ -1047,14 +1039,6 @@ impl CartridgeHostRuntime {
                     })
                 });
 
-                tracing::info!(
-                    target: "host_runtime",
-                    cap_urn = %cap_urn,
-                    rid = ?frame.id,
-                    xid = ?frame.routing_id,
-                    target_cartridge = ?target_cartridge_id,
-                    "[CartridgeHostRuntime] Received REQ from relay — beginning dispatch"
-                );
                 let cartridge_idx = if let Some(ref target_id) = target_cartridge_id {
                     // Direct routing by cartridge identity
                     let found = self.cartridges.iter().position(|c| {
@@ -1101,18 +1085,7 @@ impl CartridgeHostRuntime {
                 } else {
                     // Standard cap-based dispatch
                     match self.find_cartridge_for_cap(&cap_urn) {
-                        Some(idx) => {
-                            tracing::info!(
-                                target: "host_runtime",
-                                cap_urn = %cap_urn,
-                                cartridge_idx = idx,
-                                cartridge_path = %self.cartridges[idx].path.display(),
-                                running = self.cartridges[idx].running,
-                                hello_failed = self.cartridges[idx].hello_failed,
-                                "[CartridgeHostRuntime] cap-based dispatch resolved to cartridge"
-                            );
-                            idx
-                        }
+                        Some(idx) => idx,
                         None => {
                             tracing::error!(
                                 target: "host_runtime",
@@ -1137,26 +1110,7 @@ impl CartridgeHostRuntime {
 
                 // Spawn on demand if not running
                 if !self.cartridges[cartridge_idx].running {
-                    tracing::info!(
-                        target: "host_runtime",
-                        cartridge_idx = cartridge_idx,
-                        cartridge_path = %self.cartridges[cartridge_idx].path.display(),
-                        "[CartridgeHostRuntime] cartridge not running — spawning on demand"
-                    );
                     let spawn_outcome = self.spawn_cartridge(cartridge_idx, resource_fn).await;
-                    match &spawn_outcome {
-                        Ok(()) => tracing::info!(
-                            target: "host_runtime",
-                            cartridge_idx = cartridge_idx,
-                            "[CartridgeHostRuntime] cartridge spawn succeeded"
-                        ),
-                        Err(e) => tracing::error!(
-                            target: "host_runtime",
-                            cartridge_idx = cartridge_idx,
-                            error = %e,
-                            "[CartridgeHostRuntime] cartridge spawn failed — REQ will be aborted"
-                        ),
-                    }
                     // Always rebuild so the RelayNotify carries the latest
                     // per-cartridge attachment state — including freshly
                     // recorded failures — to the engine's RelaySwitch.
@@ -1168,13 +1122,6 @@ impl CartridgeHostRuntime {
                 self.incoming_rxids
                     .insert((xid.clone(), frame.id.clone()), cartridge_idx);
 
-                tracing::info!(
-                    target: "host_runtime",
-                    cartridge_idx = cartridge_idx,
-                    rid = ?frame.id,
-                    xid = ?frame.routing_id,
-                    "[CartridgeHostRuntime] forwarding REQ to cartridge stdin"
-                );
                 // Forward to cartridge WITH XID
                 self.send_to_cartridge(cartridge_idx, frame)
             }
@@ -1196,15 +1143,6 @@ impl CartridgeHostRuntime {
                     }
                 };
 
-                tracing::info!(
-                    target: "host_runtime",
-                    ftype = ?frame.frame_type,
-                    rid = ?frame.id,
-                    xid = ?xid,
-                    payload_len = frame.payload.as_ref().map(|p| p.len()).unwrap_or(0),
-                    "[CartridgeHostRuntime] received continuation frame from relay"
-                );
-
                 // Route by checking BOTH maps. For self-loop peer requests (where
                 // source and destination are behind the same relay connection), the
                 // same (XID, RID) appears in BOTH incoming_rxids and outgoing_rids:
@@ -1221,10 +1159,8 @@ impl CartridgeHostRuntime {
                 let (cartridge_idx, routed_via_incoming) = if let Some(&idx) =
                     self.incoming_rxids.get(&key)
                 {
-                    tracing::info!(target: "host_runtime", "[CartridgeHostRuntime] routing {:?} to cartridge {} via incoming_rxids", frame.frame_type, idx);
                     (idx, true)
                 } else if let Some(&idx) = self.outgoing_rids.get(&frame.id) {
-                    tracing::info!(target: "host_runtime", "[CartridgeHostRuntime] routing {:?} to cartridge {} via outgoing_rids", frame.frame_type, idx);
                     (idx, false)
                 } else {
                     tracing::warn!(
@@ -1296,10 +1232,7 @@ impl CartridgeHostRuntime {
                 // LOG frames from peer responses — route back to the cartridge
                 // that made the peer request, identified by outgoing_rids[RID].
                 if let Some(&cartridge_idx) = self.outgoing_rids.get(&frame.id) {
-                    tracing::debug!(target: "host_runtime", "Routing LOG to cartridge {} via outgoing_rids[{:?}]", cartridge_idx, frame.id);
                     let _ = self.send_to_cartridge(cartridge_idx, frame);
-                } else {
-                    tracing::debug!(target: "host_runtime", "LOG frame not in outgoing_rids, dropping: rid={:?}", frame.id);
                 }
                 // If not a peer response LOG, ignore silently (stale routing)
                 Ok(())
@@ -1316,7 +1249,6 @@ impl CartridgeHostRuntime {
                 if let Some(&cartridge_idx) = self.incoming_rxids.get(&key) {
                     if force_kill {
                         // Force kill: set shutdown reason and kill the process
-                        tracing::info!("[CartridgeHostRuntime] Cancel force_kill=true for cartridge {} rid={:?}", cartridge_idx, rid);
                         self.cartridges[cartridge_idx].shutdown_reason =
                             Some(ShutdownReason::Cancelled);
                         if let Some(ref mut child) = self.cartridges[cartridge_idx].process {
@@ -1324,31 +1256,16 @@ impl CartridgeHostRuntime {
                         }
                     } else {
                         // Cooperative cancel: forward Cancel frame to the cartridge
-                        tracing::info!(
-                            "[CartridgeHostRuntime] Cancel cooperative for cartridge {} rid={:?}",
-                            cartridge_idx,
-                            rid
-                        );
                         let _ = self.send_to_cartridge(cartridge_idx, frame);
 
                         // Also cascade: send Cancel to relay for each peer call spawned by this request
                         if let Some(peer_rids) = self.incoming_to_peer_rids.get(&key) {
                             for peer_rid in peer_rids.clone() {
-                                tracing::info!(
-                                    "[CartridgeHostRuntime] Cascading Cancel to peer call rid={:?}",
-                                    peer_rid
-                                );
                                 let cancel = Frame::cancel(peer_rid, false);
                                 let _ = outbound_tx.send(cancel);
                             }
                         }
                     }
-                } else {
-                    tracing::debug!(
-                        "[CartridgeHostRuntime] Cancel for unknown request ({:?}, {:?}) — ignoring",
-                        xid,
-                        rid
-                    );
                 }
                 Ok(())
             }
@@ -1372,19 +1289,6 @@ impl CartridgeHostRuntime {
         // else is logged at info level so we can trace REQ→response
         // round-trips (notably the engine's identity probe) end-to-end
         // without enabling debug logs.
-        if !matches!(frame.frame_type, FrameType::Heartbeat | FrameType::Log) {
-            tracing::info!(
-                target: "host_runtime",
-                cartridge_idx = cartridge_idx,
-                ftype = ?frame.frame_type,
-                rid = ?frame.id,
-                cap = ?frame.cap,
-                xid = ?frame.routing_id,
-                "[CartridgeHostRuntime] handle_cartridge_frame: received from cartridge"
-            );
-        } else {
-            tracing::debug!("[CartridgeHostRuntime] handle_cartridge_frame: cartridge={} {:?} id={:?} cap={:?} xid={:?}", cartridge_idx, frame.frame_type, frame.id, frame.cap, frame.routing_id);
-        }
         match frame.frame_type {
             // HELLO after handshake is a fatal protocol error.
             FrameType::Hello => Err(AsyncHostError::Protocol(format!(
@@ -1449,7 +1353,6 @@ impl CartridgeHostRuntime {
                 }
 
                 // Record in List 1: OUTGOING_RIDS
-                tracing::debug!(target: "host_runtime", "PEER REQ from cartridge {}: cap={:?} rid={:?} -> storing in outgoing_rids", cartridge_idx, frame.cap, frame.id);
                 self.outgoing_rids.insert(frame.id.clone(), cartridge_idx);
 
                 // Track parent→child peer call mapping for cancel cascade
@@ -1499,9 +1402,6 @@ impl CartridgeHostRuntime {
             // When responding to direct requests, frames will NOT have XID
             // NO routing decisions - only one destination (relay)
             _ => {
-                if frame.frame_type == FrameType::End || frame.frame_type == FrameType::Err {
-                    tracing::debug!(target: "host_runtime", "Forwarding {:?} from cartridge {} to relay: xid={:?} rid={:?}", frame.frame_type, cartridge_idx, frame.routing_id, frame.id);
-                }
                 // Track max-seen seq for flow, clean up on terminal
                 if frame.is_flow_frame() {
                     let flow_key = FlowKey::from_frame(&frame);
@@ -1790,12 +1690,6 @@ impl CartridgeHostRuntime {
                     p.running && p.process.as_ref().and_then(|c| c.id()) == Some(pid)
                 });
                 if let Some(idx) = cartridge_idx {
-                    tracing::info!(
-                        target: "host_runtime",
-                        pid = pid,
-                        cartridge = %self.cartridges[idx].path.display(),
-                        "Killing cartridge by external command (memory pressure)"
-                    );
                     self.cartridges[idx].shutdown_reason = Some(ShutdownReason::OomKill);
                     if let Some(ref mut child) = self.cartridges[idx].process {
                         let _ = child.kill().await;
@@ -1874,14 +1768,6 @@ impl CartridgeHostRuntime {
                 let mut reader = tokio::io::BufReader::new(cartridge_stderr);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
-                    tracing::debug!(
-                        "[cartridge:{}] {}",
-                        cartridge_path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy(),
-                        line.trim()
-                    );
                     line.clear();
                 }
             });
@@ -1905,15 +1791,7 @@ impl CartridgeHostRuntime {
         )
         .await;
         let handshake_result = match hs_outcome {
-            Ok(Ok(result)) => {
-                tracing::info!(
-                    target: "host_runtime",
-                    cartridge = %self.cartridges[cartridge_idx].path.display(),
-                    elapsed_ms = hs_started_at.elapsed().as_millis() as u64,
-                    "[CartridgeHostRuntime] cartridge HELLO handshake succeeded"
-                );
-                result
-            }
+            Ok(Ok(result)) => result,
             Ok(Err(e)) => {
                 // HELLO failure = permanent removal. Binary is broken.
                 let msg = format!(
@@ -1988,14 +1866,7 @@ impl CartridgeHostRuntime {
         )
         .await;
         match id_outcome {
-            Ok(Ok(())) => {
-                tracing::info!(
-                    target: "host_runtime",
-                    cartridge = %self.cartridges[cartridge_idx].path.display(),
-                    elapsed_ms = id_started_at.elapsed().as_millis() as u64,
-                    "[CartridgeHostRuntime] cartridge identity verification succeeded"
-                );
-            }
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let msg = format!(
                     "Cartridge '{}' identity verification failed: {} — permanently removed",
@@ -2106,9 +1977,6 @@ impl CartridgeHostRuntime {
     /// Send a frame to a specific cartridge's stdin.
     fn send_to_cartridge(&self, cartridge_idx: usize, frame: Frame) -> Result<(), AsyncHostError> {
         let cartridge = &self.cartridges[cartridge_idx];
-        if frame.frame_type == FrameType::Req {
-            tracing::debug!(target: "host_runtime", "send_to_cartridge[{}]: {:?} cap={:?} xid={:?}", cartridge_idx, frame.frame_type, frame.cap, frame.routing_id);
-        }
         let writer_tx = cartridge.writer_tx.as_ref().ok_or_else(|| {
             AsyncHostError::Protocol(format!(
                 "Cartridge {} not running — no writer channel",

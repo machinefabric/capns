@@ -353,11 +353,6 @@ impl CartridgeManager {
                 match CartridgeJson::read_from_dir(&p, dev_slug) {
                     Ok(cj) => {
                         let entry_point = cj.resolve_entry_point(&p);
-                        tracing::info!(
-                            "[DevMode] Directory cartridge at {:?}: entry point {:?}",
-                            p,
-                            entry_point
-                        );
                         resolved.push(entry_point);
                     }
                     Err(crate::bifaci::cartridge_json::CartridgeJsonError::NotFound(_)) => {
@@ -418,13 +413,8 @@ impl CartridgeManager {
         fs::create_dir_all(&self.cartridge_dir)?;
 
         for (bin_path, _) in &self.dev_cartridges.clone() {
-            tracing::info!("[DevMode] Discovering manifest from {:?}...", bin_path);
             match self.discover_manifest(bin_path).await {
                 Ok(manifest) => {
-                    tracing::info!("[DevMode] Cartridge: {}", manifest.name);
-                    for cap in manifest.all_caps() {
-                        tracing::info!("[DevMode]   - {}", cap.urn);
-                    }
                     self.dev_cartridges.insert(bin_path.clone(), manifest);
                 }
                 Err(e) => {
@@ -735,14 +725,6 @@ impl CartridgeManager {
         // hard against the URL the publisher actually committed to.
         let download_url = package.url.as_str();
 
-        tracing::info!(
-            "Downloading cartridge {} v{} ({}) from {}",
-            cartridge_id,
-            cartridge_info.version,
-            platform,
-            download_url
-        );
-
         let response = reqwest::get(download_url).await.map_err(|e| {
             ExecutionError::CartridgeDownloadFailed(format!("Download failed: {}", e))
         })?;
@@ -824,14 +806,6 @@ impl CartridgeManager {
                 e
             ))
         })?;
-
-        tracing::info!(
-            "Installed cartridge {} v{} ({}) to {:?}",
-            cartridge_id,
-            cartridge_info.version,
-            platform,
-            version_dir
-        );
 
         Ok(binary_path)
     }
@@ -1251,18 +1225,10 @@ impl ExecutionContext {
             .unwrap_or(DEFAULT_ACTIVITY_TIMEOUT_SECS);
 
         let total_streams = edges.len() + extra_args.len();
-        tracing::debug!(target: "execute_fanin", "cap={} streams={} to={}", cap_urn, total_streams, to);
-        tracing::info!(
-            "Executing cap: {} ({} input stream(s) -> {})",
-            cap_urn,
-            total_streams,
-            to
-        );
 
         // Collect all input data upfront — fail fast if any source is missing
         let mut inputs: Vec<(&[u8], &str, bool)> = Vec::new();
         for edge in edges {
-            tracing::debug!(target: "execute_fanin", "Edge: {} -> {} (in_media={})", edge.from, edge.to, edge.in_media);
             let data = self
                 .node_data
                 .get(&edge.from)
@@ -1276,21 +1242,12 @@ impl ExecutionContext {
                 .unwrap_or(false);
             inputs.push((data.as_slice(), edge.in_media.as_str(), is_seq));
         }
-        tracing::debug!(target: "execute_fanin", "Collected {} inputs + {} extra args", inputs.len(), extra_args.len());
-
         // Open ONE cap invocation for all inputs
-        tracing::debug!(target: "execute_fanin", "Calling execute_cap...");
         let (request_id, mut rx) = self
             .switch
             .execute_cap(cap_urn, vec![], "application/cbor")
             .await
             .map_err(|e| ExecutionError::HostError(format!("execute_cap: {}", e)))?;
-        tracing::info!(
-            "[execute_fanin] dispatched cap='{}' request_id={:?}",
-            cap_urn,
-            request_id
-        );
-
         // Send each input as a separate named stream using shared stream I/O
         for (data, in_media, is_seq) in &inputs {
             super::stream_io::send_one_stream(
@@ -1321,14 +1278,11 @@ impl ExecutionContext {
         }
 
         // END — no more input streams
-        tracing::debug!(target: "execute_fanin", "Sending END frame...");
         let end_frame = Frame::end(request_id.clone(), None);
         self.switch
             .send_to_master(end_frame, None)
             .await
             .map_err(|e| ExecutionError::HostError(format!("END: {}", e)))?;
-        tracing::debug!(target: "execute_fanin", "END frame sent, waiting for response...");
-
         // Spawn a pump task that drains `read_from_masters_timeout` so peer
         // requests get routed while we wait for this cap's terminal frames.
         // Without the pump, cartridge→cartridge peer calls deadlock. The
@@ -1400,13 +1354,6 @@ impl ExecutionContext {
                 other => ExecutionError::HostError(format!("{}", other)),
             })?;
 
-        tracing::info!(
-            "[execute_fanin] got End for cap='{}' request_id={:?} response_len={}",
-            cap_urn,
-            request_id,
-            response_chunks.len()
-        );
-
         // Decode response using shared stream I/O (matches machfab engine behavior).
         // Unwraps CBOR transport wrappers so node_data always contains raw bytes.
         let decoded_items =
@@ -1414,11 +1361,6 @@ impl ExecutionContext {
                 .map_err(|e| ExecutionError::HostError(format!("{}", e)))?;
 
         if is_sequence == Some(true) {
-            tracing::debug!(
-                target: "execute_fanin",
-                "Sequence output ({}): {} items decoded",
-                edges[0].out_media, decoded_items.len()
-            );
             // Re-encode as CBOR sequence for storage: each unwrapped item
             // becomes a CBOR Bytes value so the sequence remains self-delimiting.
             let mut cbor_seq = Vec::new();
@@ -1455,27 +1397,16 @@ pub async fn execute_dag(
     progress_fn: Option<&CapProgressFn>,
     node_values: &HashMap<String, HashMap<String, serde_json::Value>>,
 ) -> Result<HashMap<String, NodeData>, ExecutionError> {
-    tracing::debug!(target: "execute_dag", "Starting...");
-
     // 1. Initialize cartridge manager and discover/download all needed cartridges
     let mut cartridge_manager =
         CartridgeManager::new(cartridge_dir, registry_url, channel, dev_binaries);
     cartridge_manager.init().await?;
-    tracing::debug!(target: "execute_dag", "Cartridge manager initialized");
 
     let cap_urns: Vec<&str> = graph.edges.iter().map(|e| e.cap_urn.as_str()).collect();
     let cartridges = cartridge_manager.resolve_cartridges(&cap_urns).await?;
-    tracing::debug!(target: "execute_dag", "Resolved {} cartridges", cartridges.len());
-
-    tracing::info!("Resolved {} unique cartridge binaries:", cartridges.len());
-    for (path, caps) in &cartridges {
-        tracing::info!("  {:?} -> {} caps", path, caps.len());
-    }
 
     // 2. Create execution context and add cartridge host as master
-    tracing::debug!(target: "execute_dag", "Creating execution context...");
     let mut ctx = ExecutionContext::new(cap_registry).await?;
-    tracing::debug!(target: "execute_dag", "Adding cartridge host...");
     // Channel is discovered per-cartridge from each cartridge.json
     // inside add_cartridge_host. Dev binaries (no cartridge.json on
     // disk) fall back to the scope-level `channel` here — that's
@@ -1483,15 +1414,12 @@ pub async fn execute_dag(
     // host and the manager agree on the dev-binary's channel
     // namespace.
     ctx.add_cartridge_host(cartridges, channel).await?;
-    tracing::debug!(target: "execute_dag", "Cartridge host added");
 
     // 3. Resolve initial inputs to raw bytes and set on nodes
     for (node, data) in initial_inputs {
         let bytes = data.into_bytes().await?;
         ctx.set_node_data(node, bytes);
     }
-    tracing::debug!(target: "execute_dag", "Initial inputs set");
-
     // 4. Group edges by (to, cap_urn) to detect fan-in, then sort groups topologically.
     //    Fan-in groups are executed as ONE cap invocation with multiple input streams —
     //    the handler decides how to handle each stream as it arrives.
@@ -1499,9 +1427,6 @@ pub async fn execute_dag(
     let group_order = topological_sort_groups(&groups)
         .map_err(|e| ExecutionError::HostError(format!("Topological sort failed: {}", e)))?;
     let n_groups = group_order.len();
-    tracing::debug!(target: "execute_dag", "{} edge groups to execute", n_groups);
-
-    tracing::info!("Executing {} cap group(s) in topological order", n_groups);
 
     // Pre-compute group boundaries for deterministic progress subdivision
     let group_boundaries: Vec<f32> = if n_groups > 0 {
@@ -1512,8 +1437,6 @@ pub async fn execute_dag(
 
     // Execute groups in topological order
     for (i, idx) in group_order.iter().enumerate() {
-        tracing::debug!(target: "execute_dag", "Executing group {}/{}: cap={}", i+1, n_groups, groups[*idx].edges[0].cap_urn);
-
         // Per-group progress subdivision
         let group_pfn: Option<CapProgressFn> = progress_fn.map(|parent| {
             let base = group_boundaries[i];
@@ -1556,10 +1479,7 @@ pub async fn execute_dag(
             );
         }
 
-        tracing::debug!(target: "execute_dag", "Group {} complete", i+1);
     }
-
-    tracing::info!("\nExecution complete!\n");
 
     // Explicitly shut down infrastructure
     let node_data = ctx.shutdown();

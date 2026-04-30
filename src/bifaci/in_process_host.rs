@@ -613,12 +613,6 @@ impl InProcessCartridgeHost {
 
             while let Some(mut frame) = write_rx.recv().await {
                 seq_assigner.assign(&mut frame);
-                tracing::debug!(
-                    "[InProcessCartridgeHost] writer: type={:?} id={} seq={}",
-                    frame.frame_type,
-                    frame.id,
-                    frame.seq
-                );
                 if let Err(e) = writer.write(&frame).await {
                     tracing::error!("[InProcessCartridgeHost] writer error: {}", e);
                     break;
@@ -688,10 +682,6 @@ impl InProcessCartridgeHost {
                     let handler: Arc<dyn FrameHandler> = if is_identity {
                         Arc::clone(&identity_handler)
                     } else {
-                        tracing::debug!(
-                            "[InProcessCartridgeHost] searching cap_table with {} entries",
-                            cap_table.len()
-                        );
                         match Self::find_handler_for_cap(&cap_table, &cap_urn) {
                             Some(idx) => {
                                 Arc::clone(&handlers[idx].handler)
@@ -748,11 +738,6 @@ impl InProcessCartridgeHost {
                     // Try peer response (response to handler's peer call)
                     let pending = pending_peer_requests.lock().unwrap();
                     if let Some(pr) = pending.get(&frame.id) {
-                        tracing::debug!(
-                            "[InProcessCartridgeHost] routing {:?} to peer_response rid={:?}",
-                            frame.frame_type,
-                            frame.id
-                        );
                         let _ = pr.sender.send(frame);
                     } else {
                         tracing::warn!("[InProcessCartridgeHost] {:?} rid={:?} not found in active or pending_peer_requests", frame.frame_type, frame.id);

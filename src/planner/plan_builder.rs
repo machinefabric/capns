@@ -129,24 +129,6 @@ impl MachinePlanBuilder {
         let source_spec_str = path.source_spec.to_string();
         let target_spec_str = path.target_spec.to_string();
 
-        // Log all incoming path steps for debugging plan construction
-        tracing::info!(
-            "build_plan_from_path: '{}' with {} steps, {} → {}",
-            name,
-            path.steps.len(),
-            source_spec_str,
-            target_spec_str
-        );
-        for (i, step) in path.steps.iter().enumerate() {
-            tracing::info!(
-                "  step[{}]: type={} from={} to={}",
-                i,
-                step.title(),
-                step.from_spec,
-                step.to_spec
-            );
-        }
-
         let input_slot_id = "input_slot";
         plan.add_node(MachineNode::input_slot(
             input_slot_id,
@@ -233,14 +215,6 @@ impl MachinePlanBuilder {
                     plan.add_node(node);
                     plan.add_edge(MachinePlanEdge::direct(&prev_node_id, &node_id));
 
-                    tracing::info!(
-                        "  plan_builder: Cap step[{}] '{}' inside_body={} prev_node_id='{}'",
-                        i,
-                        node_id,
-                        is_inside_body,
-                        prev_node_id
-                    );
-
                     // Track body entry/exit for ForEach
                     if is_inside_body {
                         if body_entry.is_none() {
@@ -269,13 +243,6 @@ impl MachinePlanBuilder {
                         } else {
                             format!("step_{}", outer_foreach_idx - 1)
                         };
-
-                        tracing::info!(
-                            "  plan_builder: nested ForEach at step[{}] while inside ForEach '{}' at step[{}]: \
-                             finalizing outer ForEach with body_entry='{}' (explicit={}) body_exit='{}'",
-                            i, outer_foreach_node_id, outer_foreach_idx,
-                            outer_entry, has_outer_body_entry, outer_exit
-                        );
 
                         if !has_outer_body_entry {
                             return Err(PlannerError::InvalidPath(format!(
@@ -316,11 +283,6 @@ impl MachinePlanBuilder {
                         prev_node_id = outer_exit;
                     }
 
-                    tracing::info!(
-                        "  plan_builder: ForEach at step[{}], prev_node_id='{}'",
-                        i,
-                        prev_node_id
-                    );
                     inside_foreach_body = Some((i, node_id.clone()));
                     body_entry = None;
                     body_exit = None;
@@ -360,12 +322,6 @@ impl MachinePlanBuilder {
                         // No ForEach body — this is a simple cardinality transition.
                         // At execution time the data flows unchanged, only the type
                         // annotation changes from scalar to list.
-                        tracing::info!(
-                            "  plan_builder: standalone Collect at step[{}], prev_node_id='{}'",
-                            i,
-                            prev_node_id
-                        );
-
                         let mut collect_node =
                             MachineNode::collect(&node_id, vec![prev_node_id.clone()]);
                         // Set output_media_urn so plan_converter can register it
@@ -399,13 +355,6 @@ impl MachinePlanBuilder {
                 format!("step_{}", foreach_idx - 1)
             };
 
-            tracing::info!(
-                "  plan_builder: unclosed ForEach '{}' at step[{}]: \
-                 foreach_input='{}' body_entry='{}' (explicit={}) body_exit='{}' (explicit={}) prev_node_id='{}'",
-                foreach_node_id, foreach_idx, foreach_input,
-                entry, has_body_entry, exit, has_body_exit, prev_node_id
-            );
-
             // If the ForEach body has no Cap nodes, this is a terminal unwrap:
             // the path walked through a ForEach edge to reach the scalar target type,
             // but there's nothing to execute per-item. This happens when a prior ForEach
@@ -415,13 +364,6 @@ impl MachinePlanBuilder {
             // target is the item." We skip it — the executor handles body list output via
             // the unclosed ForEach mechanism.
             if !has_body_entry {
-                tracing::info!(
-                    "  plan_builder: skipping terminal ForEach '{}' at step[{}] (no body caps). \
-                     This is a terminal unwrap — the preceding cap's list output reaches \
-                     the scalar target via this ForEach edge.",
-                    foreach_node_id,
-                    foreach_idx
-                );
                 // Don't create a ForEach node. prev_node_id stays as is.
                 // The plan's output will connect to the node before this ForEach.
             } else {
@@ -480,13 +422,6 @@ impl MachinePlanBuilder {
                 e
             )));
         }
-
-        tracing::info!(
-            "build_plan_from_path: successfully built plan '{}' with {} nodes, {} edges",
-            plan.name,
-            plan.nodes.len(),
-            plan.edges.len()
-        );
 
         Ok(plan)
     }

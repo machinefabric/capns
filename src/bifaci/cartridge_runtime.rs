@@ -291,32 +291,13 @@ impl PeerResponse {
                 PeerResponseItem::Data(Ok(value), _meta) => {
                     chunk_count += 1;
                     match value {
-                        ciborium::Value::Bytes(b) => {
-                            tracing::info!(
-                                "[collect_bytes] chunk {} Bytes({} bytes)",
-                                chunk_count,
-                                b.len()
-                            );
-                            result.extend(b);
-                        }
-                        ciborium::Value::Text(s) => {
-                            tracing::info!(
-                                "[collect_bytes] chunk {} Text({} bytes)",
-                                chunk_count,
-                                s.len()
-                            );
-                            result.extend(s.into_bytes());
-                        }
+                        ciborium::Value::Bytes(b) => result.extend(b),
+                        ciborium::Value::Text(s) => result.extend(s.into_bytes()),
                         other => {
                             let mut buf = Vec::new();
                             ciborium::into_writer(&other, &mut buf).map_err(|e| {
                                 StreamError::Decode(format!("Failed to encode CBOR: {}", e))
                             })?;
-                            tracing::info!(
-                                "[collect_bytes] chunk {} Other({} bytes)",
-                                chunk_count,
-                                buf.len()
-                            );
                             result.extend(buf);
                         }
                     }
@@ -325,12 +306,6 @@ impl PeerResponse {
                 PeerResponseItem::Log(_) => {} // Discard LOG frames
             }
         }
-        tracing::info!(
-            "[collect_bytes] DONE: {} chunks, {} total bytes, preview={:?}",
-            chunk_count,
-            result.len(),
-            String::from_utf8_lossy(&result[..result.len().min(100)])
-        );
         Ok(result)
     }
 
@@ -972,10 +947,6 @@ impl PeerCall {
     /// decides how to react to each (e.g., forward progress, accumulate data).
     pub async fn finish(mut self) -> Result<PeerResponse, RuntimeError> {
         // Send END frame for the peer request
-        tracing::info!(
-            "[PeerCall] finish: sending END for peer_rid={:?}",
-            self.request_id
-        );
         let end_frame = Frame::end(self.request_id.clone(), None);
         self.sender.send(&end_frame)?;
 
@@ -988,10 +959,6 @@ impl PeerCall {
         // Start demux — returns immediately so LOG frames can be consumed
         // before data arrives (critical for keeping activity timer alive)
         let peer_response = demux_single_stream(response_rx);
-        tracing::info!(
-            "[PeerCall] finish: demux started for peer_rid={:?}",
-            self.request_id
-        );
 
         Ok(peer_response)
     }
@@ -1990,13 +1957,6 @@ fn replace_arg_value(
 impl PeerInvoker for PeerInvokerImpl {
     fn call(&self, cap_urn: &str) -> Result<PeerCall, RuntimeError> {
         let request_id = MessageId::new_uuid();
-        tracing::info!(
-            "[CartridgeRuntime] PEER_CALL: cap='{}' peer_rid={:?} origin_rid={:?}",
-            cap_urn,
-            request_id,
-            self.origin_request_id
-        );
-
         // Create tokio channel for response frames (unbounded to avoid backpressure issues)
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
 
@@ -2631,11 +2591,6 @@ fn spawn_handler(
     let done_tx = handler_done_tx.clone();
 
     tokio::spawn(async move {
-        tracing::info!(
-            "[CartridgeRuntime] handler started: cap='{}' rid={:?}",
-            cap_urn,
-            request_id
-        );
         let fp_ctx = FilePathContext::new(&cap_urn, manifest_clone).ok();
         let input_package = demux_multi_stream(raw_rx, fp_ctx);
 
@@ -2669,11 +2624,6 @@ fn spawn_handler(
 
         match result {
             Ok(()) => {
-                tracing::info!(
-                    "[CartridgeRuntime] handler completed OK: cap='{}' rid={:?}",
-                    cap_urn,
-                    request_id
-                );
                 let mut end_frame = Frame::end_ok(request_id.clone(), None);
                 end_frame.routing_id = routing_id;
                 let _ = sender.send(&end_frame);
@@ -3763,13 +3713,6 @@ impl CartridgeRuntime {
             while !request_queue.is_empty() && (cap == 0 || running_handler_count < cap) {
                 let queued = request_queue.pop_front().unwrap();
 
-                tracing::info!(
-                    "[CartridgeRuntime] dequeuing request: cap='{}' rid={:?} remaining_queue={}",
-                    queued.cap_urn,
-                    queued.request_id,
-                    request_queue.len()
-                );
-
                 // Notify the caller that this request has been dequeued and is
                 // starting. The "dequeued" level is the counterpart to "queued":
                 // on the pipeline side, ActivityTimer unpauses and resets the
@@ -3813,7 +3756,6 @@ impl CartridgeRuntime {
                         let mut err = Frame::err(rid, "CANCELLED", "Request cancelled");
                         err.routing_id = routing_id;
                         let _ = output_tx.send(err);
-                        tracing::info!("[CartridgeRuntime] Cancelled handler finished, sent deferred ERR");
                     } else {
                         handler_routing_ids.remove(&rid);
                     }
@@ -3833,7 +3775,6 @@ impl CartridgeRuntime {
                 FrameType::Req => {
                     // Extract routing_id (XID) FIRST — all error paths must include it
                     let routing_id = frame.routing_id.clone();
-                    tracing::debug!(target: "cartridge_runtime", "Received REQ: cap={:?} xid={:?} rid={:?}", frame.cap, routing_id, frame.id);
 
                     let cap_urn = match frame.cap.as_ref() {
                         Some(urn) => urn.clone(),
@@ -3896,13 +3837,6 @@ impl CartridgeRuntime {
                         log_frame.routing_id = routing_id.clone();
                         let _ = output_tx.send(log_frame);
 
-                        tracing::info!(
-                            "[CartridgeRuntime] request queued: cap='{}' rid={:?} queue_pos={}",
-                            cap_urn,
-                            request_id,
-                            queue_pos
-                        );
-
                         request_queue.push_back(QueuedRequest {
                             factory,
                             cap_urn,
@@ -3939,7 +3873,6 @@ impl CartridgeRuntime {
                 | FrameType::Log => {
                     // Try active request first
                     if let Some(ar) = active_requests.get(&frame.id) {
-                        tracing::debug!(target: "cartridge_runtime", "Routing {:?} to active_request rid={:?}", frame.frame_type, frame.id);
                         if ar.raw_tx.send(frame.clone()).is_err() {
                             active_requests.remove(&frame.id);
                         }
@@ -3949,7 +3882,6 @@ impl CartridgeRuntime {
                     // Try peer response
                     let peer = pending_peer_requests.lock().unwrap();
                     if let Some(pr) = peer.get(&frame.id) {
-                        tracing::debug!(target: "cartridge_runtime", "Routing {:?} to peer_response rid={:?}", frame.frame_type, frame.id);
                         let _ = pr.sender.send(frame.clone());
                     } else {
                         tracing::warn!("[CartridgeRuntime] {:?} rid={:?} not found in active_requests or pending_peer_requests", frame.frame_type, frame.id);
@@ -3960,10 +3892,6 @@ impl CartridgeRuntime {
                 FrameType::End => {
                     // Try active request first -- send END then remove
                     if let Some(ar) = active_requests.remove(&frame.id) {
-                        tracing::info!(
-                            "[CartridgeRuntime] END routed to active_request rid={:?}",
-                            frame.id
-                        );
                         let _ = ar.raw_tx.send(frame.clone());
                         // raw_tx dropped here → Demux sees channel close after END
                         continue;
@@ -3972,11 +3900,6 @@ impl CartridgeRuntime {
                     // Try peer response — send END then remove
                     let mut peer = pending_peer_requests.lock().unwrap();
                     if let Some(pr) = peer.remove(&frame.id) {
-                        tracing::info!(
-                            "[CartridgeRuntime] PEER_END received: peer_rid={:?} origin_rid={:?}",
-                            frame.id,
-                            pr.origin_request_id
-                        );
                         let _ = pr.sender.send(frame.clone());
                     } else {
                         tracing::warn!("[CartridgeRuntime] END for unknown rid={:?} (not in active_requests or pending_peer_requests)", frame.id);
@@ -4007,18 +3930,9 @@ impl CartridgeRuntime {
 
                 FrameType::Cancel => {
                     let target_rid = frame.id.clone();
-                    tracing::info!(
-                        "[CartridgeRuntime] Cancel received: rid={:?} force_kill={:?}",
-                        target_rid,
-                        frame.force_kill
-                    );
 
                     // Skip if already cancelled (prevent duplicate ERR)
                     if cancelled_requests.contains(&target_rid) {
-                        tracing::debug!(
-                            "[CartridgeRuntime] Cancel for already-cancelled rid={:?} — ignoring",
-                            target_rid
-                        );
                         continue;
                     }
 
@@ -4036,10 +3950,6 @@ impl CartridgeRuntime {
                         );
                         err.routing_id = queued.routing_id;
                         let _ = output_tx.send(err);
-                        tracing::info!(
-                            "[CartridgeRuntime] Cancelled queued request rid={:?}",
-                            target_rid
-                        );
                         continue;
                     }
 
@@ -4074,16 +3984,10 @@ impl CartridgeRuntime {
                                 peer.remove(peer_rid);
                             }
                         }
-
-                        tracing::info!("[CartridgeRuntime] Cancelled in-flight request (cooperative): rid={:?}", target_rid);
                         continue;
                     }
 
                     // Case 3: Unknown RID — silently ignore
-                    tracing::debug!(
-                        "[CartridgeRuntime] Cancel for unknown rid={:?} — ignoring",
-                        target_rid
-                    );
                 }
 
                 FrameType::Heartbeat => {

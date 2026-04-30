@@ -344,12 +344,6 @@ impl LiveCapFab {
             self.add_cap(cap);
         }
 
-        tracing::debug!(
-            edge_count = self.edges.len(),
-            node_count = self.nodes.len(),
-            "[LiveCapFab] Synced from {} caps",
-            caps.len()
-        );
     }
 
     /// Rebuild the graph from a list of cap URN strings using the registry.
@@ -376,11 +370,6 @@ impl LiveCapFab {
                 return;
             }
         };
-
-        tracing::info!(
-            registry_cap_count = all_caps.len(),
-            "[LiveCapFab] Got caps from registry"
-        );
 
         let mut matched_count = 0;
         let mut identity_count = 0;
@@ -436,15 +425,7 @@ impl LiveCapFab {
             }
         }
 
-        tracing::info!(
-            edge_count = self.edges.len(),
-            node_count = self.nodes.len(),
-            matched_count,
-            identity_count,
-            rejected_count,
-            total_urns = cap_urns.len(),
-            "[LiveCapFab] Synced from cap URNs"
-        );
+        let _ = (matched_count, identity_count, rejected_count);
     }
 
     /// Add a capability as an edge in the graph.
@@ -763,30 +744,7 @@ impl LiveCapFab {
             .iter()
             .any(|node| node.is_equivalent(target).unwrap_or(false));
         if !target_is_registered {
-            tracing::info!(
-                "find_paths_to_exact_target: target={} is not a registered node — returning 0 paths without exploration",
-                target
-            );
             return Vec::new();
-        }
-
-        // Log outgoing edges from source to understand branching
-        let source_edges = self.get_outgoing_edges(source, is_sequence);
-        tracing::info!(
-            "find_paths_to_exact_target: source={} target={} is_sequence={} max_depth={} max_paths={} source_outgoing={}",
-            source, target, is_sequence, max_depth, max_paths, source_edges.len()
-        );
-        for (edge, _) in &source_edges {
-            tracing::info!(
-                "  outgoing: {} -> {} ({})",
-                edge.from_spec,
-                edge.to_spec,
-                match &edge.edge_type {
-                    LiveMachinePlanEdgeType::Cap { cap_title, .. } => cap_title.as_str(),
-                    LiveMachinePlanEdgeType::ForEach => "ForEach",
-                    LiveMachinePlanEdgeType::Collect => "Collect",
-                }
-            );
         }
 
         // Iterative deepening: find ALL paths at depth N before any at depth N+1.
@@ -819,16 +777,6 @@ impl LiveCapFab {
             );
 
             total_nodes_explored += nodes_this_depth;
-            let new_paths = all_paths.len() - paths_before;
-            if new_paths > 0 || nodes_this_depth > 1000 {
-                tracing::info!(
-                    "  IDDFS depth={}: explored {} nodes, found {} new paths (total {})",
-                    depth_limit,
-                    nodes_this_depth,
-                    new_paths,
-                    all_paths.len()
-                );
-            }
 
             // Safety: abort if exploring too many nodes (combinatorial explosion)
             if total_nodes_explored > 100_000 {
@@ -841,11 +789,6 @@ impl LiveCapFab {
                 break;
             }
         }
-
-        tracing::info!(
-            "find_paths_to_exact_target: found {} paths, explored {} total nodes (max_paths was {})",
-            all_paths.len(), total_nodes_explored, max_paths
-        );
 
         // Sort paths deterministically
         all_paths.sort_by(|a, b| Self::compare_paths(a, b));
@@ -878,10 +821,6 @@ impl LiveCapFab {
             .iter()
             .any(|node| node.is_equivalent(target).unwrap_or(false));
         if !target_is_registered {
-            tracing::info!(
-                "find_paths_streaming: target={} is not a registered node — returning 0 paths without exploration",
-                target
-            );
             return Vec::new();
         }
 
