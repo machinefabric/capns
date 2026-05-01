@@ -634,16 +634,42 @@ pub struct CartridgeHostRuntime {
     cap_table: Vec<(String, usize)>,
     /// List 1: OUTGOING_RIDS - tracks peer requests sent by cartridges (RID → cartridge_idx).
     /// Used only to detect same-cartridge peer calls (not for routing).
+    /// Bounded by `ROUTING_TABLE_HARD_CAP`; the GC evicts the
+    /// least-recently-touched entries when the table exceeds the
+    /// soft watermark.
     outgoing_rids: HashMap<MessageId, usize>,
+    /// Parallel touched-at clock for `outgoing_rids` (key set
+    /// kept in sync). Read by the GC to pick eviction victims.
+    outgoing_rids_touched: HashMap<MessageId, u64>,
     /// List 2: INCOMING_RXIDS - tracks incoming requests from relay ((XID, RID) → cartridge_idx).
     /// Continuations for these requests are routed by this table.
+    /// Same GC discipline as `outgoing_rids`.
     incoming_rxids: HashMap<(MessageId, MessageId), usize>,
+    incoming_rxids_touched: HashMap<(MessageId, MessageId), u64>,
     /// Tracks which incoming request spawned which outgoing peer RIDs.
     /// Maps parent (xid, rid) → list of child peer RIDs. Used for cancel cascade.
+    /// Same GC discipline; eviction is keyed off the parent's
+    /// touched-at, not the children's.
     incoming_to_peer_rids: HashMap<(MessageId, MessageId), Vec<MessageId>>,
+    incoming_to_peer_rids_touched: HashMap<(MessageId, MessageId), u64>,
     /// Max-seen seq per flow for cartridge-originated frames.
     /// Used to set seq on host-generated ERR frames (max_seen + 1).
+    /// Same GC discipline.
     outgoing_max_seq: HashMap<FlowKey, u64>,
+    outgoing_max_seq_touched: HashMap<FlowKey, u64>,
+    /// Monotonic counter that the touch-helpers increment to stamp
+    /// each entry's age. Avoids a `std::time::Instant`-per-entry
+    /// (Instant is 16 bytes vs. u64's 8) and side-steps clock
+    /// quirks (CLOCK_MONOTONIC_RAW etc.) — we only need a strict
+    /// ordering, not wall-clock semantics, so a simple counter
+    /// is the right primitive. Wraps after 2^64 inserts; in
+    /// practice that means never.
+    routing_touch_seq: u64,
+    /// Monotonic count of GC passes that have run on this host.
+    /// Logged with each pass and exposed for tests.
+    routing_gc_runs_total: u64,
+    /// Monotonic count of entries evicted across all GC passes.
+    routing_gc_evicted_total: u64,
     /// Aggregate capabilities (serialized JSON manifest of all cartridge caps).
     capabilities: Vec<u8>,
     /// Channel sender for cartridge events (shared with reader tasks).
@@ -663,6 +689,187 @@ pub struct CartridgeHostRuntime {
 }
 
 impl CartridgeHostRuntime {
+    /// Generous cap on the per-host routing tables. The
+    /// "intentionally leaked until cartridge death" semantics on
+    /// `incoming_rxids` (and the parallel structure on the other
+    /// three tables) means a cartridge that creates many distinct
+    /// request IDs without dying will accumulate entries forever.
+    /// In normal use we observed ~568 entries across a long
+    /// session (the Swift mirror's measurement); 8192 gives ~14×
+    /// headroom before the GC fires, which is enough to cover
+    /// bursts (PDF disbind→ForEach×N→LLM-call patterns) while
+    /// still catching a runaway producer well before it grows
+    /// memory by megabytes.
+    pub(crate) const ROUTING_TABLE_HARD_CAP: usize = 8192;
+    /// Soft watermark — when an insertion brings a table at or
+    /// above this size, the GC fires and evicts the oldest 25 %
+    /// by `routing_touch_seq`. Set to ~80 % of `HARD_CAP` so the
+    /// GC runs ahead of the cap rather than spinning right at it.
+    pub(crate) const ROUTING_TABLE_SOFT_WATERMARK: usize = 6553;
+    /// Fraction of entries to drop in one GC pass. Lower values
+    /// re-fire the GC more often (more log noise, more lock
+    /// churn); higher values discard entries that may still be
+    /// live (more likely to drop a continuation frame). 25 % is a
+    /// balance — matches the watermark distance so two consecutive
+    /// GC passes can carry the table back down to half-full if
+    /// traffic briefly stays above the watermark.
+    pub(crate) const ROUTING_TABLE_GC_EVICTION_FRACTION: f64 = 0.25;
+
+    /// Stamp `key` in `incoming_rxids_touched` with a fresh
+    /// touch sequence. Called both on insert and on every read
+    /// that hits the entry, so a still-streaming flow stays
+    /// "fresh" for the GC.
+    fn touch_incoming_rxid(&mut self, key: &(MessageId, MessageId)) {
+        self.routing_touch_seq = self.routing_touch_seq.wrapping_add(1);
+        self.incoming_rxids_touched
+            .insert(key.clone(), self.routing_touch_seq);
+    }
+
+    fn touch_outgoing_rid(&mut self, rid: &MessageId) {
+        self.routing_touch_seq = self.routing_touch_seq.wrapping_add(1);
+        self.outgoing_rids_touched
+            .insert(rid.clone(), self.routing_touch_seq);
+    }
+
+    fn touch_incoming_to_peer_rids(&mut self, key: &(MessageId, MessageId)) {
+        self.routing_touch_seq = self.routing_touch_seq.wrapping_add(1);
+        self.incoming_to_peer_rids_touched
+            .insert(key.clone(), self.routing_touch_seq);
+    }
+
+    fn touch_outgoing_max_seq(&mut self, key: &FlowKey) {
+        self.routing_touch_seq = self.routing_touch_seq.wrapping_add(1);
+        self.outgoing_max_seq_touched
+            .insert(key.clone(), self.routing_touch_seq);
+    }
+
+    /// Run the GC if any routing table has crossed its soft
+    /// watermark. Logs at `tracing::error` level — this is
+    /// unusual enough that we want it visible by default in
+    /// `tracing` filters, even when the user hasn't enabled
+    /// info-level capture. Each table is GC'd independently
+    /// (their key sets don't overlap so there's no benefit to
+    /// ganging them).
+    fn gc_routing_tables_if_needed(&mut self) {
+        if self.incoming_rxids.len() >= Self::ROUTING_TABLE_SOFT_WATERMARK {
+            Self::gc_routing_table(
+                "incoming_rxids",
+                &mut self.incoming_rxids,
+                &mut self.incoming_rxids_touched,
+                &mut self.routing_gc_runs_total,
+                &mut self.routing_gc_evicted_total,
+            );
+        }
+        if self.outgoing_rids.len() >= Self::ROUTING_TABLE_SOFT_WATERMARK {
+            Self::gc_routing_table(
+                "outgoing_rids",
+                &mut self.outgoing_rids,
+                &mut self.outgoing_rids_touched,
+                &mut self.routing_gc_runs_total,
+                &mut self.routing_gc_evicted_total,
+            );
+        }
+        if self.incoming_to_peer_rids.len() >= Self::ROUTING_TABLE_SOFT_WATERMARK {
+            Self::gc_routing_table(
+                "incoming_to_peer_rids",
+                &mut self.incoming_to_peer_rids,
+                &mut self.incoming_to_peer_rids_touched,
+                &mut self.routing_gc_runs_total,
+                &mut self.routing_gc_evicted_total,
+            );
+        }
+        if self.outgoing_max_seq.len() >= Self::ROUTING_TABLE_SOFT_WATERMARK {
+            Self::gc_routing_table(
+                "outgoing_max_seq",
+                &mut self.outgoing_max_seq,
+                &mut self.outgoing_max_seq_touched,
+                &mut self.routing_gc_runs_total,
+                &mut self.routing_gc_evicted_total,
+            );
+        }
+    }
+
+    /// Generic GC pass: drop the oldest
+    /// `ROUTING_TABLE_GC_EVICTION_FRACTION` of `primary` (and its
+    /// matching `touched` entries) by touch-sequence ascending.
+    /// Keys missing from `touched` are treated as oldest (sequence
+    /// = 0) — they're either pre-touch state or a buggy
+    /// non-touched insert; either way evicting them is safer than
+    /// letting them linger.
+    fn gc_routing_table<K>(
+        table_name: &'static str,
+        primary: &mut HashMap<K, impl Sized>,
+        touched: &mut HashMap<K, u64>,
+        runs_total: &mut u64,
+        evicted_total: &mut u64,
+    ) where
+        K: std::hash::Hash + Eq + Clone,
+    {
+        let before_count = primary.len();
+        let evict_count = std::cmp::max(
+            1,
+            (before_count as f64 * Self::ROUTING_TABLE_GC_EVICTION_FRACTION) as usize,
+        );
+
+        // Collect (key, touched_at) pairs and pick the oldest N.
+        // O(n log n) sort over n = before_count; with n bounded
+        // at ~hard cap, this is microseconds.
+        let mut candidates: Vec<(K, u64)> = primary
+            .keys()
+            .map(|k| (k.clone(), touched.get(k).copied().unwrap_or(0)))
+            .collect();
+        candidates.sort_by_key(|(_, t)| *t);
+
+        for (key, _) in candidates.iter().take(evict_count) {
+            primary.remove(key);
+            touched.remove(key);
+        }
+        *runs_total = runs_total.wrapping_add(1);
+        *evicted_total = evicted_total.wrapping_add(evict_count as u64);
+
+        tracing::error!(
+            target: "cartridge_host_runtime",
+            table = table_name,
+            before = before_count,
+            evicted = evict_count,
+            after = primary.len(),
+            total_runs = *runs_total,
+            total_evicted = *evicted_total,
+            hard_cap = Self::ROUTING_TABLE_HARD_CAP,
+            "[routing-gc] least-recently-touched entries dropped to keep the table under cap. \
+             If this fires repeatedly, a cartridge or relay path is producing request IDs \
+             without ever terminating their flows."
+        );
+
+        // Secondary "hard cap" pass: if still above the hard cap
+        // (extreme runaway), evict more aggressively until we're
+        // back under the soft watermark. Bounded loop — runs at
+        // most a couple of iterations even at pathological growth.
+        while primary.len() >= Self::ROUTING_TABLE_HARD_CAP {
+            let extra_evict = std::cmp::max(
+                1,
+                primary.len() - Self::ROUTING_TABLE_SOFT_WATERMARK,
+            );
+            let mut extras: Vec<(K, u64)> = primary
+                .keys()
+                .map(|k| (k.clone(), touched.get(k).copied().unwrap_or(0)))
+                .collect();
+            extras.sort_by_key(|(_, t)| *t);
+            for (key, _) in extras.iter().take(extra_evict) {
+                primary.remove(key);
+                touched.remove(key);
+            }
+            *evicted_total = evicted_total.wrapping_add(extra_evict as u64);
+            tracing::error!(
+                target: "cartridge_host_runtime",
+                table = table_name,
+                evicted = extra_evict,
+                new_size = primary.len(),
+                "[routing-gc] HARD CAP secondary pass"
+            );
+        }
+    }
+
     /// Create a new cartridge host runtime.
     ///
     /// After creation, register cartridges with `register_cartridge()` or
@@ -674,9 +881,16 @@ impl CartridgeHostRuntime {
             cartridges: Vec::new(),
             cap_table: Vec::new(),
             outgoing_rids: HashMap::new(),
+            outgoing_rids_touched: HashMap::new(),
             incoming_rxids: HashMap::new(),
+            incoming_rxids_touched: HashMap::new(),
             incoming_to_peer_rids: HashMap::new(),
+            incoming_to_peer_rids_touched: HashMap::new(),
             outgoing_max_seq: HashMap::new(),
+            outgoing_max_seq_touched: HashMap::new(),
+            routing_touch_seq: 0,
+            routing_gc_runs_total: 0,
+            routing_gc_evicted_total: 0,
             capabilities: Vec::new(),
             event_tx,
             event_rx: Some(event_rx),
@@ -1119,8 +1333,11 @@ impl CartridgeHostRuntime {
                 }
 
                 // Record in List 2: INCOMING_RXIDS (XID, RID) → cartridge_idx
+                let rxid_key = (xid.clone(), frame.id.clone());
                 self.incoming_rxids
-                    .insert((xid.clone(), frame.id.clone()), cartridge_idx);
+                    .insert(rxid_key.clone(), cartridge_idx);
+                self.touch_incoming_rxid(&rxid_key);
+                self.gc_routing_tables_if_needed();
 
                 // Forward to cartridge WITH XID
                 self.send_to_cartridge(cartridge_idx, frame)
@@ -1159,8 +1376,13 @@ impl CartridgeHostRuntime {
                 let (cartridge_idx, routed_via_incoming) = if let Some(&idx) =
                     self.incoming_rxids.get(&key)
                 {
+                    // Hit on incoming side — touch so the GC
+                    // doesn't evict an entry that's still seeing
+                    // continuations.
+                    self.touch_incoming_rxid(&key);
                     (idx, true)
                 } else if let Some(&idx) = self.outgoing_rids.get(&frame.id) {
+                    self.touch_outgoing_rid(&frame.id);
                     (idx, false)
                 } else {
                     tracing::warn!(
@@ -1202,7 +1424,9 @@ impl CartridgeHostRuntime {
                     let _ = outbound_tx.send(err);
 
                     self.outgoing_rids.remove(&frame.id);
+                    self.outgoing_rids_touched.remove(&frame.id);
                     self.incoming_rxids.remove(&key);
+                    self.incoming_rxids_touched.remove(&key);
                     return Ok(());
                 }
 
@@ -1212,9 +1436,11 @@ impl CartridgeHostRuntime {
                 if is_terminal {
                     if routed_via_incoming {
                         self.incoming_rxids.remove(&key);
+                        self.incoming_rxids_touched.remove(&key);
                     } else {
                         // Peer response completed - clean up outgoing_rids
                         self.outgoing_rids.remove(&frame.id);
+                        self.outgoing_rids_touched.remove(&frame.id);
                     }
                 }
 
@@ -1232,6 +1458,8 @@ impl CartridgeHostRuntime {
                 // LOG frames from peer responses — route back to the cartridge
                 // that made the peer request, identified by outgoing_rids[RID].
                 if let Some(&cartridge_idx) = self.outgoing_rids.get(&frame.id) {
+                    let rid_for_touch = frame.id.clone();
+                    self.touch_outgoing_rid(&rid_for_touch);
                     let _ = self.send_to_cartridge(cartridge_idx, frame);
                 }
                 // If not a peer response LOG, ignore silently (stale routing)
@@ -1247,6 +1475,11 @@ impl CartridgeHostRuntime {
                 let force_kill = frame.force_kill.unwrap_or(false);
 
                 if let Some(&cartridge_idx) = self.incoming_rxids.get(&key) {
+                    // Touch on cancel-route — the cancel itself is
+                    // routing activity for this entry, and the
+                    // cooperative branch below may produce more
+                    // frames before the cartridge actually exits.
+                    self.touch_incoming_rxid(&key);
                     if force_kill {
                         // Force kill: set shutdown reason and kill the process
                         self.cartridges[cartridge_idx].shutdown_reason =
@@ -1258,9 +1491,15 @@ impl CartridgeHostRuntime {
                         // Cooperative cancel: forward Cancel frame to the cartridge
                         let _ = self.send_to_cartridge(cartridge_idx, frame);
 
-                        // Also cascade: send Cancel to relay for each peer call spawned by this request
-                        if let Some(peer_rids) = self.incoming_to_peer_rids.get(&key) {
-                            for peer_rid in peer_rids.clone() {
+                        // Also cascade: send Cancel to relay for each peer call spawned by this request.
+                        // Clone the peer-rid list out from under the immutable borrow before
+                        // calling `touch_*` (which takes `&mut self`); otherwise the borrow
+                        // checker rejects the simultaneous shared/mutable use.
+                        let peer_rids_snapshot: Option<Vec<MessageId>> =
+                            self.incoming_to_peer_rids.get(&key).cloned();
+                        if let Some(peer_rids) = peer_rids_snapshot {
+                            self.touch_incoming_to_peer_rids(&key);
+                            for peer_rid in peer_rids {
                                 let cancel = Frame::cancel(peer_rid, false);
                                 let _ = outbound_tx.send(cancel);
                             }
@@ -1354,6 +1593,8 @@ impl CartridgeHostRuntime {
 
                 // Record in List 1: OUTGOING_RIDS
                 self.outgoing_rids.insert(frame.id.clone(), cartridge_idx);
+                let rid_for_touch = frame.id.clone();
+                self.touch_outgoing_rid(&rid_for_touch);
 
                 // Track parent→child peer call mapping for cancel cascade
                 if let Some(parent_rid) = frame
@@ -1381,15 +1622,20 @@ impl CartridgeHostRuntime {
                         .cloned();
                     if let Some(pk) = parent_key {
                         self.incoming_to_peer_rids
-                            .entry(pk)
+                            .entry(pk.clone())
                             .or_default()
                             .push(frame.id.clone());
+                        self.touch_incoming_to_peer_rids(&pk);
                     }
                 }
 
                 // Track max-seen seq for host-generated ERR on death
                 let flow_key = FlowKey::from_frame(&frame);
-                self.outgoing_max_seq.insert(flow_key, frame.seq);
+                self.outgoing_max_seq.insert(flow_key.clone(), frame.seq);
+                self.touch_outgoing_max_seq(&flow_key);
+                // GC after recording — covers all four tables
+                // touched in this branch.
+                self.gc_routing_tables_if_needed();
 
                 // Forward as-is to relay (no XID - will be assigned by RelaySwitch)
                 outbound_tx
@@ -1409,8 +1655,11 @@ impl CartridgeHostRuntime {
                         frame.frame_type == FrameType::End || frame.frame_type == FrameType::Err;
                     if is_terminal {
                         self.outgoing_max_seq.remove(&flow_key);
+                        self.outgoing_max_seq_touched.remove(&flow_key);
                     } else {
-                        self.outgoing_max_seq.insert(flow_key, frame.seq);
+                        self.outgoing_max_seq.insert(flow_key.clone(), frame.seq);
+                        self.touch_outgoing_max_seq(&flow_key);
+                        self.gc_routing_tables_if_needed();
                     }
                 }
 
@@ -1530,8 +1779,10 @@ impl CartridgeHostRuntime {
         }
 
         // Clean up routing tables regardless of death cause.
-        // outgoing_rids: peer requests the cartridge initiated
-        let failed_outgoing: Vec<(MessageId, u64)> = self
+        // outgoing_rids: peer requests the cartridge initiated.
+        // Collect (rid, flow_key) under immutable borrow first,
+        // then drain `outgoing_max_seq` in a second pass.
+        let failed_outgoing_keys: Vec<(MessageId, FlowKey)> = self
             .outgoing_rids
             .iter()
             .filter(|(_, &idx)| idx == cartridge_idx)
@@ -1540,21 +1791,32 @@ impl CartridgeHostRuntime {
                     rid: rid.clone(),
                     xid: None,
                 };
+                (rid.clone(), flow_key)
+            })
+            .collect();
+        let failed_outgoing: Vec<(MessageId, u64)> = failed_outgoing_keys
+            .into_iter()
+            .map(|(rid, flow_key)| {
                 let next_seq = self
                     .outgoing_max_seq
                     .remove(&flow_key)
                     .map(|s| s + 1)
                     .unwrap_or(0);
-                (rid.clone(), next_seq)
+                self.outgoing_max_seq_touched.remove(&flow_key);
+                (rid, next_seq)
             })
             .collect();
 
         for (rid, _) in &failed_outgoing {
             self.outgoing_rids.remove(rid);
+            self.outgoing_rids_touched.remove(rid);
         }
 
-        // incoming_rxids: requests from the relay that this cartridge was handling
-        let failed_incoming: Vec<(MessageId, MessageId, u64)> = self
+        // incoming_rxids: requests from the relay that this cartridge was handling.
+        // Collect (xid, rid, flow_key) under an immutable borrow,
+        // then drain `outgoing_max_seq` in a second pass with the
+        // mutable borrow.
+        let failed_incoming_keys: Vec<(MessageId, MessageId, FlowKey)> = self
             .incoming_rxids
             .iter()
             .filter(|(_, &idx)| idx == cartridge_idx)
@@ -1563,20 +1825,38 @@ impl CartridgeHostRuntime {
                     rid: rid.clone(),
                     xid: Some(xid.clone()),
                 };
+                (xid.clone(), rid.clone(), flow_key)
+            })
+            .collect();
+        let failed_incoming: Vec<(MessageId, MessageId, u64)> = failed_incoming_keys
+            .into_iter()
+            .map(|(xid, rid, flow_key)| {
                 let next_seq = self
                     .outgoing_max_seq
                     .remove(&flow_key)
                     .map(|s| s + 1)
                     .unwrap_or(0);
-                (xid.clone(), rid.clone(), next_seq)
+                self.outgoing_max_seq_touched.remove(&flow_key);
+                (xid, rid, next_seq)
             })
             .collect();
-        self.incoming_rxids
-            .retain(|(_, _), &mut idx| idx != cartridge_idx);
+        // Collect dying keys first so the touched-map cleanup
+        // doesn't double-borrow `self`.
+        let dying_rxids_keys: Vec<(MessageId, MessageId)> = self
+            .incoming_rxids
+            .iter()
+            .filter_map(|(k, &idx)| if idx == cartridge_idx { Some(k.clone()) } else { None })
+            .collect();
+        for k in &dying_rxids_keys {
+            self.incoming_rxids.remove(k);
+            self.incoming_rxids_touched.remove(k);
+        }
 
         // Clean up incoming_to_peer_rids for all requests from this cartridge
         for (xid, rid, _) in &failed_incoming {
             self.incoming_to_peer_rids
+                .remove(&(xid.clone(), rid.clone()));
+            self.incoming_to_peer_rids_touched
                 .remove(&(xid.clone(), rid.clone()));
         }
 
@@ -2094,6 +2374,7 @@ impl CartridgeHostRuntime {
                         .remove(&flow_key)
                         .map(|s| s + 1)
                         .unwrap_or(0);
+                    self.outgoing_max_seq_touched.remove(&flow_key);
                     let mut err_frame = Frame::err(
                         rid.clone(),
                         "CARTRIDGE_UNHEALTHY",
@@ -2102,7 +2383,11 @@ impl CartridgeHostRuntime {
                     err_frame.routing_id = Some(xid.clone());
                     err_frame.seq = next_seq;
                     let _ = outbound_tx.send(err_frame);
-                    self.incoming_rxids.remove(&(xid.clone(), rid.clone()));
+                    let key = (xid.clone(), rid.clone());
+                    self.incoming_rxids.remove(&key);
+                    self.incoming_rxids_touched.remove(&key);
+                    self.incoming_to_peer_rids.remove(&key);
+                    self.incoming_to_peer_rids_touched.remove(&key);
                 }
 
                 for rid in &failed_outgoing_rids {
@@ -2115,6 +2400,7 @@ impl CartridgeHostRuntime {
                         .remove(&flow_key)
                         .map(|s| s + 1)
                         .unwrap_or(0);
+                    self.outgoing_max_seq_touched.remove(&flow_key);
                     let mut err_frame = Frame::err(
                         rid.clone(),
                         "CARTRIDGE_UNHEALTHY",
@@ -2123,6 +2409,7 @@ impl CartridgeHostRuntime {
                     err_frame.seq = next_seq;
                     let _ = outbound_tx.send(err_frame);
                     self.outgoing_rids.remove(rid);
+                    self.outgoing_rids_touched.remove(rid);
                 }
 
                 continue;
@@ -4861,5 +5148,220 @@ mod tests {
 
         engine_task.await.unwrap();
         cartridge_handle.await.unwrap();
+    }
+
+    // -------------------------------------------------------------
+    // Routing-table GC contract tests
+    //
+    // Mirror the Swift `CartridgeHostRoutingTableGCTests` in
+    // capdag-objc. Pin down two invariants that protect the host's
+    // routing tables from unbounded growth:
+    //
+    //   1. CAP IS ENFORCED. When the soft watermark is crossed,
+    //      the GC fires and reduces the table size. After enough
+    //      passes — at most one per insertion — no routing table
+    //      can exceed the hard cap. Failure means a cartridge or
+    //      relay path could create RIDs faster than the cleanup
+    //      paths drain them, regressing the leak class we just
+    //      fixed in capdag-objc.
+    //
+    //   2. EVICTION IS ORDERED BY touch-sequence, OLDEST FIRST.
+    //      A still-active flow (one that has been routed through
+    //      recently) must NOT be evicted before a stale one. A
+    //      regression where the GC drops dictionary-iteration-
+    //      order victims would still pass invariant #1 but fail
+    //      this one — and dropping fresh entries silently kills
+    //      in-flight continuation frames.
+    // -------------------------------------------------------------
+
+    /// Direct-seed helper: insert `count` synthetic
+    /// `incoming_rxids` entries with deterministic touch
+    /// sequences. Returns the keys in insertion order so the
+    /// test can compute the expected victim/survivor sets.
+    fn seed_incoming_rxids_for_test(
+        runtime: &mut CartridgeHostRuntime,
+        count: usize,
+    ) -> Vec<(MessageId, MessageId)> {
+        let mut keys = Vec::with_capacity(count);
+        for i in 0..count {
+            let xid = MessageId::Uint(i as u64);
+            let rid = MessageId::Uint(i as u64);
+            let key = (xid, rid);
+            runtime.incoming_rxids.insert(key.clone(), 0);
+            // Bypass `touch_incoming_rxid` so we can assign a
+            // deterministic age. Production paths always go
+            // through `touch_*` which uses the monotonic
+            // `routing_touch_seq` counter — but that doesn't
+            // give the test control over which entry is
+            // "oldest." Direct-seeding the touched map with the
+            // insertion index produces the same ordering the
+            // production counter would have produced if entries
+            // had been inserted at exactly these times.
+            runtime.incoming_rxids_touched.insert(key.clone(), i as u64);
+            keys.push(key);
+        }
+        keys
+    }
+
+    /// Contract #1 — the GC keeps the table strictly below the
+    /// hard cap. Seed the table well above the soft watermark
+    /// (matching what a runaway producer would do mid-frame-
+    /// burst) and call the production GC entry point. The
+    /// post-state must be at most `SOFT_WATERMARK` entries
+    /// because the GC drops at least
+    /// `EVICTION_FRACTION × pre_state` entries in one pass and
+    /// the pre-state is below the hard cap (i.e. one pass is
+    /// enough; the secondary "hard cap" pass would only fire if
+    /// pre-state crossed the hard cap before insertion completed,
+    /// which production prevents by gc-ing on every insert).
+    #[test]
+    fn gc_reduces_table_below_soft_watermark_in_one_pass() {
+        let mut runtime = CartridgeHostRuntime::new();
+        let pre_count = CartridgeHostRuntime::ROUTING_TABLE_SOFT_WATERMARK + 256;
+        assert!(
+            pre_count < CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP,
+            "Test precondition: pre_count must stay under the hard cap so we verify \
+             the SOFT watermark path, not the secondary hard-cap pass."
+        );
+
+        seed_incoming_rxids_for_test(&mut runtime, pre_count);
+        assert_eq!(
+            runtime.incoming_rxids.len(),
+            pre_count,
+            "Seeder must populate exactly pre_count entries before the GC runs"
+        );
+
+        runtime.gc_routing_tables_if_needed();
+
+        assert!(
+            runtime.incoming_rxids.len() < CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP,
+            "Post-GC table size {} must stay strictly under the hard cap ({}). \
+             If this fires, the GC is not evicting enough to recover headroom — \
+             the routing table can grow unbounded between GC firings.",
+            runtime.incoming_rxids.len(),
+            CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP
+        );
+        assert_eq!(
+            runtime.routing_gc_runs_total, 1,
+            "Exactly one GC pass should have fired; {} runs means the single-pass \
+             invariant has changed.",
+            runtime.routing_gc_runs_total
+        );
+        let expected_evicted = std::cmp::max(
+            1,
+            (pre_count as f64 * CartridgeHostRuntime::ROUTING_TABLE_GC_EVICTION_FRACTION) as usize,
+        );
+        assert_eq!(
+            runtime.routing_gc_evicted_total as usize, expected_evicted,
+            "GC pass evicted {} entries; expected {} (eviction fraction {} of pre_count {}).",
+            runtime.routing_gc_evicted_total,
+            expected_evicted,
+            CartridgeHostRuntime::ROUTING_TABLE_GC_EVICTION_FRACTION,
+            pre_count
+        );
+    }
+
+    /// Contract #2 — the GC drops the OLDEST entries by
+    /// touch-sequence, not arbitrary keys. Seed a known age
+    /// distribution and assert the post-GC keyset is exactly
+    /// what the test computes should survive (test recomputes
+    /// independently of production code).
+    ///
+    /// A regression where the GC e.g. iterates the HashMap and
+    /// drops the first N (HashMap iteration order is arbitrary
+    /// in Rust) would still pass contract #1 but fail this one —
+    /// the more dangerous bug because it silently drops
+    /// in-flight continuation frames.
+    #[test]
+    fn gc_evicts_oldest_entries_by_touch_sequence() {
+        let mut runtime = CartridgeHostRuntime::new();
+        let pre_count = CartridgeHostRuntime::ROUTING_TABLE_SOFT_WATERMARK + 256;
+        let eviction_count = std::cmp::max(
+            1,
+            (pre_count as f64 * CartridgeHostRuntime::ROUTING_TABLE_GC_EVICTION_FRACTION) as usize,
+        );
+
+        // Seed: key i has touched_at == i. Smallest i means oldest.
+        // Expected victims: keys 0 ..< eviction_count.
+        // Expected survivors: keys eviction_count ..< pre_count.
+        let keys = seed_incoming_rxids_for_test(&mut runtime, pre_count);
+
+        runtime.gc_routing_tables_if_needed();
+
+        for (i, key) in keys.iter().enumerate().take(eviction_count) {
+            assert!(
+                !runtime.incoming_rxids.contains_key(key),
+                "Key index {} should have been evicted (touched_at={}, one of the {} \
+                 oldest), but it survived the GC. The eviction-by-age contract has \
+                 regressed; the GC is choosing victims by something other than \
+                 touched_at.",
+                i,
+                i,
+                eviction_count
+            );
+            assert!(
+                !runtime.incoming_rxids_touched.contains_key(key),
+                "Touched-map entry for key index {} must be removed alongside the \
+                 primary entry; it lingering means the touched map can grow past \
+                 the primary table size.",
+                i
+            );
+        }
+        for (i, key) in keys.iter().enumerate().skip(eviction_count) {
+            assert!(
+                runtime.incoming_rxids.contains_key(key),
+                "Key index {} should have survived the GC (touched_at={}, one of the \
+                 {} most-recently-touched), but was evicted. The eviction-by-age \
+                 contract has regressed; the GC is dropping fresh entries before \
+                 stale ones.",
+                i,
+                i,
+                pre_count - eviction_count
+            );
+        }
+    }
+
+    /// Contract #3 — the secondary hard-cap pass kicks in if the
+    /// table somehow exceeds `HARD_CAP` (extreme runaway). Without
+    /// it, a single GC at the soft watermark would not be enough
+    /// to recover headroom and the table could grow without bound
+    /// between bursts.
+    #[test]
+    fn gc_secondary_pass_enforces_hard_cap() {
+        let mut runtime = CartridgeHostRuntime::new();
+        let pre_count = CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP + 1024;
+        seed_incoming_rxids_for_test(&mut runtime, pre_count);
+        assert!(
+            runtime.incoming_rxids.len() >= CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP,
+            "Seeder must populate at or above the hard cap so the secondary pass \
+             actually fires. If this assertion fires, the test setup is wrong."
+        );
+
+        runtime.gc_routing_tables_if_needed();
+
+        assert!(
+            runtime.incoming_rxids.len() < CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP,
+            "Post-GC table size {} must be strictly under the hard cap ({}). The \
+             secondary pass exists precisely to catch the case where one \
+             eviction-fraction pass isn't enough; if this fails, that pass is broken.",
+            runtime.incoming_rxids.len(),
+            CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP
+        );
+        // The secondary pass logs a separate `tracing::error` line
+        // (and uses the same `routing_gc_evicted_total` counter)
+        // but does not increment `routing_gc_runs_total`. We
+        // verify the eviction count instead, which must exceed
+        // one full eviction-fraction pass over the pre-count.
+        let single_pass_max = (pre_count as f64
+            * CartridgeHostRuntime::ROUTING_TABLE_GC_EVICTION_FRACTION)
+            as u64;
+        assert!(
+            runtime.routing_gc_evicted_total > single_pass_max,
+            "Total evicted {} should exceed single-pass max {} (the secondary pass \
+             must have evicted additional entries). If equal, the secondary pass \
+             didn't fire.",
+            runtime.routing_gc_evicted_total,
+            single_pass_max
+        );
     }
 }
