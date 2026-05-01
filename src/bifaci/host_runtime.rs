@@ -5215,7 +5215,7 @@ mod tests {
     /// pre-state crossed the hard cap before insertion completed,
     /// which production prevents by gc-ing on every insert).
     #[test]
-    fn gc_reduces_table_below_soft_watermark_in_one_pass() {
+    fn test999_gc_reduces_table_below_soft_watermark_in_one_pass() {
         let mut runtime = CartridgeHostRuntime::new();
         let pre_count = CartridgeHostRuntime::ROUTING_TABLE_SOFT_WATERMARK + 256;
         assert!(
@@ -5273,7 +5273,7 @@ mod tests {
     /// the more dangerous bug because it silently drops
     /// in-flight continuation frames.
     #[test]
-    fn gc_evicts_oldest_entries_by_touch_sequence() {
+    fn test999_gc_evicts_oldest_entries_by_touch_sequence() {
         let mut runtime = CartridgeHostRuntime::new();
         let pre_count = CartridgeHostRuntime::ROUTING_TABLE_SOFT_WATERMARK + 256;
         let eviction_count = std::cmp::max(
@@ -5327,7 +5327,7 @@ mod tests {
     /// to recover headroom and the table could grow without bound
     /// between bursts.
     #[test]
-    fn gc_secondary_pass_enforces_hard_cap() {
+    fn test999_gc_secondary_pass_enforces_hard_cap() {
         let mut runtime = CartridgeHostRuntime::new();
         let pre_count = CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP + 1024;
         seed_incoming_rxids_for_test(&mut runtime, pre_count);
