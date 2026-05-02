@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//tmp/**)",
+      "Bash(python3 *)",
+      "Bash(grep -o \"test[0-9]\\\\{3,4\\\\}\" /Users/bahram/ws/prj/machinefabric/capdag-go/TEST_CATALOG.md)",
+      "Bash(grep -o \"test[0-9]\\\\{3,4\\\\}\" /Users/bahram/ws/prj/machinefabric/capdag-objc/TEST_CATALOG.md)",
+      "Bash(grep -o \"test[0-9]\\\\{3,4\\\\}\")",
+      "Bash(grep -v \"test1[0-9]\\\\{3,\\\\}\")",
+      "Bash(python -c \"from capdag.cap.definition import Cap; from capdag.urn.cap_urn import CapUrn; u = CapUrn.from_string\\('cap:in=\\\\\"media:void\\\\\";out=\\\\\"media:object\\\\\";op=test'\\); c = Cap\\(u, 'T', 'cmd'\\); print\\(c.supported_model_types, c.default_model_spec\\); c.supported_model_types = ['llm']; c.default_model_spec = 'gpt-4'; d = c.to_dict\\(\\); print\\('to_dict keys:', list\\(d.keys\\(\\)\\)\\); c2 = Cap.from_dict\\(d\\); print\\('roundtrip:', c2.supported_model_types, c2.default_model_spec\\)\")",
+      "Bash(node --check capdag.js)",
+      "Bash(node --check /Users/bahram/ws/prj/machinefabric/capdag-js/capdag.js)",
+      "Bash(node *)"
+    ]
+  }
+}
