@@ -57,6 +57,12 @@ fn build_testcartridge_cap(urn_str: &str) -> Cap {
         output: Some(CapOutput::new(out_spec, "testcartridge output".to_string())),
         metadata_json: None,
         registered_by: None,
+        // Empty model-related fields — testcartridge has no model
+        // dependency, so it accepts any architecture and has no
+        // default model spec. See `Cap` doc-comments in
+        // src/cap/definition.rs.
+        supported_model_types: Vec::new(),
+        default_model_spec: None,
     }
 }
 

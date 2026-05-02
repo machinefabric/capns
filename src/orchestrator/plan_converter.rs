@@ -224,6 +224,8 @@ mod tests {
                 output: Some(CapOutput::new(out_spec, "Test output".to_string())),
                 metadata_json: None,
                 registered_by: None,
+                supported_model_types: Vec::new(),
+                default_model_spec: None,
             });
         }
         registry.add_caps_to_cache(caps);

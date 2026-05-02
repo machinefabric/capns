@@ -72,6 +72,9 @@ pub(crate) fn build_cap_with_slot_stdin_pairs(
         )),
         metadata_json: None,
         registered_by: None,
+        // Test-fixture caps have no model dependency.
+        supported_model_types: Vec::new(),
+        default_model_spec: None,
     }
 }
 

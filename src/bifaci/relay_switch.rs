@@ -3629,6 +3629,8 @@ mod tests {
             media_specs: Vec::new(),
             metadata_json: None,
             registered_by: None,
+            supported_model_types: Vec::new(),
+            default_model_spec: None,
         };
 
         let host = InProcessCartridgeHost::new(vec![(
@@ -3826,6 +3828,8 @@ mod tests {
                 media_specs: Vec::new(),
                 metadata_json: None,
                 registered_by: None,
+                supported_model_types: Vec::new(),
+                default_model_spec: None,
             }],
             std::sync::Arc::new(ConstHandler("alpha")) as std::sync::Arc<dyn FrameHandler>,
         )]);
@@ -3852,6 +3856,8 @@ mod tests {
                 media_specs: Vec::new(),
                 metadata_json: None,
                 registered_by: None,
+                supported_model_types: Vec::new(),
+                default_model_spec: None,
             }],
             std::sync::Arc::new(ConstHandler("beta")) as std::sync::Arc<dyn FrameHandler>,
         )]);
@@ -3991,6 +3997,8 @@ mod tests {
                 media_specs: Vec::new(),
                 metadata_json: None,
                 registered_by: None,
+                supported_model_types: Vec::new(),
+                default_model_spec: None,
             }],
             std::sync::Arc::new(MarkerHandler("EXACT")) as std::sync::Arc<dyn FrameHandler>,
         )]);
@@ -4011,6 +4019,8 @@ mod tests {
                 media_specs: Vec::new(),
                 metadata_json: None,
                 registered_by: None,
+                supported_model_types: Vec::new(),
+                default_model_spec: None,
             }],
             std::sync::Arc::new(MarkerHandler("EXTRA")) as std::sync::Arc<dyn FrameHandler>,
         )]);

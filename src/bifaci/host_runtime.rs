@@ -2882,7 +2882,7 @@ mod tests {
 
     /// Helper: perform handshake_accept and handle the identity verification REQ.
     /// Returns (FrameReader, FrameWriter) ready for further communication.
-    async fn test999_cartridge_handshake_with_identity<R, W>(
+    async fn cartridge_handshake_with_identity<R, W>(
         from_runtime: R,
         to_runtime: W,
         manifest: &[u8],
@@ -5329,7 +5329,16 @@ mod tests {
     #[test]
     fn test999_gc_secondary_pass_enforces_hard_cap() {
         let mut runtime = CartridgeHostRuntime::new();
-        let pre_count = CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP + 1024;
+        // Size the seed so a SINGLE eviction-fraction pass is NOT
+        // enough to bring the table under the hard cap. We need
+        // `pre * (1 - eviction_fraction) >= hard_cap`, i.e.
+        // `pre >= hard_cap / (1 - eviction_fraction)`. With
+        // hard_cap=8192, eviction_fraction=0.25 that's pre >=
+        // 10923. Add 256 of headroom so a small change to the
+        // eviction fraction doesn't accidentally make the test
+        // pass via the primary pass alone.
+        let one_minus_fraction = 1.0 - CartridgeHostRuntime::ROUTING_TABLE_GC_EVICTION_FRACTION;
+        let pre_count = (CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP as f64 / one_minus_fraction).ceil() as usize + 256;
         seed_incoming_rxids_for_test(&mut runtime, pre_count);
         assert!(
             runtime.incoming_rxids.len() >= CartridgeHostRuntime::ROUTING_TABLE_HARD_CAP,
