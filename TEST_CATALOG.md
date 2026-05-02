@@ -330,7 +330,7 @@ This catalog lists all tests in the Rust codebase.
 | test368 | `test368_stream_start_with_empty_media_urn` | TEST368: StreamStart frame with empty media_urn still constructs (validation happens elsewhere) | src/bifaci/frame.rs:1604 |
 | test389 | `test389_stream_start_roundtrip` | TEST389: StreamStart encode/decode roundtrip preserves stream_id and media_urn | src/bifaci/io.rs:1782 |
 | test390 | `test390_stream_end_roundtrip` | TEST390: StreamEnd encode/decode roundtrip preserves stream_id, no media_urn | src/bifaci/io.rs:1799 |
-| test394 | `test394_peer_invoke_roundtrip` | TEST394: Test peer invoke round-trip (testcartridge calls itself) Disabled: LocalCartridgeRouter feature not implemented - uses non-existent modules | tests/orchestrator_integration.rs:860 |
+| test394 | `test394_peer_invoke_roundtrip` | TEST394: Test peer invoke round-trip (testcartridge calls itself) Disabled: LocalCartridgeRouter feature not implemented - uses non-existent modules | tests/orchestrator_integration.rs:866 |
 | test395 | `test395_build_payload_small` | TEST395: Small payload (< max_chunk) produces correct CBOR arguments | src/bifaci/cartridge_runtime.rs:7047 |
 | test396 | `test396_build_payload_large` | TEST396: Large payload (> max_chunk) accumulates across chunks correctly | src/bifaci/cartridge_runtime.rs:7093 |
 | test397 | `test397_build_payload_empty` | TEST397: Empty reader produces valid empty CBOR arguments | src/bifaci/cartridge_runtime.rs:7137 |
@@ -413,7 +413,7 @@ This catalog lists all tests in the Rust codebase.
 | test486 | `test486_attach_cartridge_identity_verification_fails` | TEST486: attach_cartridge rejects cartridge that fails identity verification | src/bifaci/host_runtime.rs:4556 |
 | test487 | `test487_relay_switch_identity_verification_succeeds` | TEST487: RelaySwitch construction verifies identity through relay chain | src/bifaci/relay_switch.rs:3510 |
 | test488 | `test488_relay_switch_identity_verification_fails` | TEST488: RelaySwitch construction fails when master's identity verification fails | src/bifaci/relay_switch.rs:3546 |
-| test489 | `test489_add_master_dynamic` | TEST489: add_master dynamically connects new host to running switch | src/bifaci/relay_switch.rs:3751 |
+| test489 | `test489_add_master_dynamic` | TEST489: add_master dynamically connects new host to running switch | src/bifaci/relay_switch.rs:3753 |
 | test490 | `test490_identity_verification_multiple_cartridges` | TEST490: Identity verification with multiple cartridges through single relay Both cartridges must pass identity verification independently before any real requests are routed. | src/bifaci/integration_tests.rs:1497 |
 | test491 | `test491_chunk_requires_chunk_index_and_checksum` | TEST491: Frame::chunk constructor requires and sets chunk_index and checksum | src/bifaci/frame.rs:2242 |
 | test492 | `test492_stream_end_requires_chunk_count` | TEST492: Frame::stream_end constructor requires and sets chunk_count | src/bifaci/frame.rs:2264 |
@@ -565,19 +565,19 @@ This catalog lists all tests in the Rust codebase.
 | test651 | `test651_wildcard_013_identity_forms_equivalent` | TEST651: All identity forms produce the same CapUrn | src/urn/cap_urn.rs:2146 |
 | test652 | `test652_wildcard_014_cap_identity_constant_works` | TEST652: CAP_IDENTITY constant matches identity caps regardless of string form | src/urn/cap_urn.rs:2189 |
 | test653 | `test653_wildcard_015_identity_routing_isolation` | TEST653: Identity (no tags) does not match specific requests via routing | src/urn/cap_urn.rs:2231 |
-| test654 | `test654_routes_req_to_handler` | TEST654: InProcessCartridgeHost routes REQ to matching handler and returns response | src/bifaci/in_process_host.rs:908 |
-| test655 | `test655_identity_verification` | TEST655: InProcessCartridgeHost handles identity verification (echo nonce) | src/bifaci/in_process_host.rs:986 |
-| test656 | `test656_no_handler_returns_err` | TEST656: InProcessCartridgeHost returns NO_HANDLER for unregistered cap | src/bifaci/in_process_host.rs:1055 |
-| test657 | `test657_manifest_includes_all_caps` | TEST657: InProcessCartridgeHost manifest includes identity cap and handler caps | src/bifaci/in_process_host.rs:1093 |
-| test658 | `test658_heartbeat_response` | TEST658: InProcessCartridgeHost handles heartbeat by echoing same ID | src/bifaci/in_process_host.rs:1111 |
-| test659 | `test659_handler_error_returns_err_frame` | TEST659: InProcessCartridgeHost handler error returns ERR frame | src/bifaci/in_process_host.rs:1141 |
-| test660 | `test660_closest_specificity_routing` | TEST660: InProcessCartridgeHost closest-specificity routing prefers specific over identity | src/bifaci/in_process_host.rs:1211 |
+| test654 | `test654_routes_req_to_handler` | TEST654: InProcessCartridgeHost routes REQ to matching handler and returns response | src/bifaci/in_process_host.rs:910 |
+| test655 | `test655_identity_verification` | TEST655: InProcessCartridgeHost handles identity verification (echo nonce) | src/bifaci/in_process_host.rs:988 |
+| test656 | `test656_no_handler_returns_err` | TEST656: InProcessCartridgeHost returns NO_HANDLER for unregistered cap | src/bifaci/in_process_host.rs:1057 |
+| test657 | `test657_manifest_includes_all_caps` | TEST657: InProcessCartridgeHost manifest includes identity cap and handler caps | src/bifaci/in_process_host.rs:1095 |
+| test658 | `test658_heartbeat_response` | TEST658: InProcessCartridgeHost handles heartbeat by echoing same ID | src/bifaci/in_process_host.rs:1113 |
+| test659 | `test659_handler_error_returns_err_frame` | TEST659: InProcessCartridgeHost handler error returns ERR frame | src/bifaci/in_process_host.rs:1143 |
+| test660 | `test660_closest_specificity_routing` | TEST660: InProcessCartridgeHost closest-specificity routing prefers specific over identity | src/bifaci/in_process_host.rs:1213 |
 | test661 | `test661_cartridge_death_keeps_known_caps_advertised` | TEST661: Cartridge death keeps known_caps advertised for on-demand respawn | src/bifaci/host_runtime.rs:4600 |
 | test662 | `test662_rebuild_capabilities_includes_non_running_cartridges` | TEST662: rebuild_capabilities includes non-running cartridges' known_caps | src/bifaci/host_runtime.rs:4637 |
 | test663 | `test663_hello_failed_cartridge_removed_from_capabilities` | TEST663: Cartridge with hello_failed is permanently removed from capabilities | src/bifaci/host_runtime.rs:4673 |
 | test664 | `test664_running_cartridge_uses_manifest_caps` | TEST664: Running cartridge uses manifest caps, not known_caps | src/bifaci/host_runtime.rs:4719 |
 | test665 | `test665_cap_table_mixed_running_and_non_running` | TEST665: Cap table uses manifest caps for running, known_caps for non-running | src/bifaci/host_runtime.rs:4779 |
-| test666 | `test666_preferred_cap_routing` | TEST666: Preferred cap routing - routes to exact equivalent when multiple masters match | src/bifaci/relay_switch.rs:3917 |
+| test666 | `test666_preferred_cap_routing` | TEST666: Preferred cap routing - routes to exact equivalent when multiple masters match | src/bifaci/relay_switch.rs:3923 |
 | test667 | `test667_verify_chunk_checksum_detects_corruption` | TEST667: verify_chunk_checksum detects corrupted payload | src/bifaci/frame.rs:3063 |
 | test668 | `test668_resolve_slot_with_populated_byte_slot_values` | TEST668: resolve_binding returns byte values when slot is populated with data | src/planner/argument_binding.rs:800 |
 | test669 | `test669_resolve_slot_falls_back_to_default` | TEST669: resolve_binding falls back to cap default value when slot has no data | src/planner/argument_binding.rs:836 |
@@ -662,26 +662,26 @@ This catalog lists all tests in the Rust codebase.
 | test767 | `test767_argument_info_serialization` | TEST767: Tests ArgumentInfo struct serialization to JSON Verifies that argument metadata including resolution status and validation is correctly serialized | src/planner/plan_builder.rs:1103 |
 | test768 | `test768_path_argument_requirements_structure` | TEST768: Tests PathArgumentRequirements structure for single-step execution paths Verifies that argument requirements are correctly organized by step with resolution information | src/planner/plan_builder.rs:1124 |
 | test769 | `test769_path_with_required_slot` | TEST769: Tests PathArgumentRequirements tracking of required user-input slots Verifies that arguments requiring user input are collected in slots and can_execute_without_input is false | src/planner/plan_builder.rs:1161 |
-| test770 | `test770_rejects_foreach` | TEST770: plan_to_resolved_graph rejects plans containing ForEach nodes | src/orchestrator/plan_converter.rs:298 |
-| test771 | `test771_rejects_collect` | TEST771: plan_to_resolved_graph rejects plans containing Collect nodes | src/orchestrator/plan_converter.rs:349 |
-| test772 | `test772_find_paths_finds_multi_step_paths` | TEST772: Tests find_paths_to_exact_target() finds multi-step paths Verifies that paths through intermediate nodes are found correctly | src/planner/live_cap_fab.rs:1416 |
-| test773 | `test773_find_paths_returns_empty_when_no_path` | TEST773: Tests find_paths_to_exact_target() returns empty when no path exists Verifies that pathfinding returns no paths when target is unreachable | src/planner/live_cap_fab.rs:1447 |
-| test774 | `test774_get_reachable_targets_finds_all_targets` | TEST774: Tests get_reachable_targets() returns all reachable targets Verifies that reachable targets include direct cap targets and cardinality variants (list versions via Collect) | src/planner/live_cap_fab.rs:1469 |
-| test777 | `test777_type_mismatch_pdf_cap_does_not_match_png_input` | TEST777: Tests type checking prevents using PDF-specific cap with PNG input Verifies that media type compatibility is enforced during pathfinding | src/planner/live_cap_fab.rs:1500 |
-| test778 | `test778_type_mismatch_png_cap_does_not_match_pdf_input` | TEST778: Tests type checking prevents using PNG-specific cap with PDF input Verifies that media type compatibility is enforced during pathfinding | src/planner/live_cap_fab.rs:1522 |
-| test779 | `test779_get_reachable_targets_respects_type_matching` | TEST779: Tests get_reachable_targets() only returns targets reachable via type-compatible caps Verifies that PNG and PDF inputs reach different cap targets (not each other's) | src/planner/live_cap_fab.rs:1549 |
+| test770 | `test770_rejects_foreach` | TEST770: plan_to_resolved_graph rejects plans containing ForEach nodes | src/orchestrator/plan_converter.rs:300 |
+| test771 | `test771_rejects_collect` | TEST771: plan_to_resolved_graph rejects plans containing Collect nodes | src/orchestrator/plan_converter.rs:351 |
+| test772 | `test772_find_paths_finds_multi_step_paths` | TEST772: Tests find_paths_to_exact_target() finds multi-step paths Verifies that paths through intermediate nodes are found correctly | src/planner/live_cap_fab.rs:1420 |
+| test773 | `test773_find_paths_returns_empty_when_no_path` | TEST773: Tests find_paths_to_exact_target() returns empty when no path exists Verifies that pathfinding returns no paths when target is unreachable | src/planner/live_cap_fab.rs:1451 |
+| test774 | `test774_get_reachable_targets_finds_all_targets` | TEST774: Tests get_reachable_targets() returns all reachable targets Verifies that reachable targets include direct cap targets and cardinality variants (list versions via Collect) | src/planner/live_cap_fab.rs:1473 |
+| test777 | `test777_type_mismatch_pdf_cap_does_not_match_png_input` | TEST777: Tests type checking prevents using PDF-specific cap with PNG input Verifies that media type compatibility is enforced during pathfinding | src/planner/live_cap_fab.rs:1504 |
+| test778 | `test778_type_mismatch_png_cap_does_not_match_pdf_input` | TEST778: Tests type checking prevents using PNG-specific cap with PDF input Verifies that media type compatibility is enforced during pathfinding | src/planner/live_cap_fab.rs:1526 |
+| test779 | `test779_get_reachable_targets_respects_type_matching` | TEST779: Tests get_reachable_targets() only returns targets reachable via type-compatible caps Verifies that PNG and PDF inputs reach different cap targets (not each other's) | src/planner/live_cap_fab.rs:1553 |
 | test780 | `test780_split_integer_array` | TEST780: split_cbor_array splits a simple array of integers | src/orchestrator/cbor_util.rs:150 |
-| test781 | `test781_find_paths_respects_type_chain` | TEST781: Tests find_paths_to_exact_target() enforces type compatibility across multi-step chains Verifies that paths are only found when all intermediate types are compatible | src/planner/live_cap_fab.rs:1603 |
+| test781 | `test781_find_paths_respects_type_chain` | TEST781: Tests find_paths_to_exact_target() enforces type compatibility across multi-step chains Verifies that paths are only found when all intermediate types are compatible | src/planner/live_cap_fab.rs:1607 |
 | test782 | `test782_split_non_array` | TEST782: split_cbor_array rejects non-array input | src/orchestrator/cbor_util.rs:193 |
 | test783 | `test783_split_empty_array` | TEST783: split_cbor_array rejects empty array | src/orchestrator/cbor_util.rs:203 |
 | test784 | `test784_split_invalid_cbor` | TEST784: split_cbor_array rejects invalid CBOR bytes | src/orchestrator/cbor_util.rs:213 |
 | test785 | `test785_assemble_integer_array` | TEST785: assemble_cbor_array creates array from individual items | src/orchestrator/cbor_util.rs:220 |
 | test786 | `test786_roundtrip_split_assemble` | TEST786: split then assemble roundtrip preserves data | src/orchestrator/cbor_util.rs:244 |
-| test787 | `test787_find_paths_sorting_prefers_shorter` | TEST787: Tests find_paths_to_exact_target() sorts paths by length, preferring shorter ones Verifies that among multiple paths, the shortest is ranked first | src/planner/live_cap_fab.rs:1779 |
-| test788 | `test788_foreach_only_with_sequence_input` | TEST788: ForEach is only synthesized when is_sequence=true With scalar input (is_sequence=false), disbind output goes directly to choose since media:page;textable conforms to media:textable. With sequence input (is_sequence=true), ForEach splits the sequence so each item can be processed by disbind individually, then choose. | src/planner/live_cap_fab.rs:1643 |
-| test789 | `test789_cap_from_json_has_valid_specs` | TEST789: Tests that caps loaded from JSON have correct in_spec/out_spec | src/planner/live_cap_fab.rs:1752 |
-| test790 | `test790_identity_urn_is_specific` | TEST790: Tests identity_urn is specific and doesn't match everything | src/planner/live_cap_fab.rs:1731 |
-| test791 | `test791_sync_from_cap_urns_adds_edges` | TEST791: Tests sync_from_cap_urns actually adds edges | src/planner/live_cap_fab.rs:1696 |
+| test787 | `test787_find_paths_sorting_prefers_shorter` | TEST787: Tests find_paths_to_exact_target() sorts paths by length, preferring shorter ones Verifies that among multiple paths, the shortest is ranked first | src/planner/live_cap_fab.rs:1783 |
+| test788 | `test788_foreach_only_with_sequence_input` | TEST788: ForEach is only synthesized when is_sequence=true With scalar input (is_sequence=false), disbind output goes directly to choose since media:page;textable conforms to media:textable. With sequence input (is_sequence=true), ForEach splits the sequence so each item can be processed by disbind individually, then choose. | src/planner/live_cap_fab.rs:1647 |
+| test789 | `test789_cap_from_json_has_valid_specs` | TEST789: Tests that caps loaded from JSON have correct in_spec/out_spec | src/planner/live_cap_fab.rs:1756 |
+| test790 | `test790_identity_urn_is_specific` | TEST790: Tests identity_urn is specific and doesn't match everything | src/planner/live_cap_fab.rs:1735 |
+| test791 | `test791_sync_from_cap_urns_adds_edges` | TEST791: Tests sync_from_cap_urns actually adds edges | src/planner/live_cap_fab.rs:1700 |
 | test792 | `test792_argument_binding_requires_input` | TEST792: Tests ArgumentBinding requires_input distinguishes Slots from Literals Verifies Slot returns true (needs user input) while Literal returns false | src/planner/argument_binding.rs:597 |
 | test793 | `test793_argument_binding_serialization` | TEST793: Tests ArgumentBinding PreviousOutput serializes/deserializes correctly Verifies JSON round-trip preserves node_id and output_field values | src/planner/argument_binding.rs:610 |
 | test794 | `test794_argument_bindings_add_file_path` | TEST794: Tests ArgumentBindings add_file_path adds InputFilePath binding Verifies add_file_path() creates binding map entry with InputFilePath variant | src/planner/argument_binding.rs:634 |
@@ -753,9 +753,9 @@ This catalog lists all tests in the Rust codebase.
 | test860 | `test860_seq_assigner_same_rid_different_xids_independent` | TEST860: Same RID with different XIDs get independent seq counters | src/bifaci/frame.rs:1880 |
 | test880 | `test880_no_duplicates_with_unique_caps` | TEST880: Tests duplicate detection passes for caps with unique URN combinations Verifies that check_for_duplicate_caps() correctly accepts caps with different op/in/out combinations | src/planner/plan_builder.rs:763 |
 | test886 | `test886_optional_non_io_arg_with_default_has_default` | TEST886: Tests optional non-IO arguments with default values are marked as HasDefault Verifies that optional arguments with defaults behave the same as required ones with defaults | src/planner/plan_builder.rs:1027 |
-| test887 | `test887_execute_with_file_input` | TEST887: Execute with file-path input | tests/orchestrator_integration.rs:406 |
-| test888 | `test888_execute_edge1_to_edge2_chain` | TEST888: Execute two-edge chain (test-edge1 -> test-edge2) | tests/orchestrator_integration.rs:359 |
-| test889 | `test889_execute_single_edge_dag` | TEST889: Execute single-edge DAG (test-edge1) | tests/orchestrator_integration.rs:311 |
+| test887 | `test887_execute_with_file_input` | TEST887: Execute with file-path input | tests/orchestrator_integration.rs:412 |
+| test888 | `test888_execute_edge1_to_edge2_chain` | TEST888: Execute two-edge chain (test-edge1 -> test-edge2) | tests/orchestrator_integration.rs:365 |
+| test889 | `test889_execute_single_edge_dag` | TEST889: Execute single-edge DAG (test-edge1) | tests/orchestrator_integration.rs:317 |
 | test890 | `test890_direction_semantic_matching` | TEST890: Semantic direction matching - generic provider matches specific request | src/urn/cap_urn.rs:1913 |
 | test891 | `test891_direction_semantic_specificity` | TEST891: Semantic direction specificity - more media URN tags = higher specificity | src/urn/cap_urn.rs:1989 |
 | test892 | `test892_extensions_serialization` | TEST892: Test extensions serializes/deserializes correctly in MediaSpecDef | src/media/spec.rs:1143 |
@@ -785,7 +785,7 @@ This catalog lists all tests in the Rust codebase.
 | test916 | `test916_foreach_item_subdivision` | TEST916: ForEach item subdivision produces correct, monotonic ranges Mirrors the production code in interpreter.rs: pre-compute item boundaries from the same formula so the end of item N and the start of item N+1 are the same f32 value (no divergent accumulation paths). | src/orchestrator/executor.rs:1702 |
 | test917 | `test917_high_frequency_progress_bounded` | TEST917: High-frequency progress emission does not violate bounds (Regression test for the deadlock scenario — verifies computation stays bounded) | src/orchestrator/executor.rs:1766 |
 | test918 | `test918_activity_timeout_error_display` | TEST918: ActivityTimeout error formats correctly | src/orchestrator/executor.rs:1803 |
-| test919 | `test919_parse_simple_testcartridge_graph` | TEST919: Parse simple machine notation graph with test-edge1 | tests/orchestrator_integration.rs:287 |
+| test919 | `test919_parse_simple_testcartridge_graph` | TEST919: Parse simple machine notation graph with test-edge1 | tests/orchestrator_integration.rs:293 |
 | test920 | `test920_single_cap_plan` | TEST920: Tests creation of a simple execution plan with a single capability Verifies that single_cap() generates a valid plan with input_slot, cap node, and output node | src/planner/plan.rs:1035 |
 | test921 | `test921_linear_chain_plan` | TEST921: Tests creation of a linear chain of capabilities connected in sequence Verifies that linear_chain() correctly links multiple caps with proper edges and topological order | src/planner/plan.rs:1051 |
 | test922 | `test922_empty_plan` | TEST922: Tests creation and validation of an empty execution plan with no nodes Verifies that plans without capabilities are valid and handle zero nodes correctly | src/planner/plan.rs:1069 |
@@ -804,18 +804,18 @@ This catalog lists all tests in the Rust codebase.
 | test935 | `test935_find_first_foreach_linear` | TEST935: find_first_foreach returns None for linear plans | src/planner/plan.rs:1714 |
 | test936 | `test936_has_foreach` | TEST936: has_foreach detects ForEach nodes | src/planner/plan.rs:1726 |
 | test937 | `test937_extract_prefix_to` | TEST937: extract_prefix_to extracts input_slot -> cap_0 as a standalone plan | src/planner/plan.rs:1767 |
-| test943 | `test943_same_media_different_names_is_not_a_cycle` | TEST943: Two nodes with the same media type but different names are two distinct graph positions — NOT a loop. The identity cap has `in = out` by type, so its upstream and downstream node carry the same media URN; this must not collapse them into a self-loop. Node identity comes from the user-written name, not the media URN. | tests/orchestrator_integration.rs:579 |
-| test944 | `test944_six_machine` | TEST944: 6-machine: edge1 -> edge2 -> edge7 -> edge8 -> edge9 -> edge10 Full cycle: node1 -> node2 -> node3 -> node6 -> node7 -> node8 -> node1 Completes the round trip: unwrap markers + lowercase | tests/orchestrator_integration.rs:762 |
-| test945 | `test945_five_machine` | TEST945: 5-machine: edge1 -> edge2 -> edge7 -> edge8 -> edge9 node1 -> node2 -> node3 -> node6 -> node7 -> node8 adds <<...>> wrapping around the reversed string | tests/orchestrator_integration.rs:707 |
-| test946 | `test946_four_machine` | TEST946: 4-machine: edge1 -> edge2 -> edge7 -> edge8 node1 -> node2 -> node3 -> node6 -> node7 "hello" -> "[PREPEND]hello" -> "[PREPEND]hello[APPEND]" -> "[PREPEND]HELLO[APPEND]" -> "]DNEPPA[OLLEH]DNEPERP[" | tests/orchestrator_integration.rs:652 |
-| test947 | `test947_cap_not_found` | TEST947: Cap not found in registry | tests/orchestrator_integration.rs:625 |
-| test948 | `test948_invalid_cap_urn` | TEST948: Invalid cap URN in machine notation | tests/orchestrator_integration.rs:614 |
-| test949 | `test949_empty_graph` | TEST949: Empty machine notation (no edges) | tests/orchestrator_integration.rs:596 |
-| test950 | `test950_reject_cycles` | TEST950: Validate that cycles are rejected | tests/orchestrator_integration.rs:553 |
-| test951 | `test951_fan_in_pattern` | TEST951: Multi-input DAG (fan-in pattern) | tests/orchestrator_integration.rs:501 |
-| test952 | `test952_execute_large_payload` | TEST952: Execute large payload (test-large cap) | tests/orchestrator_integration.rs:453 |
-| test953 | `test953_linear_plan_still_works` | TEST953: Linear plans (no ForEach/Collect) still convert successfully | src/orchestrator/plan_converter.rs:398 |
-| test954 | `test954_standalone_collect_passthrough` | TEST954: Standalone Collect nodes are handled as pass-through Plan: input → cap_0 → Collect → cap_1 → output The standalone Collect is transparent — the resolved edge from Collect to cap_1 should be rewritten to go from cap_0 to cap_1 directly. | src/orchestrator/plan_converter.rs:431 |
+| test943 | `test943_same_media_different_names_is_not_a_cycle` | TEST943: Two nodes with the same media type but different names are two distinct graph positions — NOT a loop. The identity cap has `in = out` by type, so its upstream and downstream node carry the same media URN; this must not collapse them into a self-loop. Node identity comes from the user-written name, not the media URN. | tests/orchestrator_integration.rs:585 |
+| test944 | `test944_six_machine` | TEST944: 6-machine: edge1 -> edge2 -> edge7 -> edge8 -> edge9 -> edge10 Full cycle: node1 -> node2 -> node3 -> node6 -> node7 -> node8 -> node1 Completes the round trip: unwrap markers + lowercase | tests/orchestrator_integration.rs:768 |
+| test945 | `test945_five_machine` | TEST945: 5-machine: edge1 -> edge2 -> edge7 -> edge8 -> edge9 node1 -> node2 -> node3 -> node6 -> node7 -> node8 adds <<...>> wrapping around the reversed string | tests/orchestrator_integration.rs:713 |
+| test946 | `test946_four_machine` | TEST946: 4-machine: edge1 -> edge2 -> edge7 -> edge8 node1 -> node2 -> node3 -> node6 -> node7 "hello" -> "[PREPEND]hello" -> "[PREPEND]hello[APPEND]" -> "[PREPEND]HELLO[APPEND]" -> "]DNEPPA[OLLEH]DNEPERP[" | tests/orchestrator_integration.rs:658 |
+| test947 | `test947_cap_not_found` | TEST947: Cap not found in registry | tests/orchestrator_integration.rs:631 |
+| test948 | `test948_invalid_cap_urn` | TEST948: Invalid cap URN in machine notation | tests/orchestrator_integration.rs:620 |
+| test949 | `test949_empty_graph` | TEST949: Empty machine notation (no edges) | tests/orchestrator_integration.rs:602 |
+| test950 | `test950_reject_cycles` | TEST950: Validate that cycles are rejected | tests/orchestrator_integration.rs:559 |
+| test951 | `test951_fan_in_pattern` | TEST951: Multi-input DAG (fan-in pattern) | tests/orchestrator_integration.rs:507 |
+| test952 | `test952_execute_large_payload` | TEST952: Execute large payload (test-large cap) | tests/orchestrator_integration.rs:459 |
+| test953 | `test953_linear_plan_still_works` | TEST953: Linear plans (no ForEach/Collect) still convert successfully | src/orchestrator/plan_converter.rs:400 |
+| test954 | `test954_standalone_collect_passthrough` | TEST954: Standalone Collect nodes are handled as pass-through Plan: input → cap_0 → Collect → cap_1 → output The standalone Collect is transparent — the resolved edge from Collect to cap_1 should be rewritten to go from cap_0 to cap_1 directly. | src/orchestrator/plan_converter.rs:433 |
 | test955 | `test955_split_map_array` | TEST955: split_cbor_array with nested maps | src/orchestrator/cbor_util.rs:170 |
 | test956 | `test956_roundtrip_assemble_split` | TEST956: assemble then split roundtrip preserves data | src/orchestrator/cbor_util.rs:263 |
 | test957 | `test957_cap_input_file_new` | TEST957: Tests CapInputFile constructor creates file with correct path and media URN Verifies new() initializes file_path, media_urn and leaves metadata/source_id as None | src/planner/argument_binding.rs:557 |
@@ -889,17 +889,17 @@ This catalog lists all tests in the Rust codebase.
 | test1107 | `test1107_slot_value_overrides_cap_settings_per_step` | TEST1107: step_0 has a slot_value override, step_1 falls through to cap_settings. Proves per-step override works while shared settings remain as fallback. | src/planner/argument_binding.rs:1018 |
 | test1108 | `test1108_resolve_all_passes_node_id` | TEST1108: ResolveAll with node_id threads correctly through to each binding. | src/planner/argument_binding.rs:1063 |
 | test1109 | `test1109_slot_key_uses_node_id_not_cap_urn` | TEST1109: Slot key uses node_id, NOT cap_urn — a slot_value keyed by cap_urn must not match. | src/planner/argument_binding.rs:1123 |
-| test1110 | `test1110_strand_round_trips_through_serde_without_losing_step_types` | TEST1110: Strand serializes to JSON and deserializes back preserving all step types | src/planner/live_cap_fab.rs:1812 |
-| test1111 | `test1111_foreach_for_user_provided_list_source` | TEST1111: ForEach works for user-provided list sources not in the graph. This is the original bug — media:list;textable;txt is a user import source, not a cap output. Previously, no ForEach edge existed for it because insert_cardinality_transitions() only pre-computed edges for cap outputs. With dynamic synthesis, ForEach is available for ANY list source. | src/planner/live_cap_fab.rs:1880 |
-| test1112 | `test1112_no_collect_in_path_finding` | TEST1112: Collect is not synthesized during path finding. Reaching a list target type requires the cap itself to output a list type. | src/planner/live_cap_fab.rs:1930 |
-| test1113 | `test1113_multi_cap_path_no_collect` | TEST1113: Multi-cap path without Collect — Collect is not synthesized | src/planner/live_cap_fab.rs:1955 |
-| test1114 | `test1114_graph_stores_only_cap_edges` | TEST1114: Graph stores only Cap edges after sync | src/planner/live_cap_fab.rs:1978 |
-| test1115 | `test1115_dynamic_foreach_with_is_sequence` | TEST1115: ForEach is synthesized when is_sequence=true AND caps can consume items | src/planner/live_cap_fab.rs:2012 |
-| test1116 | `test1116_collect_never_synthesized` | TEST1116: Collect is never synthesized during path finding | src/planner/live_cap_fab.rs:2049 |
-| test1117 | `test1117_no_foreach_when_not_sequence` | TEST1117: ForEach is NOT synthesized when is_sequence=false | src/planner/live_cap_fab.rs:2076 |
-| test1118 | `test1118_no_foreach_without_cap_consumers` | TEST1118: ForEach not synthesized without cap consumers even with is_sequence=true | src/planner/live_cap_fab.rs:2102 |
-| test1119 | `test1119_strand_knit_with_registry_returns_single_strand_machine` | TEST1119: Strand::knit returns a single-strand Machine via the new resolver. Smoke test the registry-threaded API end-to-end. | src/planner/live_cap_fab.rs:2121 |
-| test1120 | `test1120_strand_knit_unknown_cap_fails_hard` | TEST1120: Strand::knit fails hard when the cap is not in the registry — the planner produces strands referencing caps that must be present in the cap registry's cache for resolution to succeed. | src/planner/live_cap_fab.rs:2167 |
+| test1110 | `test1110_strand_round_trips_through_serde_without_losing_step_types` | TEST1110: Strand serializes to JSON and deserializes back preserving all step types | src/planner/live_cap_fab.rs:1816 |
+| test1111 | `test1111_foreach_for_user_provided_list_source` | TEST1111: ForEach works for user-provided list sources not in the graph. This is the original bug — media:list;textable;txt is a user import source, not a cap output. Previously, no ForEach edge existed for it because insert_cardinality_transitions() only pre-computed edges for cap outputs. With dynamic synthesis, ForEach is available for ANY list source. | src/planner/live_cap_fab.rs:1884 |
+| test1112 | `test1112_no_collect_in_path_finding` | TEST1112: Collect is not synthesized during path finding. Reaching a list target type requires the cap itself to output a list type. | src/planner/live_cap_fab.rs:1934 |
+| test1113 | `test1113_multi_cap_path_no_collect` | TEST1113: Multi-cap path without Collect — Collect is not synthesized | src/planner/live_cap_fab.rs:1959 |
+| test1114 | `test1114_graph_stores_only_cap_edges` | TEST1114: Graph stores only Cap edges after sync | src/planner/live_cap_fab.rs:1982 |
+| test1115 | `test1115_dynamic_foreach_with_is_sequence` | TEST1115: ForEach is synthesized when is_sequence=true AND caps can consume items | src/planner/live_cap_fab.rs:2016 |
+| test1116 | `test1116_collect_never_synthesized` | TEST1116: Collect is never synthesized during path finding | src/planner/live_cap_fab.rs:2053 |
+| test1117 | `test1117_no_foreach_when_not_sequence` | TEST1117: ForEach is NOT synthesized when is_sequence=false | src/planner/live_cap_fab.rs:2080 |
+| test1118 | `test1118_no_foreach_without_cap_consumers` | TEST1118: ForEach not synthesized without cap consumers even with is_sequence=true | src/planner/live_cap_fab.rs:2106 |
+| test1119 | `test1119_strand_knit_with_registry_returns_single_strand_machine` | TEST1119: Strand::knit returns a single-strand Machine via the new resolver. Smoke test the registry-threaded API end-to-end. | src/planner/live_cap_fab.rs:2125 |
+| test1120 | `test1120_strand_knit_unknown_cap_fails_hard` | TEST1120: Strand::knit fails hard when the cap is not in the registry — the planner produces strands referencing caps that must be present in the cap registry's cache for resolution to succeed. | src/planner/live_cap_fab.rs:2171 |
 | test1121 | `test1121_cbor_array_file_paths_in_cbor_mode` | TEST1121: CBOR Array of file-paths in CBOR mode (validates new Array support) | src/bifaci/cartridge_runtime.rs:6933 |
 | test1122 | `test1122_full_path_engine_req_to_cartridge_response` | TEST1122: Full path: engine REQ → runtime → cartridge → response back through relay | src/bifaci/integration_tests.rs:209 |
 | test1123 | `test1123_cartridge_error_flows_to_engine` | TEST1123: Cartridge ERR frame flows back to engine through relay | src/bifaci/integration_tests.rs:328 |
@@ -921,18 +921,18 @@ This catalog lists all tests in the Rust codebase.
 | test1147 | `test1147_machine_syntax_error_display_is_specific` | TEST1147: MachineSyntaxError Display includes position and detail for each variant | src/machine/error.rs:154 |
 | test1148 | `test1148_machine_parse_error_from_syntax_preserves_variant` | TEST1148: MachineParseError::from(MachineSyntaxError) preserves the syntax error variant | src/machine/error.rs:168 |
 | test1149 | `test1149_machine_parse_error_from_resolution_preserves_variant` | TEST1149: MachineParseError::from(MachineAbstractionError) preserves the resolution error variant | src/machine/error.rs:184 |
-| test1150 | `test1150_add_cap_and_basic_traversal` | TEST1150: Adding one cap creates one edge and makes its output reachable in one step. | src/planner/live_cap_fab.rs:1195 |
-| test1151 | `test1151_exact_vs_conformance_matching` | TEST1151: Exact target lookup prefers the direct singular or list-producing path over longer alternatives. | src/planner/live_cap_fab.rs:1226 |
-| test1152 | `test1152_multi_step_path` | TEST1152: Path finding returns the expected two-cap chain through an intermediate media type. | src/planner/live_cap_fab.rs:1304 |
-| test1153 | `test1153_deterministic_ordering` | TEST1153: Repeated path searches return the same path order for the same graph and target. | src/planner/live_cap_fab.rs:1333 |
-| test1154 | `test1154_sync_from_caps` | TEST1154: Syncing from caps replaces the existing graph contents with the new cap set. | src/planner/live_cap_fab.rs:1380 |
+| test1150 | `test1150_add_cap_and_basic_traversal` | TEST1150: Adding one cap creates one edge and makes its output reachable in one step. | src/planner/live_cap_fab.rs:1199 |
+| test1151 | `test1151_exact_vs_conformance_matching` | TEST1151: Exact target lookup prefers the direct singular or list-producing path over longer alternatives. | src/planner/live_cap_fab.rs:1230 |
+| test1152 | `test1152_multi_step_path` | TEST1152: Path finding returns the expected two-cap chain through an intermediate media type. | src/planner/live_cap_fab.rs:1308 |
+| test1153 | `test1153_deterministic_ordering` | TEST1153: Repeated path searches return the same path order for the same graph and target. | src/planner/live_cap_fab.rs:1337 |
+| test1154 | `test1154_sync_from_caps` | TEST1154: Syncing from caps replaces the existing graph contents with the new cap set. | src/planner/live_cap_fab.rs:1384 |
 | test1155 | `test1155_from_strand_produces_single_strand_machine` | TEST1155: Building a machine from one strand produces one strand with one resolved edge. | src/machine/graph.rs:648 |
 | test1156 | `test1156_from_strands_keeps_strands_disjoint` | TEST1156: Building from multiple strands keeps them disjoint and preserves input strand order. | src/machine/graph.rs:657 |
 | test1157 | `test1157_from_strands_empty_input_fails_hard` | TEST1157: Building from zero strands fails with NoCapabilitySteps. | src/machine/graph.rs:687 |
 | test1158 | `test1158_machine_is_equivalent_is_strict_positional` | TEST1158: Machine equivalence is strict about strand order and rejects reordered strands. | src/machine/graph.rs:695 |
 | test1159 | `test1159_machine_strand_is_equivalent_walks_node_bijection` | TEST1159: MachineStrand equivalence accepts two separately built but structurally identical strands. | src/machine/graph.rs:715 |
 | test1160 | `test1160_machine_run_new_stores_canonical_notation` | TEST1160: Creating a MachineRun stores the canonical notation and starts in the pending state. | src/machine/graph.rs:728 |
-| test1161 | `test1161_simple_linear_chain_conversion` | TEST1161: Converting a simple linear plan produces resolved edges for the cap-to-cap chain. | src/orchestrator/plan_converter.rs:235 |
+| test1161 | `test1161_simple_linear_chain_conversion` | TEST1161: Converting a simple linear plan produces resolved edges for the cap-to-cap chain. | src/orchestrator/plan_converter.rs:237 |
 | test1162 | `test1162_heartbeat_frame_with_memory_meta` | TEST1162: Heartbeat frames preserve self-reported memory values stored in metadata. | src/bifaci/frame.rs:1338 |
 | test1163 | `test1163_parse_single_strand_two_caps_connected_via_shared_node` | TEST1163: Parsing one connected strand yields a single machine strand with both caps connected by the shared node. | src/machine/parser.rs:544 |
 | test1164 | `test1164_parse_two_disconnected_strands_yields_two_machine_strands` | TEST1164: Parsing two disconnected strand definitions yields two separate machine strands. | src/machine/parser.rs:566 |
@@ -1018,20 +1018,20 @@ This catalog lists all tests in the Rust codebase.
 | test1253 | `test1253_process_handle_kill_unknown_pid_is_noop` | TEST1253: Killing an unknown PID is accepted as an asynchronous no-op command. | src/bifaci/host_runtime.rs:4904 |
 | test1254 | `test1254_oom_kill_sends_err_with_oom_killed_code` | TEST1254: OOM shutdowns emit OOM_KILLED ERR frames for in-flight requests. | src/bifaci/host_runtime.rs:4921 |
 | test1255 | `test1255_app_exit_suppresses_err_frames` | TEST1255: App-exit shutdowns suppress ERR frames and close cleanly without noise. | src/bifaci/host_runtime.rs:5048 |
-| test1256 | `test1256_parse_simple_machine` | TEST1256: A single declared cap and one wiring parse into a two-node one-edge DAG. | src/orchestrator/parser.rs:303 |
-| test1257 | `test1257_parse_two_step_chain` | TEST1257: Two sequential wirings preserve the intermediate node media type. | src/orchestrator/parser.rs:342 |
-| test1258 | `test1258_parse_fan_out` | TEST1258: One source node can fan out into multiple caps and target nodes. | src/orchestrator/parser.rs:386 |
-| test1259 | `test1259_parse_fan_in` | TEST1259: Fan-in wiring resolves multiple upstream outputs into one multi-arg cap. | src/orchestrator/parser.rs:428 |
-| test1260 | `test1260_parse_loop_wiring` | TEST1260: LOOP wiring parses as a single edge while preserving the loop marker semantics. | src/orchestrator/parser.rs:475 |
-| test1261 | `test1261_cap_not_found_in_registry` | TEST1261: Parsing fails with CapNotFound when a declared cap is absent from the registry. | src/orchestrator/parser.rs:501 |
-| test1262 | `test1262_invalid_machine_notation` | TEST1262: Non-machine text fails with a machine syntax parse error. | src/orchestrator/parser.rs:522 |
-| test1263 | `test1263_cycle_detection` | TEST1263: Cyclic wirings are rejected as non-DAG orchestrations. | src/orchestrator/parser.rs:541 |
-| test1264 | `test1264_incompatible_media_types_at_shared_node` | TEST1264: Shared nodes with incompatible upstream and downstream media fail during parsing. | src/orchestrator/parser.rs:572 |
-| test1265 | `test1265_compatible_media_urns_at_shared_node` | TEST1265: Shared nodes accept compatible media URNs when one is a more specific form of the other. | src/orchestrator/parser.rs:614 |
-| test1266 | `test1266_structure_mismatch_record_to_opaque` | TEST1266: Record-to-opaque structure mismatches are rejected once structure checking is enabled. | src/orchestrator/parser.rs:656 |
-| test1267 | `test1267_structure_match_both_record` | TEST1267: Record-shaped outputs can feed record-shaped inputs without error. | src/orchestrator/parser.rs:702 |
-| test1268 | `test1268_structure_match_both_opaque` | TEST1268: Opaque outputs can feed opaque inputs without triggering structure conflicts. | src/orchestrator/parser.rs:737 |
-| test1269 | `test1269_parse_multiline_machine` | TEST1269: Multi-line machine notation parses successfully with the same semantics as inline notation. | src/orchestrator/parser.rs:772 |
+| test1256 | `test1256_parse_simple_machine` | TEST1256: A single declared cap and one wiring parse into a two-node one-edge DAG. | src/orchestrator/parser.rs:305 |
+| test1257 | `test1257_parse_two_step_chain` | TEST1257: Two sequential wirings preserve the intermediate node media type. | src/orchestrator/parser.rs:344 |
+| test1258 | `test1258_parse_fan_out` | TEST1258: One source node can fan out into multiple caps and target nodes. | src/orchestrator/parser.rs:388 |
+| test1259 | `test1259_parse_fan_in` | TEST1259: Fan-in wiring resolves multiple upstream outputs into one multi-arg cap. | src/orchestrator/parser.rs:430 |
+| test1260 | `test1260_parse_loop_wiring` | TEST1260: LOOP wiring parses as a single edge while preserving the loop marker semantics. | src/orchestrator/parser.rs:477 |
+| test1261 | `test1261_cap_not_found_in_registry` | TEST1261: Parsing fails with CapNotFound when a declared cap is absent from the registry. | src/orchestrator/parser.rs:503 |
+| test1262 | `test1262_invalid_machine_notation` | TEST1262: Non-machine text fails with a machine syntax parse error. | src/orchestrator/parser.rs:524 |
+| test1263 | `test1263_cycle_detection` | TEST1263: Cyclic wirings are rejected as non-DAG orchestrations. | src/orchestrator/parser.rs:543 |
+| test1264 | `test1264_incompatible_media_types_at_shared_node` | TEST1264: Shared nodes with incompatible upstream and downstream media fail during parsing. | src/orchestrator/parser.rs:574 |
+| test1265 | `test1265_compatible_media_urns_at_shared_node` | TEST1265: Shared nodes accept compatible media URNs when one is a more specific form of the other. | src/orchestrator/parser.rs:616 |
+| test1266 | `test1266_structure_mismatch_record_to_opaque` | TEST1266: Record-to-opaque structure mismatches are rejected once structure checking is enabled. | src/orchestrator/parser.rs:658 |
+| test1267 | `test1267_structure_match_both_record` | TEST1267: Record-shaped outputs can feed record-shaped inputs without error. | src/orchestrator/parser.rs:704 |
+| test1268 | `test1268_structure_match_both_opaque` | TEST1268: Opaque outputs can feed opaque inputs without triggering structure conflicts. | src/orchestrator/parser.rs:739 |
+| test1269 | `test1269_parse_multiline_machine` | TEST1269: Multi-line machine notation parses successfully with the same semantics as inline notation. | src/orchestrator/parser.rs:774 |
 | test1270 | `test1270_get_own_memory_mb_returns_values` | TEST1270: Runtime memory inspection returns non-negative resident and virtual memory values. | src/bifaci/cartridge_runtime.rs:8309 |
 | test1271 | `test1271_media_adapter_selection_constant` | TEST1271: MEDIA_ADAPTER_SELECTION constant parses and has expected tags | src/urn/media_urn.rs:1286 |
 | test1272 | `test1272_adapter_cap_constant_parses` | TEST1272: CAP_ADAPTER_SELECTION constant parses as a valid CapUrn | src/standard/caps.rs:1253 |
@@ -1051,11 +1051,11 @@ This catalog lists all tests in the Rust codebase.
 | test1286 | `test1286_confirmed_adapter_returns_urns` | TEST1286: detect_file_confirmed succeeds when adapter returns URNs | src/input_resolver/resolver.rs:685 |
 | test1287 | `test1287_confirmed_all_adapters_no_match` | TEST1287: detect_file_confirmed fails when all adapters return empty END (no match) | src/input_resolver/resolver.rs:719 |
 | test1288 | `test1288_structure_from_marker_tags` | TEST1288: structure_from_marker_tags correctly maps tag combinations to ContentStructure | src/input_resolver/resolver.rs:626 |
-| test1289 | `test1289_bfs_reachable_includes_source_roundtrip` | TEST1289: BFS reachable targets includes the source itself when round-trip paths exist. A→B and B→A means A is reachable from A (via A→B→A). | src/planner/live_cap_fab.rs:2206 |
-| test1290 | `test1290_iddfs_finds_roundtrip_paths` | TEST1290: IDDFS find_paths_to_exact_target finds round-trip paths when source == target. This was a bug where the visited set blocked returning to the source, and early return on target hit at wrong depth prevented exploration. | src/planner/live_cap_fab.rs:2242 |
-| test1291 | `test1291_iddfs_roundtrip_with_sequence` | TEST1291: IDDFS round-trip paths are also found with is_sequence=true. The ForEach/Collect edges must not block round-trip discovery. | src/planner/live_cap_fab.rs:2281 |
-| test1292 | `test1292_bfs_iddfs_roundtrip_consistency` | TEST1292: BFS and IDDFS agree that round-trip targets exist. If BFS says target X is reachable from source X, IDDFS must find at least one path. | src/planner/live_cap_fab.rs:2314 |
-| test1293 | `test1293_roundtrip_requires_cap_steps` | TEST1293: IDDFS round-trip does not produce paths with 0 cap steps. Identity-only round trips (no real transformation) must be excluded. | src/planner/live_cap_fab.rs:2348 |
+| test1289 | `test1289_bfs_reachable_includes_source_roundtrip` | TEST1289: BFS reachable targets includes the source itself when round-trip paths exist. A→B and B→A means A is reachable from A (via A→B→A). | src/planner/live_cap_fab.rs:2210 |
+| test1290 | `test1290_iddfs_finds_roundtrip_paths` | TEST1290: IDDFS find_paths_to_exact_target finds round-trip paths when source == target. This was a bug where the visited set blocked returning to the source, and early return on target hit at wrong depth prevented exploration. | src/planner/live_cap_fab.rs:2246 |
+| test1291 | `test1291_iddfs_roundtrip_with_sequence` | TEST1291: IDDFS round-trip paths are also found with is_sequence=true. The ForEach/Collect edges must not block round-trip discovery. | src/planner/live_cap_fab.rs:2285 |
+| test1292 | `test1292_bfs_iddfs_roundtrip_consistency` | TEST1292: BFS and IDDFS agree that round-trip targets exist. If BFS says target X is reachable from source X, IDDFS must find at least one path. | src/planner/live_cap_fab.rs:2318 |
+| test1293 | `test1293_roundtrip_requires_cap_steps` | TEST1293: IDDFS round-trip does not produce paths with 0 cap steps. Identity-only round trips (no real transformation) must be excluded. | src/planner/live_cap_fab.rs:2352 |
 | test1294 | `test1294_rule11_void_input_with_stdin_rejected` | TEST1294: RULE11 - void-input cap with stdin source rejected | src/cap/validation.rs:1736 |
 | test1295 | `test1295_rule11_non_void_input_without_stdin_rejected` | TEST1295: RULE11 - non-void-input cap without stdin source rejected | src/cap/validation.rs:1756 |
 | test1296 | `test1296_rule11_void_input_cli_only_ok` | TEST1296: RULE11 - void-input cap with only cli_flag sources passes | src/cap/validation.rs:1778 |
